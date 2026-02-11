@@ -1,8 +1,15 @@
+"""
+NEXUS Slack Notifier
+
+Sends notifications to the #garrett-nexus Slack channel.
+"""
+
 import os
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 KEYS_PATH = os.path.expanduser("~/.nexus/.env.keys")
+
 
 def _load_keys():
     keys = {}
@@ -17,13 +24,16 @@ def _load_keys():
         pass
     return keys
 
+
 def get_client():
     keys = _load_keys()
     return WebClient(token=keys["SLACK_BOT_TOKEN"])
 
+
 def get_channel():
     keys = _load_keys()
     return keys.get("SLACK_CHANNEL", "nexus")
+
 
 def notify(message, blocks=None):
     client = get_client()
@@ -36,6 +46,7 @@ def notify(message, blocks=None):
         client.chat_postMessage(channel=channel, text=message, blocks=blocks)
     except SlackApiError as e:
         print(f"Slack notification failed: {e.response['error']}")
+
 
 def notify_demo(project, summary, screenshots=None, metrics=None):
     blocks = [
@@ -56,8 +67,10 @@ def notify_demo(project, summary, screenshots=None, metrics=None):
     })
     notify(f"Demo ready: {project}", blocks=blocks)
 
+
 def notify_kpi(dashboard_text):
     notify(f"```{dashboard_text}```")
+
 
 def notify_escalation(agent, reason):
     blocks = [
@@ -66,8 +79,10 @@ def notify_escalation(agent, reason):
     ]
     notify(f"Escalation from {agent}: {reason}", blocks=blocks)
 
+
 def notify_cost_alert(current_rate, budget):
     notify(f"Cost alert: Current burn rate ${current_rate:.2f}/hr exceeds target ${budget:.2f}/hr. Switching to efficiency mode.")
+
 
 def notify_completion(project, feature, cost):
     notify(f"Feature complete: *{feature}* on {project}. Total cost: ${cost:.2f}")

@@ -2,10 +2,7 @@
 NEXUS Slack Listener
 
 Listens for messages in #garrett-nexus and forwards everything to the
-daemon's /message endpoint. The CEO interpreter figures out whether
-it's a directive, question, org change, or command.
-
-No command parsing here — natural language only.
+server's /message endpoint. Sends ALL responses back to Slack.
 """
 
 import os
@@ -17,7 +14,7 @@ from slack_sdk.socket_mode.aiohttp import SocketModeClient
 from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
 
-DAEMON_URL = "http://127.0.0.1:4200"
+SERVER_URL = "http://127.0.0.1:4200"
 
 
 def _load_key(key_name: str) -> str | None:
@@ -35,14 +32,57 @@ def _load_key(key_name: str) -> str | None:
     return None
 
 
-async def send_to_daemon(message: str) -> dict:
+def format_response(result: dict) -> str:
+    """Turn a server response into a readable Slack message."""
+    category = result.get("category", "")
+
+    if category == "ORG_CHANGE":
+        return f"*Org Change:* {result.get('summary', '')}\n\n{result.get('result', '')}"
+
+    elif category == "QUESTION":
+        return f"*Q:* {result.get('summary', '')}\n\n{result.get('answer', 'No answer available.')}"
+
+    elif category == "COMMAND":
+        if "dashboard" in result:
+            return f"```{result['dashboard']}```"
+        elif "total_cost" in result:
+            lines = [
+                f"*Cost Report*",
+                f"Total: ${result['total_cost']:.2f}",
+                f"Hourly: ${result['hourly_rate']:.2f}/hr",
+                f"Over budget: {result.get('over_budget', False)}",
+            ]
+            return "\n".join(lines)
+        elif "summary" in result:
+            return result["summary"]
+        elif "reporting_tree" in result:
+            return f"*Current Org:*\n```{result['reporting_tree']}```"
+        elif "chart" in result:
+            return f"```{result['chart'][:3000]}```"
+        else:
+            return f"```{str(result)[:2000]}```"
+
+    elif category == "DIRECTIVE":
+        return f"*Directive received:* {result.get('summary', '')}\n{result.get('message', 'Working on it...')}"
+
+    elif "response" in result:
+        return f"*{result.get('agent', 'Agent')}*: {result['response'][:2000]}"
+
+    elif "error" in result:
+        return f"Error: {result['error']}"
+
+    return f"```{str(result)[:2000]}```"
+
+
+async def send_to_server(message: str) -> dict:
+    """Send a message to the server and return the response."""
     async with aiohttp.ClientSession() as session:
         try:
             if message.startswith("/talk"):
                 match = re.match(r"/talk\s+@?(\S+)\s+(.*)", message, re.DOTALL)
                 if match:
                     async with session.post(
-                        f"{DAEMON_URL}/talk",
+                        f"{SERVER_URL}/talk",
                         json={
                             "agent_name": match.group(1),
                             "message": match.group(2),
@@ -52,7 +92,7 @@ async def send_to_daemon(message: str) -> dict:
                         return await resp.json()
 
             async with session.post(
-                f"{DAEMON_URL}/message",
+                f"{SERVER_URL}/message",
                 json={
                     "message": message,
                     "source": "slack",
@@ -61,10 +101,11 @@ async def send_to_daemon(message: str) -> dict:
                 return await resp.json()
 
         except aiohttp.ClientError as e:
-            return {"error": f"Cannot reach NEXUS daemon: {e}"}
+            return {"error": f"Cannot reach NEXUS server: {e}"}
 
 
 async def start_slack_listener():
+    """Start the Slack Socket Mode listener."""
     app_token = _load_key("SLACK_APP_TOKEN")
     bot_token = _load_key("SLACK_BOT_TOKEN")
     channel_id = _load_key("SLACK_CHANNEL")
@@ -80,6 +121,7 @@ async def start_slack_listener():
     )
 
     async def handle_event(client: SocketModeClient, req: SocketModeRequest):
+        # Acknowledge immediately so Slack doesn't retry
         await client.send_socket_mode_response(
             SocketModeResponse(envelope_id=req.envelope_id)
         )
@@ -89,6 +131,7 @@ async def start_slack_listener():
 
         event = req.payload.get("event", {})
 
+        # Only handle messages, not bot messages, only in our channel
         if event.get("type") != "message":
             return
         if event.get("bot_id"):
@@ -100,27 +143,64 @@ async def start_slack_listener():
         if not text:
             return
 
-        result = await send_to_daemon(text)
+        print(f"[Slack] Received: {text[:100]}")
 
-        if result.get("error"):
+        # Check if this is a document request
+        from src.documents.generator import detect_doc_request, generate_document
+
+        doc_info = detect_doc_request(text)
+        if doc_info:
+            print(f"[Slack] Document request detected: {doc_info['format']}")
+            try:
+                await web_client.chat_postMessage(
+                    channel=channel_id,
+                    text=f"Generating your {doc_info['format'].upper()}... one moment.",
+                )
+
+                doc_result = await generate_document(text, doc_info)
+
+                if "error" in doc_result:
+                    await web_client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"Error generating document: {doc_result['error']}",
+                    )
+                else:
+                    await web_client.files_upload_v2(
+                        channel=channel_id,
+                        file=doc_result["filepath"],
+                        title=doc_result["title"],
+                        initial_comment=f"Here's your {doc_result['format'].upper()}: *{doc_result['title']}*",
+                    )
+                    print(f"[Slack] Uploaded: {doc_result['filename']}")
+            except Exception as e:
+                print(f"[Slack] Document generation failed: {e}")
+                await web_client.chat_postMessage(
+                    channel=channel_id,
+                    text=f"Failed to generate document: {str(e)[:200]}",
+                )
+            return
+
+        # Send to server for normal processing
+        result = await send_to_server(text)
+
+        # Format and send response back to Slack
+        response_text = format_response(result)
+
+        print(f"[Slack] Responding: {response_text[:100]}...")
+
+        try:
             await web_client.chat_postMessage(
                 channel=channel_id,
-                text=f"Error: {result['error']}",
+                text=response_text,
             )
-        elif result.get("category") == "QUESTION":
-            pass
-        elif result.get("category") == "ORG_CHANGE":
-            pass
-        elif "response" in result:
-            await web_client.chat_postMessage(
-                channel=channel_id,
-                text=f"*{result.get('agent', 'Agent')}*: {result.get('response', '')[:2000]}",
-            )
+        except Exception as e:
+            print(f"[Slack] Failed to send response: {e}")
 
     socket_client.socket_mode_request_listeners.append(handle_event)
 
     print("NEXUS Slack listener starting...")
     await socket_client.connect()
+    print("NEXUS Slack listener connected.")
 
     while True:
         await asyncio.sleep(1)

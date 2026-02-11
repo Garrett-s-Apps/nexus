@@ -3,33 +3,33 @@
 NEXUS CLI
 
 Usage:
-    nexus start              Start the daemon + Slack listener
+    nexus start              Start the server + Slack listener
     nexus status             Show active workstreams
     nexus kpi                Show KPI dashboard
     nexus cost               Show cost report
     nexus talk <agent> <msg> Talk to a specific agent
     nexus directive <text>   Submit a directive
-    nexus stop               Stop the daemon
+    nexus stop               Stop the server
 """
 
 import sys
 import asyncio
 import aiohttp
 
-DAEMON_URL = "http://127.0.0.1:4200"
+SERVER_URL = "http://127.0.0.1:4200"
 
 
-async def call_daemon(method: str, path: str, json: dict = None):
+async def call_server(method: str, path: str, json: dict = None):
     async with aiohttp.ClientSession() as session:
         try:
             if method == "GET":
-                async with session.get(f"{DAEMON_URL}{path}") as resp:
+                async with session.get(f"{SERVER_URL}{path}") as resp:
                     return await resp.json()
             else:
-                async with session.post(f"{DAEMON_URL}{path}", json=json) as resp:
+                async with session.post(f"{SERVER_URL}{path}", json=json) as resp:
                     return await resp.json()
         except aiohttp.ClientError:
-            return {"error": "NEXUS daemon is not running. Start with: nexus start"}
+            return {"error": "NEXUS server is not running. Start with: nexus start"}
 
 
 def main():
@@ -44,7 +44,7 @@ def main():
         start_main()
 
     elif command == "status":
-        result = asyncio.run(call_daemon("GET", "/status"))
+        result = asyncio.run(call_server("GET", "/status"))
         if "error" in result:
             print(result["error"])
         else:
@@ -57,14 +57,14 @@ def main():
                 print(f"  [{s['status']}] {s['directive'][:60]}")
 
     elif command == "kpi":
-        result = asyncio.run(call_daemon("POST", "/command", {"command": "kpi", "source": "cli"}))
+        result = asyncio.run(call_server("POST", "/command", {"command": "kpi", "source": "cli"}))
         if "error" in result:
             print(result["error"])
         else:
             print(result.get("dashboard", ""))
 
     elif command == "cost":
-        result = asyncio.run(call_daemon("POST", "/command", {"command": "cost", "source": "cli"}))
+        result = asyncio.run(call_server("POST", "/command", {"command": "cost", "source": "cli"}))
         if "error" in result:
             print(result["error"])
         else:
@@ -81,7 +81,7 @@ def main():
     elif command == "talk" and len(sys.argv) >= 4:
         agent = sys.argv[2]
         message = " ".join(sys.argv[3:])
-        result = asyncio.run(call_daemon("POST", "/talk", {
+        result = asyncio.run(call_server("POST", "/talk", {
             "agent_name": agent,
             "message": message,
             "source": "cli",
@@ -95,7 +95,7 @@ def main():
 
     elif command == "directive":
         directive = " ".join(sys.argv[2:])
-        result = asyncio.run(call_daemon("POST", "/directive", {
+        result = asyncio.run(call_server("POST", "/directive", {
             "directive": directive,
             "source": "cli",
         }))

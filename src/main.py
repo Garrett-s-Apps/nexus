@@ -1,19 +1,19 @@
 """
 NEXUS Entry Point
 
-Starts both the FastAPI daemon and the Slack listener.
+Starts both the FastAPI server and the Slack listener.
 Run with: python -m src.main
 """
 
 import asyncio
 import uvicorn
 import threading
-from src.daemon.server import app
+from src.server.server import app
 from src.slack.listener import start_slack_listener
 
 
-def run_daemon():
-    """Run the FastAPI daemon in a thread."""
+def run_server():
+    """Run the FastAPI server in a thread."""
     uvicorn.run(app, host="127.0.0.1", port=4200, log_level="info")
 
 
@@ -28,14 +28,14 @@ def main():
     ║           NEXUS ORCHESTRATOR             ║
     ║   Enterprise Multi-Agent System v0.1.0   ║
     ╠══════════════════════════════════════════╣
-    ║  Daemon:  http://127.0.0.1:4200         ║
+    ║  Server:  http://127.0.0.1:4200         ║
     ║  Slack:   #garrett-nexus                 ║
     ║  Status:  http://127.0.0.1:4200/status  ║
     ╚══════════════════════════════════════════╝
     """)
 
-    daemon_thread = threading.Thread(target=run_daemon, daemon=True)
-    daemon_thread.start()
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
 
     try:
         asyncio.run(run_slack())

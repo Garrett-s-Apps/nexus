@@ -1,5 +1,5 @@
 """
-NEXUS Daemon
+NEXUS Server
 
 FastAPI server running on localhost:4200. Single entry point for all clients.
 Now with dynamic org management and CEO natural language interpretation.
@@ -18,6 +18,9 @@ from src.agents.ceo_interpreter import interpret_ceo_input, execute_org_change, 
 from src.agents.org_chart_generator import generate_org_chart, update_org_chart_in_repo
 from src.agents.sdk_bridge import cost_tracker, run_sdk_agent, run_planning_agent
 from src.slack.notifier import notify, notify_demo, notify_completion, notify_escalation, notify_kpi
+from src.session.store import session_store
+from src.kpi.tracker import kpi_tracker
+from src.git_ops.git import GitOps
 
 
 sessions: dict[str, dict] = {}
@@ -52,6 +55,10 @@ async def execute_directive_bg(session_id: str, directive: str, project_path: st
     try:
         notify(f"Received directive: _{directive}_\nStarting execution...")
 
+        # Persist session
+        await session_store.create_session(session_id, directive, source, project_path)
+        await session_store.add_message(session_id, "user", directive)
+
         from src.orchestrator.graph import compile_nexus_dynamic
         nexus_app = compile_nexus_dynamic()
 
@@ -69,6 +76,25 @@ async def execute_directive_bg(session_id: str, directive: str, project_path: st
         sessions[session_id]["state"] = result
         sessions[session_id]["status"] = "complete"
 
+        # Persist state and completion
+        await session_store.save_state(session_id, result)
+        await session_store.update_status(session_id, "complete")
+
+        # Track KPIs
+        total_cost = result.get("cost", {}).get("total_cost_usd", 0)
+        kpi_tracker.record_task_completion("orchestrator", directive[:100], total_cost, 0)
+
+        # Auto-commit if project has git
+        if project_path and os.path.exists(os.path.join(project_path, ".git")):
+            git = GitOps(project_path)
+            if not git.status()["clean"]:
+                branch = git.create_feature_branch(directive[:30])
+                sha = git.commit(f"feat: {directive[:60]}", cost=total_cost)
+                if sha:
+                    await session_store.add_message(
+                        session_id, "system", f"Committed {sha} on {branch}", cost=0
+                    )
+
         if result.get("demo_summary"):
             notify_demo(
                 project=project_path or "NEXUS Project",
@@ -79,12 +105,13 @@ async def execute_directive_bg(session_id: str, directive: str, project_path: st
             notify_completion(
                 project=project_path or "NEXUS Project",
                 feature=directive[:50],
-                cost=result.get("cost", {}).get("total_cost_usd", 0),
+                cost=total_cost,
             )
 
     except Exception as e:
         sessions[session_id]["status"] = "error"
         sessions[session_id]["error"] = str(e)
+        await session_store.update_status(session_id, "error", str(e))
         notify_escalation("orchestrator", f"Execution failed: {str(e)}")
 
     finally:
@@ -94,6 +121,9 @@ async def execute_directive_bg(session_id: str, directive: str, project_path: st
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize persistence
+    await session_store.init()
+
     if not registry.is_initialized():
         registry.load_from_yaml()
         notify("NEXUS initialized from default org structure.")
@@ -102,22 +132,22 @@ async def lifespan(app: FastAPI):
     if os.path.exists(nexus_path):
         update_org_chart_in_repo(nexus_path)
 
-    notify("NEXUS daemon started. All systems operational.")
+    notify("NEXUS server started. All systems operational.")
     yield
-    notify("NEXUS daemon shutting down.")
+    notify("NEXUS server shutting down.")
 
 
 app = FastAPI(
-    title="NEXUS Daemon",
+    title="NEXUS Server",
     description="Enterprise multi-agent orchestration system",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.2.0", "active_agents": len(registry.get_active_agents())}
+    return {"status": "ok", "version": "0.3.0", "active_agents": len(registry.get_active_agents())}
 
 
 @app.get("/status", response_model=StatusResponse)
@@ -258,14 +288,32 @@ async def get_org_chart():
 
 @app.get("/session/{session_id}")
 async def get_session(session_id: str):
-    if session_id not in sessions:
-        return {"error": "Session not found"}
-    return sessions[session_id]
+    # Check in-memory first, fall back to persistent store
+    if session_id in sessions:
+        return sessions[session_id]
+    persisted = await session_store.get_session(session_id)
+    if persisted:
+        return persisted
+    return {"error": "Session not found"}
+
+
+@app.get("/sessions")
+async def get_sessions():
+    """Get recent session history from persistent store."""
+    return {"sessions": await session_store.get_recent_sessions(20)}
+
+
+@app.get("/kpi")
+async def get_kpi():
+    """Get KPI dashboard data."""
+    summary = kpi_tracker.get_summary(24)
+    dashboard = kpi_tracker.generate_dashboard(24)
+    return {"summary": summary, "dashboard": dashboard}
 
 
 async def run_command_internal(command: str, args: str, source: str) -> dict:
     if command == "kpi":
-        dashboard = _generate_kpi_dashboard()
+        dashboard = kpi_tracker.generate_dashboard(24)
         if source == "slack":
             notify_kpi(dashboard)
         return {"category": "COMMAND", "command": "kpi", "dashboard": dashboard}
@@ -333,10 +381,10 @@ SESSIONS
 """
 
 
-def start_daemon(host: str = "127.0.0.1", port: int = 4200):
+def start_server(host: str = "127.0.0.1", port: int = 4200):
     import uvicorn
     uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
-    start_daemon()
+    start_server()

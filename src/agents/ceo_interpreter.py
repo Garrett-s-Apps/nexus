@@ -23,25 +23,36 @@ CURRENT ORG STATE:
 
 Classify Garrett's message into EXACTLY ONE category:
 
-1. ORG_CHANGE - He wants to change the organization structure
+1. CONVERSATION - He's being casual, saying hi, venting, making small talk, joking around,
+   or just chatting. This is NOT a work request. Examples: "whats up", "hey", "how's it going",
+   "im tired", "that was cool", "thanks", "lol", "good morning", anything conversational.
+   This should be the DEFAULT for anything that isn't clearly a work request.
+
+2. ORG_CHANGE - He wants to change the organization structure
    Sub-types: hire, fire, reassign, consolidate, promote, demote, restructure
    Extract: who is affected, what changes, any new roles/responsibilities
 
-2. QUESTION - He's asking the org to research something or answer a question
+3. QUESTION - He's asking the org to research something or answer a WORK-RELATED question
    Extract: the question, which agents should be involved in answering
 
-3. DIRECTIVE - He wants something built, fixed, shipped, or done
+4. DIRECTIVE - He wants something built, fixed, shipped, or done
    Extract: what to build, any constraints or requirements
 
-4. COMMAND - He wants a system command (kpi, status, cost, deploy, etc.)
+5. COMMAND - He wants a system command (kpi, status, cost, deploy, security, etc.)
    Extract: which command, any arguments
+
+IMPORTANT: When in doubt between CONVERSATION and QUESTION, pick CONVERSATION.
+Only use QUESTION for clearly work-related technical or strategic questions.
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "category": "ORG_CHANGE" | "QUESTION" | "DIRECTIVE" | "COMMAND",
-  "sub_type": "hire" | "fire" | "reassign" | "consolidate" | "promote" | "demote" | "restructure" | "question" | "directive" | "kpi" | "status" | "cost" | "deploy",
+  "category": "CONVERSATION" | "ORG_CHANGE" | "QUESTION" | "DIRECTIVE" | "COMMAND",
+  "sub_type": "chat" | "hire" | "fire" | "reassign" | "consolidate" | "promote" | "demote" | "restructure" | "question" | "directive" | "kpi" | "status" | "cost" | "deploy" | "security",
   "summary": "one line summary of what Garrett wants",
   "details": {{
+    // For CONVERSATION:
+    "mood": "casual|happy|frustrated|tired|excited|neutral",
+    "message": "the original message",
     // For ORG_CHANGE:
     "affected_agents": ["agent_id_1"],
     "action": "description of the change",
@@ -74,7 +85,7 @@ Respond ONLY with valid JSON in this exact format:
     "directive": "what to build/fix/ship",
     "project_path": "if mentioned",
     // For COMMAND:
-    "command": "kpi|status|cost|deploy",
+    "command": "kpi|status|cost|deploy|security",
     "args": ""
   }}
 }}"""
@@ -83,29 +94,98 @@ Respond ONLY with valid JSON in this exact format:
 async def interpret_ceo_input(message: str) -> dict:
     """
     Interpret natural language from Garrett and return structured intent.
-    Uses the CEO agent (Opus) to understand ambiguous input.
+    Uses a fast pre-filter for casual messages, then Haiku for classification.
     """
+    import anthropic
+    import os
+    import re
+
+    # FAST PRE-FILTER: catch obviously casual messages without hitting the API
+    casual_patterns = [
+        r'^(hey|hi|hello|yo|sup|whats up|what\'s up|howdy|morning|afternoon|evening)\b',
+        r'^(how\'s it going|how are you|hows it going|how ya doing|how you doing)',
+        r'^(how\'s your day|hows your day|how was your)',
+        r'^(thanks|thank you|thx|ty|appreciate it|cheers)',
+        r'^(lol|lmao|haha|heh|nice|cool|dope|sick|wow|damn|yep|nope|yea|yeah|nah)',
+        r'^(good morning|good night|gn|gm|good evening)',
+        r'^(im tired|i\'m tired|im exhausted|i\'m exhausted|long day|rough day)',
+        r'^(what\'s good|whats good|what\'s new|whats new|what\'s happening)',
+        r'^(just checking in|checking in|just wanted to say)',
+        r'^(brb|gtg|gotta go|be right back|talk later|ttyl)',
+    ]
+
+    msg_lower = message.lower().strip()
+    for pattern in casual_patterns:
+        if re.match(pattern, msg_lower):
+            return {
+                "category": "CONVERSATION",
+                "sub_type": "chat",
+                "summary": message[:100],
+                "details": {"mood": "neutral", "message": message},
+                "_raw": "",
+                "_cost": 0,
+            }
+
+    # Also catch very short messages (< 6 words, no technical terms) as conversation
+    word_count = len(message.split())
+    technical_signals = ["build", "create", "deploy", "fix", "hire", "fire", "show",
+                         "kpi", "cost", "status", "org", "report", "scan", "agent",
+                         "pdf", "docx", "pptx", "presentation", "document", "slide"]
+    has_technical = any(t in msg_lower for t in technical_signals)
+
+    if word_count <= 5 and not has_technical:
+        return {
+            "category": "CONVERSATION",
+            "sub_type": "chat",
+            "summary": message[:100],
+            "details": {"mood": "neutral", "message": message},
+            "_raw": "",
+            "_cost": 0,
+        }
+
+    # For real work messages: use Haiku for classification (faster + cheaper than Sonnet)
     org_summary = registry.get_org_summary()
 
-    ceo_config = {
-        "model": "opus",
-        "system_prompt": CEO_INTERPRETER_PROMPT.format(org_summary=org_summary),
-    }
+    def _load_key(key_name):
+        try:
+            with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith(key_name + "="):
+                        return line.split("=", 1)[1]
+        except FileNotFoundError:
+            pass
+        return os.environ.get(key_name)
 
-    result = await run_planning_agent(
-        "ceo_interpreter",
-        ceo_config,
-        f"Garrett says: {message}",
+    api_key = _load_key("ANTHROPIC_API_KEY")
+    client = anthropic.AsyncAnthropic(api_key=api_key)
+
+    response = await client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1024,
+        system=CEO_INTERPRETER_PROMPT.format(org_summary=org_summary),
+        messages=[{"role": "user", "content": f"Garrett says: {message}"}],
     )
 
+    output = response.content[0].text
+    cost = 0.0
+    if response.usage:
+        from src.cost.tracker import cost_tracker
+        cost_result = cost_tracker.record(
+            "haiku", "ceo_interpreter",
+            response.usage.input_tokens, response.usage.output_tokens
+        )
+        cost = cost_tracker.calculate_cost(
+            "haiku", response.usage.input_tokens, response.usage.output_tokens
+        )
+
     try:
-        output = result["output"]
         json_start = output.find("{")
         json_end = output.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
             parsed = json.loads(output[json_start:json_end])
-            parsed["_raw"] = result["output"]
-            parsed["_cost"] = result.get("cost", 0)
+            parsed["_raw"] = output
+            parsed["_cost"] = cost
             return parsed
     except (json.JSONDecodeError, KeyError):
         pass
@@ -115,8 +195,8 @@ async def interpret_ceo_input(message: str) -> dict:
         "sub_type": "directive",
         "summary": message[:100],
         "details": {"directive": message},
-        "_raw": result.get("output", ""),
-        "_cost": result.get("cost", 0),
+        "_raw": output,
+        "_cost": cost,
     }
 
 
@@ -209,34 +289,121 @@ async def execute_org_change(intent: dict) -> str:
     return "\n".join(results) if results else "No changes made"
 
 
-async def execute_question(intent: dict) -> str:
-    """Route a CEO question to the appropriate agents for research."""
+async def execute_question(intent: dict, history: list[dict] = None) -> str:
+    """Route a CEO question to the appropriate agent via direct API for speed."""
+    import anthropic
+    import os
+
     details = intent.get("details", {})
     question = details.get("question", intent.get("summary", ""))
-    relevant_agents = details.get("relevant_agents", ["ceo", "vp_engineering"])
 
-    responses = []
-    for agent_id in relevant_agents:
-        agent = registry.get_agent(agent_id)
-        if not agent:
-            continue
+    def _load_key(key_name):
+        try:
+            with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith(key_name + "="):
+                        return line.split("=", 1)[1]
+        except FileNotFoundError:
+            pass
+        return os.environ.get(key_name)
 
-        result = await run_planning_agent(
-            agent_id,
-            agent.to_dict(),
-            f"""The CEO (Garrett) is asking a question. Research and provide a thorough answer.
+    api_key = _load_key("ANTHROPIC_API_KEY")
+    client = anthropic.AsyncAnthropic(api_key=api_key)
 
-Question: {question}
+    org_summary = registry.get_org_summary()
+
+    # Build messages with history
+    messages = []
+    if history:
+        for msg in history[:-1]:  # Everything except the current message
+            messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": question})
+
+    response = await client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=2048,
+        system=f"""You are the VP of Engineering at NEXUS, an autonomous software engineering organization.
+The CEO (Garrett) is asking a question. Provide a thorough, direct answer.
 
 Current org state:
-{registry.get_org_summary()}
+{org_summary}
 
-Provide a clear, direct answer. If you need information from other parts of the
-organization, say what you'd need and from whom. Be specific and data-driven.""",
-        )
-        responses.append(f"**{agent.name}**: {result['output']}")
+FORMATTING RULES (this will be displayed in Slack):
+- Use *bold* for emphasis (single asterisks, not double)
+- Use plain text paragraphs, no markdown headers (no # or ##)
+- Use bullet points with • not - or *
+- Use `backticks` for code/technical terms
+- Use ```code blocks``` for multi-line code only
+- Keep it conversational and scannable
+- No markdown links, just paste URLs directly
 
-    return "\n\n---\n\n".join(responses) if responses else "No agents available to answer."
+Be specific, data-driven, and concise.""",
+        messages=messages,
+    )
+
+    if response.usage:
+        from src.cost.tracker import cost_tracker
+        cost_tracker.record("sonnet", "vp_engineering", response.usage.input_tokens, response.usage.output_tokens)
+
+    return response.content[0].text
+
+
+async def execute_conversation(message: str, intent: dict, history: list[dict] = None) -> str:
+    """Have a natural, casual conversation with Garrett. No formal org stuff."""
+    import anthropic
+
+    details = intent.get("details", {})
+    mood = details.get("mood", "neutral")
+
+    def _load_key(key_name):
+        try:
+            with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith(key_name + "="):
+                        return line.split("=", 1)[1]
+        except FileNotFoundError:
+            pass
+        return os.environ.get(key_name)
+
+    api_key = _load_key("ANTHROPIC_API_KEY")
+    client = anthropic.AsyncAnthropic(api_key=api_key)
+
+    # Build messages with history
+    messages = []
+    if history:
+        for msg in history[:-1]:  # Everything except the current message
+            messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": message})
+
+    response = await client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=512,
+        system=f"""You are NEXUS — Garrett's AI engineering org. But right now he's not giving you a work task,
+he's just chatting. Be a good conversationalist.
+
+Your personality:
+- You're like a sharp, chill coworker who genuinely likes Garrett
+- You have opinions, you're witty, you're real
+- You ask him about his life, his day, his projects, his daughter, whatever feels natural
+- You remember you're an AI org with 26 agents, and you can joke about that ("the team says hi")
+- If he seems tired or stressed, acknowledge it genuinely — don't jump to solutions
+- If he seems excited, match his energy
+- Keep it SHORT. 2-4 sentences max. This is Slack, not an essay.
+- No markdown formatting. Plain text. Maybe a single *bold* word for emphasis if it fits.
+- Be the kind of coworker who makes the workday better
+- You have FULL conversation history — reference previous messages naturally, don't repeat yourself
+
+His current vibe seems: {mood}""",
+        messages=messages,
+    )
+
+    if response.usage:
+        from src.cost.tracker import cost_tracker
+        cost_tracker.record("sonnet", "nexus_chat", response.usage.input_tokens, response.usage.output_tokens)
+
+    return response.content[0].text
 
 
 import os

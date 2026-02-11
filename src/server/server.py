@@ -6,6 +6,7 @@ Now with dynamic org management and CEO natural language interpretation.
 """
 
 import asyncio
+import json
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -14,7 +15,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 
 from src.agents.registry import registry
-from src.agents.ceo_interpreter import interpret_ceo_input, execute_org_change, execute_question
+from src.agents.ceo_interpreter import execute_org_change
 from src.agents.org_chart_generator import generate_org_chart, update_org_chart_in_repo
 from src.agents.sdk_bridge import run_sdk_agent, run_planning_agent
 from src.cost.tracker import cost_tracker
@@ -34,6 +35,7 @@ class MessageRequest(BaseModel):
     source: Literal["slack", "ide", "cli", "api", "happy_coder"] = "api"
     project_path: str = ""
     session_id: str | None = None
+    history: list[dict] = Field(default_factory=list)
 
 
 class TalkRequest(BaseModel):
@@ -53,68 +55,26 @@ class StatusResponse(BaseModel):
     sessions: list[dict] = Field(default_factory=list)
 
 
-async def execute_directive_bg(session_id: str, directive: str, project_path: str, source: str):
+async def execute_directive_bg(session_id: str, directive: str, project_path: str, source: str, project_id: str = ""):
     try:
-        notify(f"Received directive: _{directive}_\nStarting execution...")
-
-        # Persist session
         await session_store.create_session(session_id, directive, source, project_path)
         await session_store.add_message(session_id, "user", directive)
 
-        from src.orchestrator.graph import compile_nexus_dynamic
-        nexus_app = compile_nexus_dynamic()
-
-        from src.orchestrator.state import NexusState
-        initial_state = NexusState(
-            directive=directive,
-            source=source,
-            session_id=session_id,
-            project_path=project_path or os.path.expanduser("~/Projects"),
-        )
-
-        config = {"configurable": {"thread_id": session_id}}
-        result = await nexus_app.ainvoke(initial_state.model_dump(), config=config)
+        from src.orchestrator.task_runner import run_task
+        result = await run_task(session_id, directive, project_path, project_id)
 
         sessions[session_id]["state"] = result
-        sessions[session_id]["status"] = "complete"
-
-        # Persist state and completion
-        await session_store.save_state(session_id, result)
-        await session_store.update_status(session_id, "complete")
-
-        # Track KPIs
-        total_cost = result.get("cost", {}).get("total_cost_usd", 0)
-        kpi_tracker.record_task_completion("orchestrator", directive[:100], total_cost, 0)
-
-        # Auto-commit if project has git
-        if project_path and os.path.exists(os.path.join(project_path, ".git")):
-            git = GitOps(project_path)
-            if not git.status()["clean"]:
-                branch = git.create_feature_branch(directive[:30])
-                sha = git.commit(f"feat: {directive[:60]}", cost=total_cost)
-                if sha:
-                    await session_store.add_message(
-                        session_id, "system", f"Committed {sha} on {branch}", cost=0
-                    )
-
-        if result.get("demo_summary"):
-            notify_demo(
-                project=project_path or "NEXUS Project",
-                summary=result["demo_summary"],
-                metrics=result.get("demo_metrics", {}),
-            )
-        else:
-            notify_completion(
-                project=project_path or "NEXUS Project",
-                feature=directive[:50],
-                cost=total_cost,
-            )
+        sessions[session_id]["status"] = result.get("status", "complete")
+        await session_store.update_status(session_id, result.get("status", "complete"))
 
     except Exception as e:
+        import traceback
         sessions[session_id]["status"] = "error"
         sessions[session_id]["error"] = str(e)
         await session_store.update_status(session_id, "error", str(e))
-        notify_escalation("orchestrator", f"Execution failed: {str(e)}")
+        print(f"[Server] Directive execution failed: {e}")
+        print(f"[Server] Traceback:\n{traceback.format_exc()}")
+        notify_escalation("orchestrator", f"Execution failed: {str(e)[:200]}")
 
     finally:
         if session_id in active_runs:
@@ -123,25 +83,61 @@ async def execute_directive_bg(session_id: str, directive: str, project_path: st
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize persistence
+    # Initialize persistent memory
+    from src.memory.store import memory
+    memory.init()
+
+    # Initialize session persistence
     await session_store.init()
 
     if not registry.is_initialized():
         registry.load_from_yaml()
-        notify("NEXUS initialized from default org structure.")
+        notify("Nexus initialized from default org structure.")
 
     nexus_path = os.path.expanduser("~/Projects/nexus")
     if os.path.exists(nexus_path):
         update_org_chart_in_repo(nexus_path)
 
-    notify("NEXUS server started. All systems operational.")
+    notify("Nexus team is online.")
+
+    # Fire off a Haiku greeting async
+    try:
+        import anthropic
+        def _load_key(key_name):
+            try:
+                with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith(key_name + "="):
+                            return line.split("=", 1)[1]
+            except FileNotFoundError:
+                pass
+            return os.environ.get(key_name)
+
+        api_key = _load_key("ANTHROPIC_API_KEY")
+        client = anthropic.Anthropic(api_key=api_key)
+        agents = registry.get_active_agents()
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=60,
+            system="You are Nexus, an AI engineering org that just came online. Write ONE short, witty sentence about being ready for work. Be casual and fun — like a team Slack message. No emojis. No markdown.",
+            messages=[{"role": "user", "content": f"We have {len(agents)} agents online. Say something."}],
+        )
+        notify(resp.content[0].text)
+    except Exception as e:
+        print(f"[Server] Haiku greeting failed: {e}")
+
+    # Resume any interrupted tasks from before restart
+    from src.orchestrator.task_runner import resume_pending_tasks
+    await resume_pending_tasks()
+
     yield
     # On shutdown, self-commit any pending changes
     if os.path.exists(os.path.join(nexus_path, ".git")):
         git = GitOps(nexus_path)
         if not git.status()["clean"]:
             git.self_commit("auto-save on shutdown")
-    notify("NEXUS server shutting down.")
+    notify("Nexus server shutting down.")
 
 
 app = FastAPI(
@@ -182,71 +178,75 @@ async def status():
 async def handle_message(req: MessageRequest, background_tasks: BackgroundTasks):
     session_id = req.session_id or str(uuid.uuid4())
 
-    intent = await interpret_ceo_input(req.message)
-    category = intent.get("category", "DIRECTIVE")
-    summary = intent.get("summary", req.message[:100])
+    try:
+        from src.agents.conversation import converse, resolve_project
 
-    if category == "ORG_CHANGE":
-        result_text = await execute_org_change(intent)
+        result = await converse(req.message, history=req.history)
 
-        # Self-commit org chart update
-        nexus_path = os.path.expanduser("~/Projects/nexus")
-        if os.path.exists(os.path.join(nexus_path, ".git")):
-            update_org_chart_in_repo(nexus_path)
-            git = GitOps(nexus_path)
-            git.self_commit(f"org: {summary[:60]}", cost=intent.get("_cost", 0))
+        answer = result["answer"]
+        actions = result.get("actions", [])
 
-        if req.source == "slack":
-            notify(f"*Org Change:* {summary}\n\n{result_text}")
+        # Process any actions
+        for action in actions:
+            if action["type"] == "execute":
+                # Find the project and kick off execution
+                project = resolve_project(action["name"])
+                if project:
+                    proj_path = os.path.expanduser(project.get("path", "~/Projects"))
+                    directive = f"{project.get('description', action['name'])}"
+                    project_id = project.get("id", "")
+
+                    sessions[session_id] = {
+                        "directive": directive,
+                        "source": req.source,
+                        "project_path": proj_path,
+                        "status": "running",
+                        "state": None,
+                        "error": None,
+                    }
+
+                    task = asyncio.create_task(
+                        execute_directive_bg(session_id, directive, proj_path, req.source, project_id)
+                    )
+                    active_runs[session_id] = task
+
+            elif action["type"] == "org_change":
+                try:
+                    # Parse and execute org change
+                    intent = {
+                        "category": "ORG_CHANGE",
+                        "sub_type": action["action"],
+                        "details": json.loads(action["details"]) if isinstance(action["details"], str) else action["details"],
+                    }
+                    from src.agents.ceo_interpreter import execute_org_change
+                    org_result = await execute_org_change(intent)
+                    answer += f"\n\n{org_result}"
+                except Exception as e:
+                    answer += f"\n\nOrg change failed: {e}"
+
+            elif action["type"] == "command":
+                cmd_result = await run_command_internal(action["name"], action.get("args", ""), req.source)
+                if "dashboard" in cmd_result:
+                    answer += f"\n```{cmd_result['dashboard']}```"
+                elif "reporting_tree" in cmd_result:
+                    answer += f"\n```{cmd_result['reporting_tree']}```"
 
         return {
             "session_id": session_id,
-            "category": "ORG_CHANGE",
-            "summary": summary,
-            "result": result_text,
-            "org_summary": registry.get_org_summary(),
-            "cost": intent.get("_cost", 0),
-        }
-
-    elif category == "QUESTION":
-        answer = await execute_question(intent)
-
-        if req.source == "slack":
-            notify(f"*Q:* {summary}\n\n{answer[:2000]}")
-
-        return {
-            "session_id": session_id,
-            "category": "QUESTION",
-            "summary": summary,
+            "category": "CONVERSATION",
             "answer": answer,
-            "cost": intent.get("_cost", 0),
+            "actions": [a["type"] for a in actions],
+            "cost": result.get("cost", 0),
         }
 
-    elif category == "COMMAND":
-        command = intent.get("details", {}).get("command", "status")
-        return await run_command_internal(command, intent.get("details", {}).get("args", ""), req.source)
-
-    else:
-        sessions[session_id] = {
-            "directive": req.message,
-            "source": req.source,
-            "project_path": req.project_path,
-            "status": "running",
-            "state": None,
-            "error": None,
-        }
-
-        task = asyncio.create_task(
-            execute_directive_bg(session_id, req.message, req.project_path, req.source)
-        )
-        active_runs[session_id] = task
-
+    except Exception as e:
+        import traceback
+        print(f"[Server] Message handler error: {e}")
+        print(f"[Server] Traceback:\n{traceback.format_exc()}")
         return {
             "session_id": session_id,
-            "category": "DIRECTIVE",
-            "summary": summary,
-            "status": "started",
-            "message": f"Directive received. The org is working on it. Session: {session_id}",
+            "category": "ERROR",
+            "error": f"{type(e).__name__}: {str(e)[:300]}",
         }
 
 

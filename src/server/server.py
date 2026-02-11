@@ -16,11 +16,13 @@ from typing import Literal
 from src.agents.registry import registry
 from src.agents.ceo_interpreter import interpret_ceo_input, execute_org_change, execute_question
 from src.agents.org_chart_generator import generate_org_chart, update_org_chart_in_repo
-from src.agents.sdk_bridge import cost_tracker, run_sdk_agent, run_planning_agent
+from src.agents.sdk_bridge import run_sdk_agent, run_planning_agent
+from src.cost.tracker import cost_tracker
 from src.slack.notifier import notify, notify_demo, notify_completion, notify_escalation, notify_kpi
 from src.session.store import session_store
 from src.kpi.tracker import kpi_tracker
 from src.git_ops.git import GitOps
+from src.security.scanner import run_full_audit
 
 
 sessions: dict[str, dict] = {}
@@ -134,6 +136,11 @@ async def lifespan(app: FastAPI):
 
     notify("NEXUS server started. All systems operational.")
     yield
+    # On shutdown, self-commit any pending changes
+    if os.path.exists(os.path.join(nexus_path, ".git")):
+        git = GitOps(nexus_path)
+        if not git.status()["clean"]:
+            git.self_commit("auto-save on shutdown")
     notify("NEXUS server shutting down.")
 
 
@@ -181,6 +188,13 @@ async def handle_message(req: MessageRequest, background_tasks: BackgroundTasks)
 
     if category == "ORG_CHANGE":
         result_text = await execute_org_change(intent)
+
+        # Self-commit org chart update
+        nexus_path = os.path.expanduser("~/Projects/nexus")
+        if os.path.exists(os.path.join(nexus_path, ".git")):
+            update_org_chart_in_repo(nexus_path)
+            git = GitOps(nexus_path)
+            git.self_commit(f"org: {summary[:60]}", cost=intent.get("_cost", 0))
 
         if req.source == "slack":
             notify(f"*Org Change:* {summary}\n\n{result_text}")
@@ -311,6 +325,31 @@ async def get_kpi():
     return {"summary": summary, "dashboard": dashboard}
 
 
+@app.get("/cost")
+async def get_cost():
+    """Get full CFO cost report."""
+    return {
+        "session_cost": cost_tracker.total_cost,
+        "hourly_rate": cost_tracker.hourly_rate,
+        "monthly_cost": cost_tracker.get_monthly_cost(),
+        "over_budget": cost_tracker.over_budget,
+        "by_model": cost_tracker.by_model,
+        "by_agent": cost_tracker.by_agent,
+        "by_project": cost_tracker.by_project,
+        "daily_breakdown": cost_tracker.get_daily_breakdown(7),
+        "report": cost_tracker.generate_cfo_report(),
+    }
+
+
+@app.post("/security/scan")
+async def security_scan(project_path: str = os.path.expanduser("~/Projects/nexus")):
+    """Run full security audit on a project."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, run_full_audit, project_path)
+    return result
+
+
 async def run_command_internal(command: str, args: str, source: str) -> dict:
     if command == "kpi":
         dashboard = kpi_tracker.generate_dashboard(24)
@@ -319,6 +358,7 @@ async def run_command_internal(command: str, args: str, source: str) -> dict:
         return {"category": "COMMAND", "command": "kpi", "dashboard": dashboard}
 
     elif command == "cost":
+        report = cost_tracker.generate_cfo_report()
         return {
             "category": "COMMAND",
             "command": "cost",
@@ -327,6 +367,21 @@ async def run_command_internal(command: str, args: str, source: str) -> dict:
             "by_model": cost_tracker.by_model,
             "by_agent": cost_tracker.by_agent,
             "over_budget": cost_tracker.over_budget,
+            "monthly_cost": cost_tracker.get_monthly_cost(),
+            "dashboard": report,
+        }
+
+    elif command == "security":
+        project_path = args or os.path.expanduser("~/Projects/nexus")
+        import asyncio
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, run_full_audit, project_path)
+        if source == "slack":
+            notify(f"```{result['summary']}```")
+        return {
+            "category": "COMMAND",
+            "command": "security",
+            **result,
         }
 
     elif command == "status":

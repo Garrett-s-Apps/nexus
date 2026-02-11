@@ -39,44 +39,7 @@ MODEL_MAP = {
 }
 
 
-class CostTracker:
-    """Tracks token costs across all agent invocations."""
-
-    PRICING = {
-        "opus": {"input": 15.0, "output": 75.0},
-        "sonnet": {"input": 3.0, "output": 15.0},
-        "haiku": {"input": 0.25, "output": 1.25},
-        "gemini": {"input": 1.25, "output": 5.0},
-        "o3": {"input": 10.0, "output": 40.0},
-    }
-
-    def __init__(self):
-        self.total_cost = 0.0
-        self.by_model: dict[str, float] = {}
-        self.by_agent: dict[str, float] = {}
-        self.start_time = time.time()
-
-    def record(self, model: str, agent_name: str, tokens_in: int, tokens_out: int):
-        pricing = self.PRICING.get(model, {"input": 3.0, "output": 15.0})
-        cost = (tokens_in / 1_000_000 * pricing["input"]) + (tokens_out / 1_000_000 * pricing["output"])
-        self.total_cost += cost
-        self.by_model[model] = self.by_model.get(model, 0.0) + cost
-        self.by_agent[agent_name] = self.by_agent.get(agent_name, 0.0) + cost
-        return cost
-
-    @property
-    def hourly_rate(self) -> float:
-        elapsed_hours = (time.time() - self.start_time) / 3600
-        if elapsed_hours < 0.001:
-            return 0.0
-        return self.total_cost / elapsed_hours
-
-    @property
-    def over_budget(self) -> bool:
-        return self.hourly_rate > 1.0
-
-
-cost_tracker = CostTracker()
+from src.cost.tracker import cost_tracker
 
 
 async def run_sdk_agent(
@@ -89,7 +52,8 @@ async def run_sdk_agent(
     Spawn a Claude Agent SDK session for an agent that needs filesystem access.
     Returns the agent's output and cost information.
     """
-    model = MODEL_MAP.get(agent_config.get("model", "sonnet"), "sonnet")
+    # Apply model downgrade if CFO enforcement active
+    model = cost_tracker.get_effective_model(MODEL_MAP.get(agent_config.get("model", "sonnet"), "sonnet"))
     system_prompt = agent_config.get("system_prompt", "")
     allowed_tools = agent_config.get("tools", ["Read", "Grep", "Glob"])
 
@@ -118,7 +82,12 @@ async def run_sdk_agent(
     except Exception as e:
         output_parts.append(f"Agent execution error: {str(e)}")
 
-    cost = cost_tracker.record(model, agent_name, tokens_in, tokens_out)
+    enforcement = cost_tracker.record(model, agent_name, tokens_in, tokens_out)
+    if enforcement.get("alerts"):
+        from src.slack.notifier import notify
+        for alert in enforcement["alerts"]:
+            notify(f"🏦 {alert}")
+    cost = cost_tracker.calculate_cost(model, tokens_in, tokens_out)
 
     return {
         "output": "\n".join(output_parts),
@@ -235,7 +204,12 @@ async def run_planning_agent(
     except Exception as e:
         output_parts.append(f"Planning agent error: {str(e)}")
 
-    cost = cost_tracker.record(model, agent_name, tokens_in, tokens_out)
+    enforcement = cost_tracker.record(model, agent_name, tokens_in, tokens_out)
+    if enforcement.get("alerts"):
+        from src.slack.notifier import notify
+        for alert in enforcement["alerts"]:
+            notify(f"🏦 {alert}")
+    cost = cost_tracker.calculate_cost(model, tokens_in, tokens_out)
 
     return {
         "output": "\n".join(output_parts),

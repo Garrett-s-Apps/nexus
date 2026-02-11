@@ -2,27 +2,38 @@ import os
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-def get_client():
-    token = os.environ.get("SLACK_BOT_TOKEN")
-    if not token:
-        with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
+KEYS_PATH = os.path.expanduser("~/.nexus/.env.keys")
+
+def _load_keys():
+    keys = {}
+    try:
+        with open(KEYS_PATH) as f:
             for line in f:
-                if line.startswith("SLACK_BOT_TOKEN="):
-                    token = line.strip().split("=", 1)[1]
-    return WebClient(token=token)
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    keys[k] = v
+    except FileNotFoundError:
+        pass
+    return keys
+
+def get_client():
+    keys = _load_keys()
+    return WebClient(token=keys["SLACK_BOT_TOKEN"])
 
 def get_channel():
-    channel = os.environ.get("SLACK_CHANNEL", "nexus")
-    return channel
+    keys = _load_keys()
+    return keys.get("SLACK_CHANNEL", "nexus")
 
 def notify(message, blocks=None):
     client = get_client()
+    channel = get_channel()
     try:
-        client.chat_postMessage(
-            channel=get_channel(),
-            text=message,
-            blocks=blocks
-        )
+        client.conversations_join(channel=channel)
+    except SlackApiError:
+        pass
+    try:
+        client.chat_postMessage(channel=channel, text=message, blocks=blocks)
     except SlackApiError as e:
         print(f"Slack notification failed: {e.response['error']}")
 

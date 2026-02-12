@@ -199,6 +199,69 @@ async def serve_dashboard():
     return {"error": "Dashboard not found", "path": dashboard_path}
 
 
+# ---------------------------------------------------------------------------
+# Chat API — mirrors Slack threads into the dashboard
+# ---------------------------------------------------------------------------
+
+@app.get("/chat/threads")
+async def list_threads():
+    """List recent Slack threads (directives and conversations)."""
+    from src.slack.listener import get_slack_client, get_channel_id
+    client = get_slack_client()
+    channel = get_channel_id()
+    if not client or not channel:
+        return {"threads": [], "error": "Slack not connected"}
+
+    try:
+        result = await client.conversations_history(channel=channel, limit=30)
+        threads = []
+        for msg in result.get("messages", []):
+            if msg.get("reply_count", 0) > 0 or msg.get("subtype") is None:
+                threads.append({
+                    "thread_ts": msg.get("thread_ts") or msg.get("ts"),
+                    "text": msg.get("text", "")[:200],
+                    "user": msg.get("user", ""),
+                    "reply_count": msg.get("reply_count", 0),
+                    "ts": msg.get("ts"),
+                })
+        return {"threads": threads}
+    except Exception as e:
+        return {"threads": [], "error": str(e)}
+
+
+@app.get("/chat/thread/{thread_ts}")
+async def get_thread(thread_ts: str):
+    """Get all messages in a Slack thread."""
+    from src.slack.listener import get_slack_client, get_channel_id
+    client = get_slack_client()
+    channel = get_channel_id()
+    if not client or not channel:
+        return {"messages": [], "error": "Slack not connected"}
+
+    try:
+        result = await client.conversations_replies(channel=channel, ts=thread_ts, limit=100)
+        messages = [
+            {
+                "ts": msg.get("ts"),
+                "user": msg.get("user", "bot"),
+                "text": msg.get("text", ""),
+                "is_bot": msg.get("bot_id") is not None,
+            }
+            for msg in result.get("messages", [])
+        ]
+        return {"messages": messages, "thread_ts": thread_ts}
+    except Exception as e:
+        return {"messages": [], "error": str(e)}
+
+
+@app.post("/chat/send")
+async def send_chat(req: MessageRequest):
+    """Send a message through the engine (creates or continues a thread)."""
+    from src.orchestrator.engine import engine
+    response = await engine.handle_message(req.message, source="dashboard")
+    return {"response": response}
+
+
 @app.get("/dashboard/logo.svg")
 async def serve_logo():
     import os

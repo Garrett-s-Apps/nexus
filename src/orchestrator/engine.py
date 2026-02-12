@@ -19,10 +19,12 @@ from src.agents.base import Agent, Decision, allm_call
 from src.agents.implementations import create_agent, create_all_agents, extract_json
 from src.agents.org_chart import HAIKU, ORG_CHART, SONNET
 from src.memory.store import memory
+from src.resilience.circuit_breaker import breaker_registry, CircuitOpenError
+from src.resilience.escalation import escalation_chain
 
 logger = logging.getLogger("nexus.engine")
 
-MAX_QA_CYCLES = 3  # prevent infinite defect loops
+MAX_QA_CYCLES = 3
 
 
 async def notify_slack(message: str, thread_ts: str = None):
@@ -43,7 +45,6 @@ async def notify_slack(message: str, thread_ts: str = None):
             await client.chat_postMessage(**kwargs)
     except Exception as e:
         logger.error(f"Slack: {e}")
-
 
 async def fast_decompose(text: str, directive_id: str) -> int:
     prompt = f"""Break this into 5-12 coding tasks engineers can start immediately:
@@ -78,11 +79,6 @@ CODE ONLY tasks. No planning. No docs. JSON array only."""
 
     return created
 
-
-# ---------------------------------------------------------------------------
-# NLU
-# ---------------------------------------------------------------------------
-
 async def understand(message: str, directive=None) -> dict:
     state = ""
     if directive:
@@ -114,11 +110,6 @@ JSON: {{"intent":"...","summary":"...","urgency":"normal","target":"","response"
         return {"intent": "chat", "summary": message[:80], "urgency": "normal",
                 "target": "", "response": "Could you rephrase?"}
 
-
-# ---------------------------------------------------------------------------
-# Engine
-# ---------------------------------------------------------------------------
-
 class ReasoningEngine:
 
     def __init__(self):
@@ -131,8 +122,8 @@ class ReasoningEngine:
         self._last_event_id = 0
         self._cooldowns: dict[str, float] = {}
         self._cooldown_s = 35
-        self._qa_cycles: dict[str, int] = {}  # directive_id -> qa cycle count
-        self._thread_ts: dict[str, str] = {}  # directive_id -> slack thread_ts
+        self._qa_cycles: dict[str, int] = {}
+        self._thread_ts: dict[str, str] = {}
 
     async def _notify(self, message: str, did: str = None):
         """Send a Slack notification in the directive's thread."""
@@ -163,7 +154,6 @@ class ReasoningEngine:
 
     async def _tick(self):
         self._tick_count += 1
-
         directive = memory.get_active_directive()
         if not directive or directive["status"] in ("complete", "cancelled"):
             return
@@ -181,31 +171,21 @@ class ReasoningEngine:
             await self._kickoff(directive)
 
         elif status == "building":
-            # Phase 1: PMs enrich tasks that need context
             await self._run_pms(did)
-            # Phase 2: Engineers build
             await self._dispatch_engineers(did)
-            # Phase 3: Check if all code is written
             await self._check_build_done(did)
 
         elif status == "testing":
-            # QA reviews, files defects
             await self._run_qa(did)
             await self._check_qa_done(did)
 
         elif status == "fixing":
-            # Engineers fix defects
             await self._dispatch_defect_fixes(did)
             await self._check_fixes_done(did)
 
         elif status == "reviewing":
-            # Code review
             await self._run_code_review(did)
             await self._check_review_done(did)
-
-    # ------------------------------------------------------------------
-    # Kickoff
-    # ------------------------------------------------------------------
 
     async def _kickoff(self, directive):
         did = directive["id"]
@@ -221,10 +201,6 @@ class ReasoningEngine:
         await self._notify(f"{count} tasks created. Engineers starting now.", did)
         await self._dispatch_engineers(did)
 
-    # ------------------------------------------------------------------
-    # PMs
-    # ------------------------------------------------------------------
-
     async def _run_pms(self, did):
         now = time.time()
         for pm_id in ["pm_1", "pm_2"]:
@@ -237,11 +213,7 @@ class ReasoningEngine:
             decision = Decision(act=True, action="Enrich tasks and triage defects", context={})
             asyncio.create_task(self._safe_run(pm_id, decision, did))
             self._cooldowns[ck] = now
-            break  # one PM per tick
-
-    # ------------------------------------------------------------------
-    # Engineers
-    # ------------------------------------------------------------------
+            break
 
     async def _dispatch_engineers(self, did):
         available = memory.get_available_tasks(did)
@@ -302,10 +274,6 @@ class ReasoningEngine:
         elif complete + in_prog > 0 and self._tick_count % 10 == 0:
             await self._notify(f"Building: {complete}/{total} done, {in_prog} in progress.", did)
 
-    # ------------------------------------------------------------------
-    # QA
-    # ------------------------------------------------------------------
-
     async def _run_qa(self, did):
         now = time.time()
         qa_agents = ["qa_lead", "fe_tester", "be_tester"]
@@ -321,7 +289,6 @@ class ReasoningEngine:
             self._cooldowns[ck] = now
 
     async def _check_qa_done(self, did):
-        # Wait for QA agents to finish
         qa_ids = ["qa_lead", "fe_tester", "be_tester"]
         if any(self.agents.get(q) and self.agents[q].is_running for q in qa_ids):
             return
@@ -340,10 +307,6 @@ class ReasoningEngine:
             memory.update_directive(did, status="reviewing")
             await self._notify("QA passed. Moving to code review.", did)
 
-    # ------------------------------------------------------------------
-    # Defect fixes
-    # ------------------------------------------------------------------
-
     async def _dispatch_defect_fixes(self, did):
         defects = memory.get_open_defects(did)
         if not defects:
@@ -356,7 +319,6 @@ class ReasoningEngine:
             if defect.get("assigned_to") and defect["assigned_to"] in engineers:
                 eid = defect["assigned_to"]
             else:
-                # Auto-assign
                 desc = (defect.get("file_path","") + " " + defect.get("description","")).lower()
                 if any(w in desc for w in ["frontend","ui","css","react","html","component"]):
                     eid = "fe_engineer_1"
@@ -381,13 +343,8 @@ class ReasoningEngine:
         any_fixing = any(self.agents.get(e) and self.agents[e].is_running for e in engineers)
 
         if not defects and not any_fixing:
-            # All defects fixed — back to QA
             memory.update_directive(did, status="testing")
             await self._notify("Defects fixed. Re-testing.", did)
-
-    # ------------------------------------------------------------------
-    # Code review
-    # ------------------------------------------------------------------
 
     async def _run_code_review(self, did):
         now = time.time()
@@ -416,41 +373,80 @@ class ReasoningEngine:
             memory.update_directive(did, status="complete")
             await self._notify("*Project complete!* Code built, tested, and reviewed. Check your project directory.", did)
 
-    # ------------------------------------------------------------------
-    # Safe runner
-    # ------------------------------------------------------------------
-
     async def _safe_run(self, agent_id, decision, directive_id):
         agent = self.agents.get(agent_id)
         if not agent:
             return
+
+        breaker = breaker_registry.get(agent_id)
+
         try:
-            await agent.execute(decision, directive_id)
+            # Wrap execution in circuit breaker
+            await breaker.call(agent.execute(decision, directive_id))
+            # Success: reset escalation retry count
+            escalation_chain.reset_retries(agent_id)
+
+        except CircuitOpenError as e:
+            # Circuit is open, skip and try escalation
+            logger.warning(f"[{agent.name}] Circuit open: {e}")
+            memory.emit_event(agent_id, "circuit_open", {
+                "agent": agent.name,
+                "time_until_retry": e.time_until_retry,
+                "action": getattr(decision, 'action', ''),
+            })
+
+            # Attempt escalation to higher-tier agent
+            agent_config = ORG_CHART.get(agent_id, {})
+            current_model = agent_config.get("model", "sonnet")
+            upgrade_model = escalation_chain.get_upgrade_model(current_model)
+
+            if upgrade_model:
+                event = escalation_chain.escalate(
+                    agent_id,
+                    f"Circuit open, escalating to {upgrade_model}",
+                    tier=escalation_chain.TIER_MAP.get(upgrade_model, 2)
+                )
+                await self._notify(
+                    f"⚠️ {agent.name} circuit open. Escalating to {upgrade_model} tier.",
+                    directive_id
+                )
+            else:
+                # Top tier failed, send to dead letter
+                escalation_chain.to_dead_letter(
+                    agent_id,
+                    getattr(decision, 'action', 'unknown'),
+                    str(e),
+                    breaker.failure_count
+                )
+                await self._notify(
+                    f"❌ {agent.name} exhausted all escalation tiers. Filed to dead letter queue.",
+                    directive_id
+                )
+
+            if hasattr(decision, 'task_id') and decision.task_id:
+                memory.fail_board_task(decision.task_id, error=f"Circuit open: {e}")
+
         except Exception as e:
+            # Regular failure: circuit breaker already recorded it via _on_failure
             logger.error(f"[{agent.name}] Error: {e}", exc_info=True)
             memory.emit_event(agent_id, "agent_error", {
                 "error": str(e)[:500],
                 "agent": agent.name,
                 "action": getattr(decision, 'action', ''),
             })
-            # Track failures for potential escalation
+
             if hasattr(decision, 'task_id') and decision.task_id:
                 memory.fail_board_task(decision.task_id, error=str(e)[:500])
-
-    # ------------------------------------------------------------------
-    # Message handling
-    # ------------------------------------------------------------------
 
     async def handle_message(self, message, source="slack", thread_ts=None):
         memory.add_message("user", message, source)
         directive = memory.get_active_directive()
         intent = await understand(message, directive)
 
-        # Store thread_ts so all notifications go to this thread
         if thread_ts:
             if directive:
                 self._thread_ts[directive["id"]] = thread_ts
-            self._pending_thread_ts = thread_ts  # for new directives
+            self._pending_thread_ts = thread_ts
 
         handler = {
             "new_directive": self._h_new, "feedback": self._h_feedback,
@@ -469,7 +465,6 @@ class ReasoningEngine:
         did = f"dir-{uuid.uuid4().hex[:8]}"
         memory.create_directive(did, msg)
         memory.post_context("garrett", "directive", msg, did)
-        # Link this directive to the Slack thread it was started in
         if hasattr(self, '_pending_thread_ts') and self._pending_thread_ts:
             self._thread_ts[did] = self._pending_thread_ts
         self._cooldowns.clear()
@@ -507,17 +502,30 @@ class ReasoningEngine:
         try:
             raw, _ = await allm_call(f"""Hiring: "{msg}"
 Orgs: product(vp_product),engineering(vp_engineering),security(ciso),docs(head_of_docs),analytics(director_analytics)
-JSON: {{"id":"snake","name":"Male name","title":"Title","role":"desc","reports_to":"mgr","model":"claude-sonnet-4-20250514","specialty":""}}""", HAIKU)
-            details = extract_json(raw)
-            if not details: return "Couldn't parse hiring details."
-            mgr = self.agents.get(details.get("reports_to", "vp_engineering"))
-            if not mgr: return "Manager not found."
-            result = await mgr.hire(
-                agent_id=details["id"], name=details["name"], title=details["title"],
-                role=details["role"], model=details.get("model", SONNET),
-                specialty=details.get("specialty", ""))
-            self.agents[details["id"]] = create_agent(details["id"])
-            return result
+For a SINGLE hire, return ONE JSON object. For a TEAM, return a JSON ARRAY of objects.
+Each object: {{"id":"snake","name":"Male name","title":"Title","role":"desc","reports_to":"mgr","model":"claude-sonnet-4-20250514","specialty":""}}""", HAIKU)
+            parsed = extract_json(raw)
+            if not parsed: return "Couldn't parse hiring details."
+
+            # Normalize to a list whether LLM returns one dict or an array
+            hires = parsed if isinstance(parsed, list) else [parsed]
+
+            results = []
+            for details in hires:
+                if not isinstance(details, dict):
+                    continue
+                mgr = self.agents.get(details.get("reports_to", "vp_engineering"))
+                if not mgr:
+                    results.append(f"Manager `{details.get('reports_to')}` not found for {details.get('name', '?')}")
+                    continue
+                result = await mgr.hire(
+                    agent_id=details["id"], name=details["name"], title=details["title"],
+                    role=details["role"], model=details.get("model", SONNET),
+                    specialty=details.get("specialty", ""))
+                self.agents[details["id"]] = create_agent(details["id"])
+                results.append(result)
+
+            return "\n".join(results) if results else "No agents hired."
         except Exception as e:
             return f"Hiring failed: {e}"
 

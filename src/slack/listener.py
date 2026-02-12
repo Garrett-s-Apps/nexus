@@ -22,6 +22,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from src.config import get_key
 from src.sessions.cli_pool import cli_pool
+from src.tools.web_search import needs_web_search, search as web_search, format_results_for_context
 
 
 def md_to_slack(text: str) -> str:
@@ -267,6 +268,16 @@ async def start_slack_listener():
 
             thread_ts = event.get("thread_ts") or event.get("ts")
             is_threaded_reply = event.get("thread_ts") is not None
+
+            # Enrich with web search when the question warrants it
+            if needs_web_search(text):
+                await web_client.reactions_add(channel=channel_id, name="mag", timestamp=event.get("ts"))
+                try:
+                    search_results = await web_search(text, num_results=5)
+                    web_context = format_results_for_context(search_results)
+                    text = f"{text}\n\n---\n{web_context}"
+                except Exception as e:
+                    print(f"[Slack] Web search failed (non-fatal): {e}")
 
             # Route threaded replies through persistent CLI sessions when available
             if is_threaded_reply and cli_pool.active_count() > 0:

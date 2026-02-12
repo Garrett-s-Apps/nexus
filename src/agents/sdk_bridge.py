@@ -269,6 +269,19 @@ async def run_o3(
         return {"output": f"o3 error: {str(e)}", "cost": 0.0}
 
 
+async def run_web_search(query: str, num_results: int = 5) -> dict[str, Any]:
+    """Web search capability available to all agents."""
+    from src.tools.web_search import search, format_results_for_context
+    results = await search(query, num_results)
+    return {
+        "output": format_results_for_context(results),
+        "results": results,
+        "cost": 0.0,
+        "model": "web_search",
+        "agent": "web_search",
+    }
+
+
 async def run_planning_agent(
     agent_name: str,
     agent_config: dict,

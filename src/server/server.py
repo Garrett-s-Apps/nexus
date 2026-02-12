@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from src.agents.org_chart import get_org_summary
 from src.memory.store import memory
 from src.observability.api_routes import router as metrics_router
+from src.security.jwt_auth import sign_response
 
 
 @asynccontextmanager
@@ -59,6 +60,39 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def jwt_signing_middleware(request: Request, call_next):
+    """Attach an integrity JWT to every JSON response."""
+    response = await call_next(request)
+
+    # Only sign JSON responses (skip SSE, HTML, file downloads)
+    content_type = response.headers.get("content-type", "")
+    if "application/json" not in content_type:
+        return response
+
+    # Read the body, sign it, attach header, then re-emit
+    body_chunks = []
+    async for chunk in response.body_iterator:
+        body_chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
+    body = b"".join(body_chunks)
+
+    try:
+        import json as _json
+        data = _json.loads(body)
+        token = sign_response(data)
+        response.headers["X-Nexus-JWT"] = token
+    except Exception:
+        pass  # Non-JSON or signing failure — pass through unsigned
+
+    from starlette.responses import Response as StarletteResponse
+    return StarletteResponse(
+        content=body,
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=response.media_type,
+    )
 
 
 class MessageRequest(BaseModel):

@@ -5,11 +5,19 @@ import sys
 import json
 import sqlite3
 import asyncio
+import types
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Ensure src is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+# Stub out proprietary SDK that isn't pip-installable
+if "claude_agent_sdk" not in sys.modules:
+    _stub = types.ModuleType("claude_agent_sdk")
+    _stub.ClaudeAgentOptions = MagicMock
+    _stub.query = MagicMock
+    sys.modules["claude_agent_sdk"] = _stub
 
 
 @pytest.fixture

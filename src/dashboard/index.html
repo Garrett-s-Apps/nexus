@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NEXUS Command Center</title>
+<link rel="icon" type="image/svg+xml" href="/dashboard/logo.svg">
+<link rel="apple-touch-icon" href="/dashboard/logo.svg">
+<meta name="description" content="NEXUS — Autonomous AI Engineering Organization Dashboard">
+<meta property="og:title" content="NEXUS Command Center">
+<meta property="og:description" content="Real-time orchestration dashboard for an autonomous AI engineering org">
+<meta property="og:type" content="website">
 <style>
   :root {
     --bg: #0a0a1a; --surface: #12122a; --border: #1e1e3a;
@@ -13,6 +19,37 @@
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: 'SF Mono', 'Fira Code', monospace; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+  /* Accessibility - Focus indicators */
+  *:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* Reduced motion support */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  /* Mobile responsive */
+  @media (max-width: 768px) {
+    .header {
+      flex-direction: column;
+      gap: 12px;
+      padding: 16px 20px;
+    }
+    .grid {
+      grid-template-columns: 1fr;
+      padding: 16px 20px;
+    }
+    .card[style*="grid-column"] {
+      grid-column: 1 !important;
+    }
+  }
 
   .header {
     display: flex; align-items: center; justify-content: space-between;
@@ -33,7 +70,11 @@
   .card-header {
     display: flex; justify-content: space-between; align-items: center;
     padding: 16px 20px; cursor: pointer; user-select: none;
+    width: 100%; background: transparent; border: none; color: inherit; font: inherit;
+    text-align: left;
   }
+  .card-header:hover { background: rgba(255,255,255,0.02); }
+  .card-header:active { background: rgba(255,255,255,0.04); }
   .card-header h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 2px; color: var(--dim); }
   .card-summary { font-size: 28px; font-weight: bold; color: var(--accent); }
   .card-body { padding: 0 20px 16px; display: none; }
@@ -54,6 +95,19 @@
   .badge-idle { background: rgba(136,136,170,0.15); color: var(--dim); }
 
   .event-log { max-height: 300px; overflow-y: auto; font-size: 12px; }
+
+  /* Screen reader only class */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    white-space: nowrap;
+    border-width: 0;
+  }
   .event-row { display: flex; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
   .event-time { color: var(--dim); flex-shrink: 0; width: 60px; }
   .event-source { color: var(--secondary); flex-shrink: 0; width: 100px; }
@@ -73,79 +127,89 @@
 </head>
 <body>
 
-<div class="header">
+<header class="header" role="banner">
   <h1>NEXUS</h1>
-  <div class="status"><div class="dot"></div><span id="engine-status">Connecting...</span></div>
-</div>
+  <div class="status" role="status" aria-live="polite">
+    <div class="dot" aria-hidden="true"></div>
+    <span id="engine-status">Connecting...</span>
+  </div>
+</header>
 
-<div class="grid">
+<main class="grid" role="main">
   <div class="card" id="card-directive">
-    <div class="card-header" onclick="toggle(this)">
+    <button class="card-header" aria-expanded="false" aria-controls="directive-detail">
       <div><h2>Active Directive</h2><div class="card-summary" id="directive-summary">--</div></div>
-      <span class="chevron">&#9660;</span>
-    </div>
-    <div class="card-body" id="directive-detail"></div>
+      <span class="chevron" aria-hidden="true">&#9660;</span>
+    </button>
+    <div class="card-body" id="directive-detail" role="region" aria-labelledby="directive-summary"></div>
   </div>
 
   <div class="card" id="card-agents">
-    <div class="card-header" onclick="toggle(this)">
+    <button class="card-header" aria-expanded="false" aria-controls="agents-detail">
       <div><h2>Agents</h2><div class="card-summary" id="agents-summary">--</div></div>
-      <span class="chevron">&#9660;</span>
-    </div>
-    <div class="card-body" id="agents-detail"></div>
+      <span class="chevron" aria-hidden="true">&#9660;</span>
+    </button>
+    <div class="card-body" id="agents-detail" role="region" aria-labelledby="agents-summary"></div>
   </div>
 
   <div class="card" id="card-cost">
-    <div class="card-header" onclick="toggle(this)">
+    <button class="card-header" aria-expanded="false" aria-controls="cost-detail">
       <div><h2>Cost</h2><div class="card-summary" id="cost-summary">--</div></div>
-      <span class="chevron">&#9660;</span>
-    </div>
-    <div class="card-body" id="cost-detail"></div>
+      <span class="chevron" aria-hidden="true">&#9660;</span>
+    </button>
+    <div class="card-body" id="cost-detail" role="region" aria-labelledby="cost-summary"></div>
   </div>
 
   <div class="card" id="card-health">
-    <div class="card-header" onclick="toggle(this)">
+    <button class="card-header" aria-expanded="false" aria-controls="health-detail">
       <div><h2>Health</h2><div class="card-summary" id="health-summary">--</div></div>
-      <span class="chevron">&#9660;</span>
-    </div>
-    <div class="card-body" id="health-detail"></div>
+      <span class="chevron" aria-hidden="true">&#9660;</span>
+    </button>
+    <div class="card-body" id="health-detail" role="region" aria-labelledby="health-summary"></div>
   </div>
 
   <div class="card" id="card-circuits">
-    <div class="card-header" onclick="toggle(this)">
+    <button class="card-header" aria-expanded="false" aria-controls="circuits-detail">
       <div><h2>Circuit Breakers</h2><div class="card-summary" id="circuits-summary">--</div></div>
-      <span class="chevron">&#9660;</span>
-    </div>
-    <div class="card-body" id="circuits-detail"></div>
+      <span class="chevron" aria-hidden="true">&#9660;</span>
+    </button>
+    <div class="card-body" id="circuits-detail" role="region" aria-labelledby="circuits-summary"></div>
   </div>
 
   <div class="card" id="card-escalations">
-    <div class="card-header" onclick="toggle(this)">
+    <button class="card-header" aria-expanded="false" aria-controls="escalations-detail">
       <div><h2>Escalations</h2><div class="card-summary" id="escalations-summary">0</div></div>
-      <span class="chevron">&#9660;</span>
-    </div>
-    <div class="card-body" id="escalations-detail"></div>
+      <span class="chevron" aria-hidden="true">&#9660;</span>
+    </button>
+    <div class="card-body" id="escalations-detail" role="region" aria-labelledby="escalations-summary"></div>
   </div>
 
   <div class="card expanded" id="card-events" style="grid-column: 1 / -1;">
-    <div class="card-header" onclick="toggle(this)">
+    <button class="card-header" aria-expanded="true" aria-controls="event-log-container">
       <div><h2>Live Events</h2><div class="card-summary" id="events-summary">0</div></div>
-      <span class="chevron">&#9660;</span>
-    </div>
-    <div class="card-body">
-      <div class="event-log" id="event-log"></div>
+      <span class="chevron" aria-hidden="true">&#9660;</span>
+    </button>
+    <div class="card-body" id="event-log-container" role="region" aria-labelledby="events-summary">
+      <div class="event-log" id="event-log" aria-live="polite" aria-atomic="false"></div>
     </div>
   </div>
-</div>
+</main>
 
-<footer>NEXUS v3.0 &mdash; Autonomous AI Organization Platform</footer>
+<footer role="contentinfo">NEXUS v3.0 &mdash; Autonomous AI Organization Platform</footer>
 
 <script>
 const API = window.location.origin;
 let eventCount = 0;
+let currentSSE = null;
+let abortController = null;
 
-function toggle(header) {
-  header.closest('.card').classList.toggle('expanded');
+function toggle(event) {
+  const button = event.currentTarget;
+  const card = button.closest('.card');
+  const isExpanded = card.classList.contains('expanded');
+
+  card.classList.toggle('expanded');
+  button.setAttribute('aria-expanded', !isExpanded);
 }
 
 function el(tag, attrs, children) {
@@ -183,8 +247,15 @@ function buildTable(headers, rows) {
 function clear(id) { document.getElementById(id).replaceChildren(); }
 
 async function fetchJSON(path) {
-  try { return await (await fetch(API + path)).json(); }
-  catch { return null; }
+  try {
+    if (abortController) abortController.abort();
+    abortController = new AbortController();
+    return await (await fetch(API + path, { signal: abortController.signal })).json();
+  }
+  catch (err) {
+    if (err.name !== 'AbortError') console.error('Fetch error:', err);
+    return null;
+  }
 }
 
 async function refreshState() {
@@ -290,7 +361,14 @@ async function refreshState() {
 }
 
 function connectSSE() {
+  if (currentSSE) {
+    currentSSE.close();
+    currentSSE = null;
+  }
+
   const es = new EventSource(API + '/events?last_id=0');
+  currentSSE = es;
+
   es.onmessage = (e) => {
     eventCount++;
     document.getElementById('events-summary').textContent = String(eventCount);
@@ -304,11 +382,35 @@ function connectSSE() {
         el('span', null, data.type || '--'),
       ]);
       log.prepend(row);
-      while (log.children.length > 200) log.removeChild(log.lastChild);
+      while (log.children.length > 100) log.removeChild(log.lastChild);
     } catch { /* ignore malformed events */ }
   };
-  es.onerror = () => { setTimeout(connectSSE, 5000); es.close(); };
+
+  es.onerror = () => {
+    if (currentSSE === es) {
+      es.close();
+      currentSSE = null;
+      setTimeout(connectSSE, 5000);
+    }
+  };
 }
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+  if (currentSSE) currentSSE.close();
+  if (abortController) abortController.abort();
+});
+
+// Attach event listeners to card headers
+document.querySelectorAll('.card-header').forEach(header => {
+  header.addEventListener('click', toggle);
+  header.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggle(e);
+    }
+  });
+});
 
 refreshState();
 setInterval(refreshState, 5000);

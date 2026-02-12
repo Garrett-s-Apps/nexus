@@ -197,3 +197,13 @@ async def serve_dashboard():
     if os.path.exists(dashboard_path):
         return FileResponse(dashboard_path, media_type="text/html")
     return {"error": "Dashboard not found", "path": dashboard_path}
+
+
+@app.get("/dashboard/logo.svg")
+async def serve_logo():
+    import os
+    logo_path = os.path.join(os.path.dirname(__file__), "..", "dashboard", "logo.svg")
+    logo_path = os.path.normpath(logo_path)
+    if os.path.exists(logo_path):
+        return FileResponse(logo_path, media_type="image/svg+xml")
+    return {"error": "Logo not found"}

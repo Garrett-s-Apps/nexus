@@ -21,8 +21,82 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
 from src.config import get_key
+from src.memory.store import memory
+from src.documents.generator import (
+    _gather_internal_context,
+    _gather_web_context,
+    _needs_web_enrichment,
+    generate_document,
+)
 from src.sessions.cli_pool import cli_pool
-from src.tools.web_search import needs_web_search, search as web_search, format_results_for_context
+from src.tools.web_search import format_results_for_context, needs_web_search
+from src.tools.web_search import search as web_search
+
+
+def _is_action_command(text: str) -> bool:
+    """Detect messages that are action commands, not document requests.
+
+    These must always route to the engine/CEO interpreter, never to doc generation.
+    """
+    msg_lower = text.lower().strip()
+    action_verbs = [
+        "hire", "fire", "reassign", "promote", "demote", "restructure",
+        "deploy", "build", "fix", "ship", "launch", "start", "stop",
+        "run", "execute", "test", "scan", "audit", "migrate",
+        "create a project", "spin up", "stand up", "shut down",
+        "consolidate", "merge team", "split team",
+    ]
+    return any(msg_lower.startswith(verb) or f" {verb} " in f" {msg_lower} "
+               for verb in action_verbs)
+
+
+async def classify_doc_request(text: str) -> dict | None:
+    """Use Haiku to determine the best response format for a message.
+
+    Returns:
+        {"format": "pdf"|"docx"|"pptx"|"image"} — generate a file
+        {"format": "text"} — respond with formatted text (enriched with internal data)
+        None — not a data/document request, route normally
+    """
+    # Action commands always go to the engine — never generate docs for these
+    if _is_action_command(text):
+        return None
+
+    try:
+        from src.agents.base import allm_call
+        from src.agents.org_chart import HAIKU
+        prompt = f"""Determine the best response format for this message.
+Message: "{text}"
+
+Respond with JSON: {{"doc": true, "format": "pdf"|"docx"|"pptx"|"image"|"text", "title": "short title"}}
+Or if the message is an ACTION COMMAND or general chat: {{"doc": false}}
+
+CRITICAL: If the message is an ACTION (hire, fire, deploy, build, fix, ship, run, test, etc.),
+respond with {{"doc": false}}. Actions are NOT document requests.
+
+Rules for choosing format:
+- {{"doc": false}} for actions: hire someone, fire someone, deploy, build, fix bugs, run tests, etc.
+- If the user explicitly says a format (pdf, word, slides, image, etc.), use THAT format
+- "text" for quick lookups like "show me X", "what's our X", "list the X", "who reports to X" — answer inline
+- "image" for visual diagrams, flowcharts, architecture diagrams — when the user wants a VISUAL representation
+- "pdf" for formal reports, summaries, one-pagers, or anything they'd want to download/share
+- "docx" for longer documents, specs, proposals, letters
+- "pptx" for presentations, decks, pitches
+- When in doubt between "text" and a file: prefer "text" for quick info, prefer a file for formal/shareable deliverables
+- "show me the org chart" = "text" (quick view). "send me a PDF of the org chart" = "pdf" (formal deliverable)
+- "hire a SF team" = {{"doc": false}} (action, not a document!)"""
+
+        raw, _ = await allm_call(prompt, HAIKU, max_tokens=200)
+        cleaned = raw.strip()
+        if "```" in cleaned:
+            cleaned = cleaned.split("```json")[-1].split("```")[0].strip() if "```json" in cleaned else cleaned.split("```")[1].strip()
+        import json
+        result = json.loads(cleaned)
+        if result.get("doc"):
+            return {"format": result.get("format", "text"), "title": result.get("title", "")}
+    except Exception as e:
+        print(f"[Slack] Doc classification failed (non-fatal): {e}")
+    return None
 
 
 def md_to_slack(text: str) -> str:
@@ -186,11 +260,16 @@ async def download_and_parse_file(url: str, filename: str, bot_token: str) -> st
 
 
 async def upload_file_to_slack(web_client: AsyncWebClient, channel: str,
-                                filepath: str, title: str = "", comment: str = ""):
+                                filepath: str, title: str = "", comment: str = "",
+                                thread_ts: str = None):
     try:
-        await web_client.files_upload_v2(
+        kwargs = dict(
             channel=channel, file=filepath,
-            title=title or os.path.basename(filepath), initial_comment=comment)
+            title=title or os.path.basename(filepath), initial_comment=comment,
+        )
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        await web_client.files_upload_v2(**kwargs)
     except Exception as e:
         print(f"[Slack] File upload failed: {e}")
 
@@ -263,15 +342,26 @@ async def start_slack_listener():
 
         print(f"[Slack] Received: {text[:100]}")
 
+        thinking_msg = None
+        thread_ts = event.get("thread_ts") or event.get("ts")
+        memory.emit_event("slack", "message_received", {
+            "text": text[:200], "thread_ts": thread_ts,
+            "user": event.get("user", ""), "has_files": bool(files),
+        })
+
         try:
             from src.orchestrator.engine import engine
 
-            thread_ts = event.get("thread_ts") or event.get("ts")
             is_threaded_reply = event.get("thread_ts") is not None
 
-            # Enrich with web search when the question warrants it
+            async def safe_react(name):
+                try:
+                    await web_client.reactions_add(channel=channel_id, name=name, timestamp=event.get("ts"))
+                except Exception:
+                    pass  # reactions:write scope may not be granted
+
             if needs_web_search(text):
-                await web_client.reactions_add(channel=channel_id, name="mag", timestamp=event.get("ts"))
+                await safe_react("mag")
                 try:
                     search_results = await web_search(text, num_results=5)
                     web_context = format_results_for_context(search_results)
@@ -279,16 +369,129 @@ async def start_slack_listener():
                 except Exception as e:
                     print(f"[Slack] Web search failed (non-fatal): {e}")
 
-            # Route threaded replies through persistent CLI sessions when available
-            if is_threaded_reply and cli_pool.active_count() > 0:
-                session = cli_pool._sessions.get(thread_ts)
-                if session and session.alive:
-                    response = await session.send(text)
+            # Send a "working on it" indicator so the user knows we received it
+            try:
+                result = await web_client.chat_postMessage(
+                    channel=channel_id,
+                    text=":hourglass_flowing_sand: Processing...",
+                    thread_ts=thread_ts,
+                )
+                thinking_msg = result.get("ts")
+            except Exception:
+                pass
+
+            # LLM-based: detect if the message is asking for a document or data
+            doc_info = await classify_doc_request(text)
+            if doc_info:
+                memory.emit_event("slack", "doc_classified", {
+                    "format": doc_info["format"], "title": doc_info.get("title", ""),
+                    "thread_ts": thread_ts,
+                })
+                if doc_info["format"] == "text":
+                    # Enrich with internal + web data, let engine respond with formatted text
+                    internal_context = _gather_internal_context(text)
+                    web_context = ""
+                    search_query = _needs_web_enrichment(text, bool(internal_context))
+                    if search_query:
+                        web_context = await _gather_web_context(search_query)
+                    context_parts = []
+                    if internal_context:
+                        context_parts.append(internal_context)
+                    if web_context:
+                        context_parts.append(web_context)
+                    if context_parts:
+                        text = (
+                            f"{text}\n\n"
+                            f"Use the following real data to answer. "
+                            f"Prefer internal data over web results. "
+                            f"Format your response for Slack readability.\n\n"
+                            + "\n".join(context_parts)
+                        )
+                    # Fall through to engine/CLI below
                 else:
-                    response = await engine.handle_message(text, source="slack", thread_ts=thread_ts)
+                    try:
+                        if thinking_msg:
+                            await web_client.chat_update(
+                                channel=channel_id, ts=thinking_msg,
+                                text=f":page_facing_up: Generating {doc_info['format'].upper()}...")
+                        memory.emit_event("slack", "doc_generating", {
+                            "format": doc_info["format"], "thread_ts": thread_ts,
+                        })
+                        result = await generate_document(text, doc_info)
+                        if "error" in result:
+                            memory.emit_event("slack", "doc_failed", {
+                                "error": result["error"][:200], "thread_ts": thread_ts,
+                            })
+                            await web_client.chat_postMessage(
+                                channel=channel_id,
+                                text=f":warning: Document generation failed: {result['error']}",
+                                thread_ts=thread_ts)
+                        else:
+                            memory.emit_event("slack", "doc_complete", {
+                                "format": result["format"],
+                                "title": result.get("title", "Document"),
+                                "thread_ts": thread_ts,
+                            })
+                            await upload_file_to_slack(
+                                web_client, channel_id,
+                                result["filepath"],
+                                title=result.get("title", "Document"),
+                                comment=f"Generated {result['format'].upper()}: *{result.get('title', 'Document')}*",
+                                thread_ts=thread_ts)
+                        if thinking_msg:
+                            try:
+                                await web_client.chat_delete(channel=channel_id, ts=thinking_msg)
+                            except Exception:
+                                pass
+                        return
+                    except Exception as e:
+                        print(f"[Slack] Document generation failed, falling through to engine: {e}")
+
+            # Action commands (hire, fire, deploy, etc.) go directly to the
+            # engine which has the actual handlers (_h_hire, _h_fire, etc.).
+            # Other messages route through CLI sessions for conversational context.
+            response = None
+            project_path = os.environ.get("NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus"))
+
+            if _is_action_command(text):
+                memory.emit_event("slack", "action_routed", {
+                    "text": text[:200], "thread_ts": thread_ts, "target": "engine",
+                })
+                response = await engine.handle_message(text, source="slack", thread_ts=thread_ts)
             else:
+                if is_threaded_reply:
+                    session = cli_pool._sessions.get(thread_ts)
+                    if session and session.alive:
+                        try:
+                            memory.emit_event("slack", "cli_reuse", {
+                                "thread_ts": thread_ts, "pid": session.process.pid if session.process else None,
+                            })
+                            response = await session.send(text)
+                        except Exception as e:
+                            print(f"[Slack] CLI session error, falling back to engine: {e}")
+
+                if response is None:
+                    try:
+                        await safe_react("robot_face")
+                        session = await cli_pool.get_or_create(thread_ts, project_path)
+                        if session.alive:
+                            memory.emit_event("slack", "cli_spawned", {
+                                "thread_ts": thread_ts, "pid": session.process.pid if session.process else None,
+                            })
+                            response = await session.send(text)
+                    except Exception as e:
+                        print(f"[Slack] CLI session spawn failed, using engine: {e}")
+
+            if not response or response == "(No response from CLI)" or response.startswith("CLI"):
+                memory.emit_event("slack", "cli_fallback", {
+                    "reason": response[:200] if response else "no response",
+                    "thread_ts": thread_ts,
+                })
                 response = await engine.handle_message(text, source="slack", thread_ts=thread_ts)
 
+            memory.emit_event("slack", "response_sent", {
+                "text": response[:200], "thread_ts": thread_ts,
+            })
             slack_text = md_to_slack(response)
 
             # Use Block Kit for responses containing code
@@ -314,21 +517,39 @@ async def start_slack_listener():
                     channel=channel_id, text=slack_text,
                     thread_ts=thread_ts)
 
+            # Remove the "Processing..." indicator
+            if thinking_msg:
+                try:
+                    await web_client.chat_delete(channel=channel_id, ts=thinking_msg)
+                except Exception:
+                    pass
+
             print(f"[Slack] Responded in thread {thread_ts}: {slack_text[:100]}...")
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {str(e)[:200]}"
             print(f"[Slack] Error: {error_msg}")
             traceback.print_exc()
+            # Remove thinking indicator on error
+            if thinking_msg:
+                try:
+                    await web_client.chat_delete(channel=channel_id, ts=thinking_msg)
+                except Exception:
+                    pass
             try:
-                await web_client.chat_postMessage(channel=channel_id, text=f"Internal error: {error_msg}")
+                await web_client.chat_postMessage(
+                    channel=channel_id,
+                    text=f":warning: Error processing your request:\n`{error_msg}`",
+                    thread_ts=thread_ts,
+                )
             except Exception:
                 pass
 
     socket_client.socket_mode_request_listeners.append(handle_event)
     print("[Slack] Connecting...")
     await socket_client.connect()
-    print("[Slack] Connected and listening.")
+    cli_pool.start_cleanup_loop()
+    print("[Slack] Connected and listening. CLI session pool active.")
 
     while True:
         await asyncio.sleep(1)

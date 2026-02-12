@@ -51,18 +51,26 @@ class CLISession:
             return False
 
     async def send(self, message: str, timeout: int = 120) -> str:
-        """Send a message to the CLI process and collect the response."""
+        """Send a message to the CLI process and collect the response.
+
+        The CLI runs in pipe mode (-p), which reads stdin until EOF then responds.
+        Each send() spawns a fresh process, writes the message, closes stdin to
+        signal EOF, then collects the output.
+        """
         async with self._lock:
-            if (not self.process or self.process.returncode is not None) and not await self.start():
+            # Always start a fresh process — pipe mode is one-shot
+            if not await self.start():
                 return "CLI session unavailable"
 
             self.last_used = time.monotonic()
 
             try:
-                self.process.stdin.write((message + "\n").encode())
+                self.process.stdin.write(message.encode())
                 await self.process.stdin.drain()
+                self.process.stdin.close()  # Signal EOF so -p mode starts processing
 
                 output_chunks = []
+                stderr_chunks = []
                 deadline = time.monotonic() + timeout
 
                 while time.monotonic() < deadline:
@@ -75,14 +83,30 @@ class CLISession:
                             break
                         output_chunks.append(chunk.decode(errors="replace"))
 
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.3)
                         if not self.process.stdout._buffer:
                             break
                     except TimeoutError:
                         if output_chunks:
                             break
 
-                return "".join(output_chunks).strip() or "(No response from CLI)"
+                # Capture stderr for diagnostics
+                try:
+                    stderr_data = await asyncio.wait_for(
+                        self.process.stderr.read(), timeout=1.0
+                    )
+                    if stderr_data:
+                        stderr_chunks.append(stderr_data.decode(errors="replace"))
+                except (TimeoutError, Exception):
+                    pass
+
+                result = "".join(output_chunks).strip()
+                if not result and stderr_chunks:
+                    stderr_text = "".join(stderr_chunks).strip()
+                    logger.warning("CLI stderr for thread %s: %s", self.thread_ts, stderr_text[:500])
+                    return f"CLI error: {stderr_text[:300]}"
+
+                return result or "(No response from CLI)"
 
             except Exception as e:
                 logger.error("CLI session error for thread %s: %s", self.thread_ts, e)

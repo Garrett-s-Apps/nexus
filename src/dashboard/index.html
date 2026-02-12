@@ -108,9 +108,16 @@
     white-space: nowrap;
     border-width: 0;
   }
-  .event-row { display: flex; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .event-row { display: flex; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); align-items: center; }
   .event-time { color: var(--dim); flex-shrink: 0; width: 60px; }
   .event-source { color: var(--secondary); flex-shrink: 0; width: 100px; }
+  .event-cli-badge {
+    display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px;
+    background: rgba(0,210,255,0.12); color: var(--accent); cursor: pointer;
+    border: 1px solid rgba(0,210,255,0.25); margin-left: 6px; font-family: monospace;
+    white-space: nowrap;
+  }
+  .event-cli-badge:hover { background: rgba(0,210,255,0.25); border-color: var(--accent); }
 
   .circuit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
   .circuit-chip {
@@ -123,6 +130,111 @@
 
   .empty { color: var(--dim); font-style: italic; padding: 16px 0; text-align: center; }
   footer { text-align: center; padding: 24px; color: var(--dim); font-size: 12px; }
+
+  /* Login overlay */
+  .login-overlay {
+    position: fixed; inset: 0; z-index: 9999;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 24px;
+  }
+  .login-overlay.hidden { display: none; }
+  .login-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 40px 36px; width: 360px;
+    text-align: center;
+  }
+  .login-box h1 { font-size: 28px; letter-spacing: 6px; color: var(--accent); margin-bottom: 8px; }
+  .login-box p { color: var(--dim); font-size: 13px; margin-bottom: 24px; }
+  .login-input {
+    width: 100%; padding: 12px 16px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg);
+    color: var(--text); font-family: inherit; font-size: 14px;
+    text-align: center; letter-spacing: 2px;
+  }
+  .login-input:focus { border-color: var(--accent); outline: none; }
+  .login-btn {
+    width: 100%; padding: 12px; margin-top: 16px; border-radius: 8px;
+    border: none; background: linear-gradient(135deg, var(--accent), var(--secondary));
+    color: #fff; font-family: inherit; font-weight: bold; font-size: 14px;
+    cursor: pointer; letter-spacing: 1px;
+  }
+  .login-btn:hover { opacity: 0.9; }
+  .login-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .login-error {
+    color: var(--danger); font-size: 12px; margin-top: 12px;
+    min-height: 18px;
+  }
+  .logout-btn {
+    background: none; border: 1px solid var(--border); color: var(--dim);
+    padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;
+    font-family: inherit;
+  }
+  .logout-btn:hover { border-color: var(--danger); color: var(--danger); }
+
+  /* Settings */
+  .settings-btn {
+    background: none; border: 1px solid var(--border); color: var(--dim);
+    padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 14px;
+    font-family: inherit; line-height: 1;
+  }
+  .settings-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .settings-modal {
+    position: fixed; inset: 0; z-index: 9998;
+    background: rgba(0,0,0,0.7); display: none;
+    align-items: center; justify-content: center;
+  }
+  .settings-modal.open { display: flex; }
+  .settings-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 32px; width: 420px;
+  }
+  .settings-box h2 { font-size: 16px; color: var(--accent); letter-spacing: 2px; margin-bottom: 20px; }
+  .settings-box label { display: block; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+  .settings-box input {
+    width: 100%; padding: 10px 14px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg);
+    color: var(--text); font-family: inherit; font-size: 13px;
+    margin-bottom: 16px;
+  }
+  .settings-box input:focus { border-color: var(--accent); outline: none; }
+  .settings-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+  .settings-actions button {
+    padding: 8px 18px; border-radius: 6px; border: none;
+    font-family: inherit; font-size: 13px; cursor: pointer;
+  }
+  .settings-save { background: var(--accent); color: #000; font-weight: bold; }
+  .settings-cancel { background: var(--border); color: var(--dim); }
+  .settings-save:hover { opacity: 0.9; }
+  .settings-cancel:hover { color: var(--text); }
+  .connection-badge {
+    font-size: 10px; padding: 2px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 1px; font-weight: bold;
+  }
+  .connection-local { background: rgba(0,230,118,0.15); color: var(--success); }
+  .connection-remote { background: rgba(123,97,255,0.15); color: var(--secondary); }
+  .connection-offline { background: rgba(255,215,64,0.15); color: var(--warning); }
+
+  /* Session management */
+  .session-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+  }
+  .session-info { font-size: 12px; }
+  .session-thread { color: var(--accent); font-family: monospace; }
+  .session-idle { color: var(--dim); font-size: 11px; }
+  .session-kill {
+    background: none; border: 1px solid var(--danger); color: var(--danger);
+    padding: 4px 10px; border-radius: 4px; cursor: pointer;
+    font-size: 11px; font-family: inherit;
+  }
+  .session-kill:hover { background: rgba(255,82,82,0.15); }
+  .kill-all-btn {
+    background: none; border: 1px solid var(--danger); color: var(--danger);
+    padding: 6px 14px; border-radius: 6px; cursor: pointer;
+    font-size: 12px; font-family: inherit; margin-top: 8px;
+  }
+  .kill-all-btn:hover { background: rgba(255,82,82,0.15); }
 
   /* Chat panel — slide-out from right */
   .chat-toggle {
@@ -202,13 +314,45 @@
 </head>
 <body>
 
+<!-- Login overlay — shown until authenticated -->
+<div id="login-overlay" class="login-overlay">
+  <div class="login-box">
+    <h1>NEXUS</h1>
+    <p>Enter passphrase to access the command center</p>
+    <form id="login-form" autocomplete="off">
+      <input id="login-input" class="login-input" type="password"
+             placeholder="Passphrase" autocomplete="off" required>
+      <button id="login-btn" class="login-btn" type="submit">Authenticate</button>
+    </form>
+    <div id="login-error" class="login-error"></div>
+  </div>
+</div>
+
 <header class="header" role="banner">
   <h1>NEXUS</h1>
   <div class="status" role="status" aria-live="polite">
+    <span id="connection-badge" class="connection-badge connection-local">LOCAL</span>
     <div class="dot" aria-hidden="true"></div>
     <span id="engine-status">Connecting...</span>
+    <button id="settings-btn" class="settings-btn" title="Engine settings">&#9881;</button>
+    <button id="logout-btn" class="logout-btn" style="display:none;">Logout</button>
   </div>
 </header>
+
+<div id="settings-modal" class="settings-modal">
+  <div class="settings-box">
+    <h2>ENGINE CONNECTION</h2>
+    <label for="settings-url">Engine URL</label>
+    <input id="settings-url" type="url" placeholder="https://your-tunnel.trycloudflare.com" />
+    <p style="color:var(--dim);font-size:11px;margin:-8px 0 16px;">
+      Leave blank for local mode (same origin). Set a tunnel URL for remote access.
+    </p>
+    <div class="settings-actions">
+      <button class="settings-cancel" id="settings-cancel">Cancel</button>
+      <button class="settings-save" id="settings-save">Save &amp; Reconnect</button>
+    </div>
+  </div>
+</div>
 
 <main class="grid" role="main">
   <div class="card" id="card-directive">
@@ -259,6 +403,14 @@
     <div class="card-body" id="escalations-detail" role="region" aria-labelledby="escalations-summary"></div>
   </div>
 
+  <div class="card" id="card-sessions">
+    <button class="card-header" aria-expanded="false" aria-controls="sessions-detail">
+      <div><h2>CLI Sessions</h2><div class="card-summary" id="sessions-summary">0</div></div>
+      <span class="chevron" aria-hidden="true">&#9660;</span>
+    </button>
+    <div class="card-body" id="sessions-detail" role="region" aria-labelledby="sessions-summary"></div>
+  </div>
+
   <div class="card expanded" id="card-events" style="grid-column: 1 / -1;">
     <button class="card-header" aria-expanded="true" aria-controls="event-log-container">
       <div><h2>Live Events</h2><div class="card-summary" id="events-summary">0</div></div>
@@ -290,10 +442,205 @@
 </div>
 
 <script>
-const API = window.location.origin;
+// Engine URL: configurable via settings panel (stored in localStorage)
+// Priority: localStorage > window.__NEXUS_API_URL__ > same origin
+function getEngineUrl() {
+  return localStorage.getItem('nexus_engine_url') || window.__NEXUS_API_URL__ || '';
+}
+function isRemoteMode() {
+  const url = getEngineUrl();
+  return url && url !== window.location.origin;
+}
+let API = getEngineUrl() || window.location.origin;
+let authToken = localStorage.getItem('nexus_auth_token') || '';
+
 let eventCount = 0;
 let currentSSE = null;
 let abortController = null;
+let isAuthenticated = false;
+
+// ---------------------------------------------------------------------------
+// Connection badge
+// ---------------------------------------------------------------------------
+function updateConnectionBadge() {
+  const badge = document.getElementById('connection-badge');
+  if (offlineMode) {
+    badge.className = 'connection-badge connection-offline';
+    badge.textContent = 'OFFLINE';
+  } else if (isRemoteMode()) {
+    badge.className = 'connection-badge connection-remote';
+    badge.textContent = 'REMOTE';
+  } else {
+    badge.className = 'connection-badge connection-local';
+    badge.textContent = 'LOCAL';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Settings panel
+// ---------------------------------------------------------------------------
+document.getElementById('settings-btn').addEventListener('click', () => {
+  document.getElementById('settings-url').value = getEngineUrl();
+  document.getElementById('settings-modal').classList.add('open');
+});
+document.getElementById('settings-cancel').addEventListener('click', () => {
+  document.getElementById('settings-modal').classList.remove('open');
+});
+document.getElementById('settings-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.remove('open');
+});
+document.getElementById('settings-save').addEventListener('click', () => {
+  const url = document.getElementById('settings-url').value.trim().replace(/\/+$/, '');
+  if (url) {
+    localStorage.setItem('nexus_engine_url', url);
+  } else {
+    localStorage.removeItem('nexus_engine_url');
+  }
+  // Clear old auth state when switching engines
+  localStorage.removeItem('nexus_auth_token');
+  authToken = '';
+  API = url || window.location.origin;
+  document.getElementById('settings-modal').classList.remove('open');
+  // Re-auth against new engine
+  isAuthenticated = false;
+  if (currentSSE) { currentSSE.close(); currentSSE = null; }
+  if (refreshInterval) clearInterval(refreshInterval);
+  initAuth();
+});
+
+// ---------------------------------------------------------------------------
+// Auth — check session before loading dashboard data
+// ---------------------------------------------------------------------------
+
+// Offline fallback: when engine is unreachable, verify passphrase client-side
+const OFFLINE_HASH = '4676211352bd8a059b88155cb0a675554b898991fc36d172b65125da0908d7b5';
+let offlineMode = false;
+
+async function sha256(text) {
+  const data = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function checkAuth() {
+  try {
+    const opts = {credentials: 'same-origin'};
+    if (isRemoteMode() && authToken) {
+      opts.headers = {'Authorization': 'Bearer ' + authToken};
+      opts.credentials = 'omit';
+    }
+    const resp = await fetch(API + '/auth/check', opts);
+    if (resp.status === 404 || resp.status === 405) throw new Error('static host');
+    const data = await resp.json();
+    offlineMode = false;
+    return data.authenticated === true;
+  } catch {
+    // If we have a stored token but engine is down, stay authenticated
+    if (authToken && isRemoteMode()) {
+      offlineMode = true;
+      return true;
+    }
+    offlineMode = true;
+    return sessionStorage.getItem('nexus_auth') === 'true';
+  }
+}
+
+async function initAuth() {
+  isAuthenticated = await checkAuth();
+  updateConnectionBadge();
+  const overlay = document.getElementById('login-overlay');
+  const logoutBtn = document.getElementById('logout-btn');
+
+  if (isAuthenticated) {
+    overlay.classList.add('hidden');
+    logoutBtn.style.display = '';
+    startDashboard();
+  } else {
+    overlay.classList.remove('hidden');
+    logoutBtn.style.display = 'none';
+    document.getElementById('login-input').focus();
+  }
+}
+
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('login-input');
+  const btn = document.getElementById('login-btn');
+  const errEl = document.getElementById('login-error');
+  const passphrase = input.value.trim();
+  if (!passphrase) return;
+
+  btn.disabled = true;
+  errEl.textContent = '';
+
+  try {
+    let ok = false;
+
+    try {
+      const loginOpts = {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({passphrase}),
+        credentials: isRemoteMode() ? 'omit' : 'same-origin',
+      };
+      const resp = await fetch(API + '/auth/login', loginOpts);
+      if (resp.status === 405 || resp.status === 404) {
+        throw new Error('static host');
+      }
+      if (resp.ok) {
+        const data = await resp.json();
+        // Save token for remote/cross-origin auth
+        if (data.token) {
+          authToken = data.token;
+          localStorage.setItem('nexus_auth_token', authToken);
+        }
+        ok = true;
+      }
+      offlineMode = false;
+    } catch {
+      offlineMode = true;
+      const hash = await sha256(passphrase);
+      ok = (hash === OFFLINE_HASH);
+      if (ok) sessionStorage.setItem('nexus_auth', 'true');
+    }
+
+    if (ok) {
+      input.value = '';
+      isAuthenticated = true;
+      document.getElementById('login-overlay').classList.add('hidden');
+      document.getElementById('logout-btn').style.display = '';
+      startDashboard();
+    } else {
+      errEl.textContent = 'Invalid passphrase';
+      input.value = '';
+      input.focus();
+    }
+  } catch {
+    errEl.textContent = 'Connection error';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('logout-btn').addEventListener('click', async () => {
+  try {
+    const logoutOpts = {method: 'POST', credentials: 'same-origin'};
+    if (isRemoteMode() && authToken) {
+      logoutOpts.headers = {'Authorization': 'Bearer ' + authToken};
+      logoutOpts.credentials = 'omit';
+    }
+    await fetch(API + '/auth/logout', logoutOpts);
+  } catch { /* best effort */ }
+  sessionStorage.removeItem('nexus_auth');
+  localStorage.removeItem('nexus_auth_token');
+  authToken = '';
+  isAuthenticated = false;
+  if (currentSSE) { currentSSE.close(); currentSSE = null; }
+  if (refreshInterval) clearInterval(refreshInterval);
+  document.getElementById('login-overlay').classList.remove('hidden');
+  document.getElementById('logout-btn').style.display = 'none';
+  document.getElementById('login-input').focus();
+});
 
 function toggle(event) {
   const button = event.currentTarget;
@@ -342,7 +689,21 @@ async function fetchJSON(path) {
   try {
     if (abortController) abortController.abort();
     abortController = new AbortController();
-    return await (await fetch(API + path, { signal: abortController.signal })).json();
+    const opts = {signal: abortController.signal, credentials: 'same-origin'};
+    if (isRemoteMode() && authToken) {
+      opts.headers = {'Authorization': 'Bearer ' + authToken};
+      opts.credentials = 'omit';
+    }
+    const resp = await fetch(API + path, opts);
+    if (resp.status === 401) {
+      // Session expired or invalid — show login
+      isAuthenticated = false;
+      if (currentSSE) { currentSSE.close(); currentSSE = null; }
+      document.getElementById('login-overlay').classList.remove('hidden');
+      document.getElementById('logout-btn').style.display = 'none';
+      return null;
+    }
+    return await resp.json();
   }
   catch (err) {
     if (err.name !== 'AbortError') console.error('Fetch error:', err);
@@ -351,9 +712,10 @@ async function fetchJSON(path) {
 }
 
 async function refreshState() {
-  const [state, agents, directive, cost, health, metricsHealth] = await Promise.all([
+  const [state, agents, directive, cost, health, metricsHealth, sessions] = await Promise.all([
     fetchJSON('/state'), fetchJSON('/agents'), fetchJSON('/directive'),
     fetchJSON('/cost'), fetchJSON('/health'), fetchJSON('/metrics/health'),
+    fetchJSON('/sessions'),
   ]);
 
   if (health) {
@@ -450,15 +812,76 @@ async function refreshState() {
       escContainer.replaceChildren(el('div', {class: 'empty'}, 'No escalations'));
     }
   }
+
+  // CLI Sessions
+  if (sessions) {
+    const list = sessions.sessions || [];
+    const active = sessions.active_sessions || 0;
+    document.getElementById('sessions-summary').textContent = active > 0 ? active + ' active' : '0';
+
+    const container = document.getElementById('sessions-detail');
+    if (list.length) {
+      const frag = document.createDocumentFragment();
+      for (const s of list) {
+        const row = el('div', {class: 'session-row'});
+        const info = el('div', {class: 'session-info'});
+        info.appendChild(el('span', {class: 'session-thread'}, s.thread_ts));
+        info.appendChild(document.createTextNode(' '));
+        const idleMin = Math.round(s.idle_seconds / 60);
+        info.appendChild(el('span', {class: 'session-idle'},
+          s.alive ? `idle ${idleMin}m` : 'dead'));
+        row.appendChild(info);
+
+        const killBtn = el('button', {class: 'session-kill'}, 'Terminate');
+        killBtn.addEventListener('click', async () => {
+          killBtn.disabled = true;
+          killBtn.textContent = '...';
+          await fetch(API + '/sessions/' + s.thread_ts, {
+            method: 'DELETE', credentials: 'same-origin',
+          });
+          refreshState();
+        });
+        row.appendChild(killBtn);
+        frag.appendChild(row);
+      }
+
+      if (active > 0) {
+        const killAll = el('button', {class: 'kill-all-btn'}, 'Terminate All');
+        killAll.addEventListener('click', async () => {
+          killAll.disabled = true;
+          killAll.textContent = '...';
+          await fetch(API + '/sessions', {
+            method: 'DELETE', credentials: 'same-origin',
+          });
+          refreshState();
+        });
+        frag.appendChild(killAll);
+      }
+      container.replaceChildren(frag);
+    } else {
+      container.replaceChildren(el('div', {class: 'empty'}, 'No CLI sessions'));
+    }
+  }
 }
 
-function connectSSE() {
+async function connectSSE() {
   if (currentSSE) {
     currentSSE.close();
     currentSSE = null;
   }
 
-  const es = new EventSource(API + '/events?last_id=0');
+  // Start from the latest event so we only see new events going forward
+  let startId = 0;
+  try {
+    const state = await fetchJSON('/state');
+    if (state && state.latest_event_id) startId = state.latest_event_id;
+  } catch { /* fall back to 0 */ }
+
+  let sseUrl = API + '/events?last_id=' + startId;
+  if (isRemoteMode() && authToken) {
+    sseUrl += '&token=' + encodeURIComponent(authToken);
+  }
+  const es = new EventSource(sseUrl, isRemoteMode() ? {} : {withCredentials: true});
   currentSSE = es;
 
   es.onmessage = (e) => {
@@ -467,14 +890,46 @@ function connectSSE() {
     try {
       const data = JSON.parse(e.data);
       const log = document.getElementById('event-log');
-      const time = data.timestamp ? (data.timestamp.split('T')[1] || '').substring(0,8) : '';
+      // Convert UTC to local time
+      let time = '';
+      if (data.timestamp) {
+        try {
+          const d = new Date(data.timestamp.endsWith('Z') ? data.timestamp : data.timestamp + 'Z');
+          time = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+        } catch { time = (data.timestamp.split('T')[1] || '').substring(0,8); }
+      }
+      // Show event detail summary from data payload
+      let detail = data.type || '--';
+      if (data.data && typeof data.data === 'object') {
+        const d = data.data;
+        const parts = [];
+        if (d.text) parts.push(d.text.substring(0, 60));
+        else if (d.message) parts.push(d.message.substring(0, 60));
+        else if (d.agent_id) parts.push(d.agent_id);
+        else if (d.status) parts.push(d.status);
+        if (parts.length) detail += ': ' + parts.join(', ');
+      }
+      const detailSpan = el('span', null, detail);
+
+      // Add clickable CLI badge when event has a thread_ts
+      const threadTs = data.data && data.data.thread_ts;
+      if (threadTs) {
+        const badge = el('span', {class: 'event-cli-badge', title: 'Open thread ' + threadTs},
+          'CLI:' + threadTs.split('.')[0]);
+        badge.addEventListener('click', () => {
+          chatPanel.classList.add('open');
+          selectThread(threadTs);
+        });
+        detailSpan.appendChild(badge);
+      }
+
       const row = el('div', {class: 'event-row'}, [
         el('span', {class: 'event-time'}, time),
         el('span', {class: 'event-source'}, data.source || '--'),
-        el('span', null, data.type || '--'),
+        detailSpan,
       ]);
       log.prepend(row);
-      while (log.children.length > 100) log.removeChild(log.lastChild);
+      while (log.children.length > 50) log.removeChild(log.lastChild);
     } catch { /* ignore malformed events */ }
   };
 
@@ -504,9 +959,23 @@ document.querySelectorAll('.card-header').forEach(header => {
   });
 });
 
-refreshState();
-setInterval(refreshState, 5000);
-connectSSE();
+// Wrap dashboard startup so it only runs after auth
+let refreshInterval = null;
+function startDashboard() {
+  updateConnectionBadge();
+  if (offlineMode) {
+    document.getElementById('engine-status').textContent = 'Static Mode (no engine)';
+    document.querySelector('.dot').style.background = 'var(--warning)';
+    return;
+  }
+  refreshState();
+  if (refreshInterval) clearInterval(refreshInterval);
+  refreshInterval = setInterval(refreshState, 5000);
+  connectSSE();
+}
+
+// Kick off auth check instead of auto-starting
+initAuth();
 
 // ---------------------------------------------------------------------------
 // Chat Panel — view and interact with Slack threads
@@ -529,8 +998,14 @@ chatToggle.addEventListener('click', () => {
 chatClose.addEventListener('click', () => chatPanel.classList.remove('open'));
 
 async function loadThreads() {
+  if (offlineMode) {
+    threadList.replaceChildren(el('div', {class: 'empty'}, 'Threads unavailable in static mode'));
+    return;
+  }
   try {
-    const resp = await fetch(`${API}/chat/threads`);
+    const chatOpts = {credentials: 'same-origin'};
+    if (isRemoteMode() && authToken) { chatOpts.headers = {'Authorization': 'Bearer ' + authToken}; chatOpts.credentials = 'omit'; }
+    const resp = await fetch(`${API}/chat/threads`, chatOpts);
     const data = await resp.json();
     threadList.replaceChildren();
     if (!data.threads || data.threads.length === 0) {
@@ -555,7 +1030,9 @@ async function selectThread(ts) {
   activeThreadTs = ts;
   document.querySelectorAll('.thread-item').forEach(b => b.classList.remove('active'));
   try {
-    const resp = await fetch(`${API}/chat/thread/${ts}`);
+    const threadOpts = {credentials: 'same-origin'};
+    if (isRemoteMode() && authToken) { threadOpts.headers = {'Authorization': 'Bearer ' + authToken}; threadOpts.credentials = 'omit'; }
+    const resp = await fetch(`${API}/chat/thread/${ts}`, threadOpts);
     const data = await resp.json();
     chatMessages.replaceChildren();
     for (const msg of data.messages || []) {
@@ -574,6 +1051,11 @@ chatInput.addEventListener('keydown', (e) => {
 async function sendMessage() {
   const text = chatInput.value.trim();
   if (!text) return;
+  if (offlineMode) {
+    chatMessages.appendChild(el('div', {class: 'msg msg-bot'}, 'Chat unavailable in static mode. Start the engine locally.'));
+    chatInput.value = '';
+    return;
+  }
 
   chatInput.value = '';
   chatSend.disabled = true;
@@ -582,10 +1064,13 @@ async function sendMessage() {
   chatMessages.scrollTop = chatMessages.scrollHeight;
 
   try {
+    const sendHeaders = {'Content-Type': 'application/json'};
+    if (isRemoteMode() && authToken) sendHeaders['Authorization'] = 'Bearer ' + authToken;
     const resp = await fetch(`${API}/chat/send`, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: sendHeaders,
       body: JSON.stringify({message: text}),
+      credentials: isRemoteMode() ? 'omit' : 'same-origin',
     });
     const data = await resp.json();
     // Remove "Thinking..." indicator

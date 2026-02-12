@@ -16,20 +16,156 @@ import google.genai as genai
 from src.config import get_key as _load_key  # consolidated key loading
 
 
+def _gather_internal_context(message: str) -> str:
+    """Check if a request references internal NEXUS data and return it as context.
+
+    This prevents Gemini from hallucinating when the user asks for documents
+    about things NEXUS actually knows (org chart, agents, team structure, etc.).
+    """
+    msg_lower = message.lower()
+    context_parts = []
+
+    # Org chart / team / agents / reporting structure
+    org_keywords = ["org chart", "org structure", "organization", "reporting structure",
+                    "team structure", "our team", "my team", "company structure",
+                    "who reports to", "direct reports", "headcount", "agents"]
+    if any(kw in msg_lower for kw in org_keywords):
+        try:
+            from src.agents.org_chart import ORG_CHART, get_org_summary
+            context_parts.append(
+                "=== NEXUS INTERNAL DATA: Organization Chart ===\n"
+                f"{get_org_summary()}\n"
+                "=== END INTERNAL DATA ===\n"
+            )
+        except ImportError:
+            pass
+
+    # Model distribution / costs
+    cost_keywords = ["model cost", "model distribution", "token cost", "budget",
+                     "cost breakdown", "spending"]
+    if any(kw in msg_lower for kw in cost_keywords):
+        try:
+            from src.agents.org_chart import MODEL_COSTS, ORG_CHART
+            model_counts = {}
+            for cfg in ORG_CHART.values():
+                m = cfg["model"]
+                model_counts[m] = model_counts.get(m, 0) + 1
+            summary = "Model Distribution:\n"
+            for model, count in sorted(model_counts.items()):
+                cost = MODEL_COSTS.get(model, {})
+                summary += f"  {model}: {count} agents (input: ${cost.get('input', '?')}/M, output: ${cost.get('output', '?')}/M)\n"
+            context_parts.append(
+                "=== NEXUS INTERNAL DATA: Model Costs ===\n"
+                f"{summary}"
+                "=== END INTERNAL DATA ===\n"
+            )
+        except ImportError:
+            pass
+
+    # Project / registry info from ORG_CHART.md on disk
+    if not context_parts:
+        # Broader check: if message mentions NEXUS-specific nouns, load org chart file
+        nexus_keywords = ["nexus", "our engineers", "our org", "engineering team",
+                          "product team", "security team", "qa team"]
+        if any(kw in msg_lower for kw in nexus_keywords):
+            org_chart_path = os.path.join(os.path.dirname(__file__), "..", "..", "ORG_CHART.md")
+            org_chart_path = os.path.normpath(org_chart_path)
+            if os.path.exists(org_chart_path):
+                with open(org_chart_path) as f:
+                    content = f.read()
+                context_parts.append(
+                    "=== NEXUS INTERNAL DATA: Organization Chart ===\n"
+                    f"{content}\n"
+                    "=== END INTERNAL DATA ===\n"
+                )
+
+    return "\n".join(context_parts)
+
+
+def _needs_web_enrichment(message: str, has_internal_context: bool) -> str | None:
+    """Determine if a request needs web search and return a search query if so.
+
+    Returns a search query string, or None if web search isn't needed.
+    """
+    msg_lower = message.lower()
+
+    # Explicit web indicators — always search
+    explicit = ["compare to", "compared to", "vs ", "versus", "industry",
+                "benchmark", "best practice", "how does", "market",
+                "competitor", "trend", "research", "statistics", "data on",
+                "according to", "report on", "analysis of"]
+    if any(kw in msg_lower for kw in explicit):
+        # Build a focused search query from the request
+        # Strip NEXUS-internal references to get a cleaner web query
+        clean = msg_lower
+        for strip in ["nexus", "our team", "our org", "my team", "our company",
+                       "pdf", "docx", "pptx", "slides", "document", "report",
+                       "create", "generate", "make", "send", "give me", "show me"]:
+            clean = clean.replace(strip, "")
+        return clean.strip()[:200] or None
+
+    # If we have NO internal context and the request is about something specific,
+    # it's probably about external info — search for it
+    if not has_internal_context:
+        # Topics that are almost certainly external
+        external_signals = ["how to", "what is", "who is", "guide", "tutorial",
+                           "example", "template", "standard", "framework",
+                           "technology", "platform", "tool", "service"]
+        if any(kw in msg_lower for kw in external_signals):
+            return msg_lower[:200]
+
+    return None
+
+
+async def _gather_web_context(query: str) -> str:
+    """Search the web and return results formatted as context for document generation."""
+    try:
+        from src.tools.web_search import format_results_for_context
+        from src.tools.web_search import search as web_search
+        results = await web_search(query, num_results=5)
+        if results:
+            formatted = format_results_for_context(results)
+            return (
+                "=== WEB RESEARCH RESULTS ===\n"
+                f"{formatted}\n"
+                "=== END WEB RESEARCH ===\n"
+            )
+    except Exception as e:
+        print(f"[Documents] Web search failed (non-fatal): {e}")
+    return ""
+
+
 def _ask_gemini(prompt: str, system: str = "") -> str:
-    """Generate content using Gemini API."""
+    """Generate content using Gemini API, with Claude fallback on rate limit."""
+    # Try Gemini first
     api_key = _load_key("GOOGLE_AI_API_KEY")
-    if not api_key:
-        raise ValueError("GOOGLE_AI_API_KEY not found in ~/.nexus/.env.keys or environment")
+    if api_key:
+        try:
+            client = genai.Client(api_key=api_key)
+            full_prompt = f"{system}\n\n{prompt}" if system else prompt
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=full_prompt,
+            )
+            return response.text
+        except Exception as e:
+            print(f"[Documents] Gemini failed ({e}), falling back to Claude")
 
-    client = genai.Client(api_key=api_key)
-    full_prompt = f"{system}\n\n{prompt}" if system else prompt
+    # Claude fallback
+    anthropic_key = _load_key("ANTHROPIC_API_KEY")
+    if not anthropic_key:
+        raise ValueError("No AI API keys available (tried Gemini and Claude)")
 
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=full_prompt,
+    import anthropic
+    client = anthropic.Anthropic(api_key=anthropic_key)
+    messages = [{"role": "user", "content": prompt}]
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=4096,
+        system=system or "You generate document content as requested.",
+        messages=messages,
     )
-    return response.text
+    return response.content[0].text
 
 
 def _parse_json(content: str) -> dict:
@@ -72,7 +208,9 @@ def create_docx(title: str, request: str, output_dir: str = None) -> str:
         f'{{"type": "quote", "text": "...", "attribution": "..."}}'
         f']}}, ...]}}\n\n'
         f"Only return the JSON, nothing else.",
-        system="You generate document content as structured JSON. No markdown, no code fences, just JSON."
+        system="You generate document content as structured JSON. No markdown, no code fences, just JSON. "
+               "If the request includes INTERNAL DATA sections, use that real data as the basis for the document content. "
+               "Do NOT invent or hallucinate information when real data is provided."
     )
 
     try:
@@ -290,7 +428,9 @@ def create_pptx(title: str, request: str, output_dir: str = None) -> str:
         f'{{"type": "closing", "message": "Thank you", "submessage": "Questions?", "notes": "..."}}'
         f']}}\n\n'
         f"Generate 6-12 slides. Use a mix of slide types. Only return the JSON, nothing else.",
-        system="You generate presentation content as structured JSON. No markdown, no code fences, just JSON."
+        system="You generate presentation content as structured JSON. No markdown, no code fences, just JSON. "
+               "If the request includes INTERNAL DATA sections, use that real data as the basis for the slides. "
+               "Do NOT invent or hallucinate information when real data is provided."
     )
 
     try:
@@ -601,7 +741,9 @@ def create_pdf(title: str, request: str, output_dir: str = None) -> str:
         f'{{"type": "quote", "text": "...", "attribution": "..."}}'
         f']}}, ...]}}\n\n'
         f"Only return the JSON, nothing else.",
-        system="You generate document content as structured JSON. No markdown, no code fences, just JSON."
+        system="You generate document content as structured JSON. No markdown, no code fences, just JSON. "
+               "If the request includes INTERNAL DATA sections, use that real data as the basis for the document content. "
+               "Do NOT invent or hallucinate information when real data is provided."
     )
 
     try:
@@ -860,7 +1002,9 @@ def create_image(description: str, output_dir: str = None) -> str:
         f"Use coordinates for a 1200x800 canvas. Boxes should not overlap. Only return JSON."
     )
 
-    content = _ask_gemini(prompt, system="You generate diagram structures as JSON. No markdown, just JSON.")
+    content = _ask_gemini(prompt, system="You generate diagram structures as JSON. No markdown, just JSON. "
+                                       "If the description includes INTERNAL DATA sections, use that real data to build the diagram. "
+                                       "Do NOT invent or hallucinate information when real data is provided.")
 
     try:
         data = _parse_json(content)
@@ -1002,6 +1146,31 @@ async def generate_document(message: str, doc_info: dict) -> dict:
 
     fmt = doc_info["format"]
 
+    # Gather internal NEXUS data relevant to the request
+    internal_context = _gather_internal_context(message)
+
+    # Search the web if the request needs public info
+    web_context = ""
+    search_query = _needs_web_enrichment(message, bool(internal_context))
+    if search_query:
+        web_context = await _gather_web_context(search_query)
+
+    # Build enriched request with all available context
+    enriched_request = message
+    context_parts = []
+    if internal_context:
+        context_parts.append(internal_context)
+    if web_context:
+        context_parts.append(web_context)
+    if context_parts:
+        enriched_request = (
+            f"{message}\n\n"
+            f"IMPORTANT: Use the following real data to generate this document. "
+            f"Prefer internal data over web results when both are available. "
+            f"Do NOT make up or hallucinate information — use exactly what is provided.\n\n"
+            + "\n".join(context_parts)
+        )
+
     # Extract a title from the message
     title = _ask_gemini(
         f"Extract a short document title (3-8 words) from this request: {message}\n\nReturn only the title, nothing else.",
@@ -1015,13 +1184,13 @@ async def generate_document(message: str, doc_info: dict) -> dict:
     loop = asyncio.get_event_loop()
 
     if fmt == "docx":
-        filepath = await loop.run_in_executor(None, create_docx, title, message, output_dir)
+        filepath = await loop.run_in_executor(None, create_docx, title, enriched_request, output_dir)
     elif fmt == "pptx":
-        filepath = await loop.run_in_executor(None, create_pptx, title, message, output_dir)
+        filepath = await loop.run_in_executor(None, create_pptx, title, enriched_request, output_dir)
     elif fmt == "pdf":
-        filepath = await loop.run_in_executor(None, create_pdf, title, message, output_dir)
+        filepath = await loop.run_in_executor(None, create_pdf, title, enriched_request, output_dir)
     elif fmt == "image":
-        filepath = await loop.run_in_executor(None, create_image, message, output_dir)
+        filepath = await loop.run_in_executor(None, create_image, enriched_request, output_dir)
     else:
         return {"error": f"Unsupported format: {fmt}"}
 

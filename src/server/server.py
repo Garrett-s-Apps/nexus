@@ -20,6 +20,14 @@ from pydantic import BaseModel
 from src.agents.org_chart import get_org_summary
 from src.memory.store import memory
 from src.observability.api_routes import router as metrics_router
+from src.security.auth_gate import (
+    AUTH_COOKIE,
+    SESSION_TTL,
+    create_session,
+    invalidate_session,
+    verify_passphrase,
+    verify_session,
+)
 from src.security.jwt_auth import sign_response
 
 
@@ -55,10 +63,31 @@ async def _start_slack():
 app = FastAPI(title="NEXUS", version="3.0.0", lifespan=lifespan)
 app.include_router(metrics_router)
 
+_ALLOWED_ORIGINS = [
+    "http://localhost:4200",
+    "http://localhost:4201",
+    "http://127.0.0.1:4200",
+    "http://127.0.0.1:4201",
+    "https://nexus-dashboard-black-nine.vercel.app",
+]
+
+
+def _origin_allowed(origin: str) -> bool:
+    """Allow listed origins plus any *.trycloudflare.com tunnel."""
+    if origin in _ALLOWED_ORIGINS:
+        return True
+    if origin.endswith(".trycloudflare.com") and origin.startswith("https://"):
+        return True
+    return False
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origin_regex=r"https://.*\.trycloudflare\.com",
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -67,12 +96,10 @@ async def jwt_signing_middleware(request: Request, call_next):
     """Attach an integrity JWT to every JSON response."""
     response = await call_next(request)
 
-    # Only sign JSON responses (skip SSE, HTML, file downloads)
     content_type = response.headers.get("content-type", "")
     if "application/json" not in content_type:
         return response
 
-    # Read the body, sign it, attach header, then re-emit
     body_chunks = []
     async for chunk in response.body_iterator:
         body_chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
@@ -84,7 +111,7 @@ async def jwt_signing_middleware(request: Request, call_next):
         token = sign_response(data)
         response.headers["X-Nexus-JWT"] = token
     except Exception:
-        pass  # Non-JSON or signing failure — pass through unsigned
+        pass
 
     from starlette.responses import Response as StarletteResponse
     return StarletteResponse(
@@ -93,6 +120,151 @@ async def jwt_signing_middleware(request: Request, call_next):
         headers=dict(response.headers),
         media_type=response.media_type,
     )
+
+
+
+_PUBLIC_PATHS = {
+    "/auth/login", "/auth/check", "/health", "/dashboard/logo.svg",
+    "/events", "/state", "/agents", "/cost", "/org", "/directive",
+    "/services", "/status", "/sessions", "/metrics/health",
+    "/metrics/daily", "/metrics/agents",
+}
+_PUBLIC_PREFIXES = ("/auth/",)
+_TOKEN_HEADER = "Authorization"
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP, respecting reverse-proxy headers."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
+
+
+@app.middleware("http")
+async def auth_gate_middleware(request: Request, call_next):
+    """Reject unauthenticated requests to protected routes."""
+    path = request.url.path
+
+    if path in _PUBLIC_PATHS or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        return await call_next(request)
+
+    if path == "/dashboard" or path == "/":
+        return await call_next(request)
+
+    # Check cookie first, then Authorization: Bearer header (for cross-origin)
+    session_id = request.cookies.get(AUTH_COOKIE)
+    if not session_id:
+        auth_header = request.headers.get(_TOKEN_HEADER, "")
+        if auth_header.startswith("Bearer "):
+            session_id = auth_header[7:]
+
+    user_agent = request.headers.get("user-agent", "")
+    client_ip = _get_client_ip(request)
+
+    if not verify_session(session_id, user_agent=user_agent, client_ip=client_ip):
+        from starlette.responses import JSONResponse
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+
+# Rate limiting for login attempts
+_login_attempts = {}  # {ip: [timestamp1, timestamp2, ...]}
+_MAX_LOGIN_ATTEMPTS = 5
+_RATE_LIMIT_WINDOW = 60  # seconds
+
+
+def _cleanup_old_attempts():
+    """Remove attempts older than the rate limit window."""
+    import time
+    cutoff = time.time() - _RATE_LIMIT_WINDOW
+    for ip in list(_login_attempts.keys()):
+        _login_attempts[ip] = [ts for ts in _login_attempts[ip] if ts > cutoff]
+        if not _login_attempts[ip]:
+            del _login_attempts[ip]
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Check if IP has exceeded rate limit. Returns True if allowed, False if rate limited."""
+    import time
+    _cleanup_old_attempts()
+
+    attempts = _login_attempts.get(ip, [])
+    if len(attempts) >= _MAX_LOGIN_ATTEMPTS:
+        return False
+
+    _login_attempts.setdefault(ip, []).append(time.time())
+    return True
+
+
+def _clear_rate_limits():
+    """Clear all rate limit tracking. Used for testing."""
+    global _login_attempts
+    _login_attempts = {}
+
+
+class LoginRequest(BaseModel):
+    passphrase: str
+
+
+@app.post("/auth/login")
+async def auth_login(req: LoginRequest, request: Request):
+    """Verify passphrase and set httponly session cookie."""
+    client_ip = _get_client_ip(request)
+
+    if not _check_rate_limit(client_ip):
+        from starlette.responses import JSONResponse
+        return JSONResponse(
+            {"error": "too many attempts, try again later"},
+            status_code=429
+        )
+
+    if not verify_passphrase(req.passphrase):
+        from starlette.responses import JSONResponse
+        return JSONResponse({"error": "invalid passphrase"}, status_code=403)
+
+    user_agent = request.headers.get("user-agent", "")
+    session_id = create_session(user_agent=user_agent, client_ip=client_ip)
+
+    from starlette.responses import JSONResponse
+    resp = JSONResponse({"ok": True, "token": session_id})
+    resp.set_cookie(
+        AUTH_COOKIE,
+        session_id,
+        max_age=SESSION_TTL,
+        httponly=True,
+        samesite="strict",
+        secure=False,
+        path="/",
+    )
+    return resp
+
+
+@app.get("/auth/check")
+async def auth_check(request: Request):
+    """Let the dashboard check if the current session is valid."""
+    session_id = request.cookies.get(AUTH_COOKIE)
+    user_agent = request.headers.get("user-agent", "")
+    client_ip = _get_client_ip(request)
+    valid = verify_session(session_id, user_agent=user_agent, client_ip=client_ip)
+    return {"authenticated": valid}
+
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request):
+    """Destroy the session and clear the cookie."""
+    session_id = request.cookies.get(AUTH_COOKIE)
+    if session_id:
+        invalidate_session(session_id)
+    from starlette.responses import JSONResponse
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(AUTH_COOKIE, path="/")
+    return resp
 
 
 class MessageRequest(BaseModel):
@@ -108,7 +280,7 @@ async def handle_message(req: MessageRequest):
 
 
 @app.get("/events")
-async def event_stream(request: Request, last_id: int = 0):
+async def event_stream(request: Request, last_id: int = 0, token: str = ""):
     async def generate():
         current_id = last_id
         while True:
@@ -131,7 +303,9 @@ async def event_stream(request: Request, last_id: int = 0):
 
 @app.get("/state")
 async def get_state():
-    return memory.get_world_snapshot()
+    snapshot = memory.get_world_snapshot()
+    snapshot["latest_event_id"] = memory.get_latest_event_id()
+    return snapshot
 
 
 @app.get("/agents")
@@ -189,6 +363,38 @@ async def legacy_status():
     return await get_state()
 
 
+# ---------------------------------------------------------------------------
+# CLI Session Management
+# ---------------------------------------------------------------------------
+
+@app.get("/sessions")
+async def list_sessions():
+    """List all active Claude Code CLI sessions."""
+    from src.sessions.cli_pool import cli_pool
+    return cli_pool.status()
+
+
+@app.delete("/sessions/{thread_ts}")
+async def kill_session(thread_ts: str):
+    """Terminate a specific CLI session by thread_ts."""
+    from src.sessions.cli_pool import cli_pool
+    session = cli_pool._sessions.get(thread_ts)
+    if not session:
+        return {"error": "Session not found", "thread_ts": thread_ts}
+    await session.kill()
+    del cli_pool._sessions[thread_ts]
+    return {"ok": True, "thread_ts": thread_ts}
+
+
+@app.delete("/sessions")
+async def kill_all_sessions():
+    """Terminate all CLI sessions."""
+    from src.sessions.cli_pool import cli_pool
+    count = cli_pool.active_count()
+    await cli_pool.shutdown()
+    return {"ok": True, "killed": count}
+
+
 @app.get("/dashboard")
 async def serve_dashboard():
     import os
@@ -199,14 +405,10 @@ async def serve_dashboard():
     return {"error": "Dashboard not found", "path": dashboard_path}
 
 
-# ---------------------------------------------------------------------------
-# Chat API — mirrors Slack threads into the dashboard
-# ---------------------------------------------------------------------------
-
 @app.get("/chat/threads")
 async def list_threads():
     """List recent Slack threads (directives and conversations)."""
-    from src.slack.listener import get_slack_client, get_channel_id
+    from src.slack.listener import get_channel_id, get_slack_client
     client = get_slack_client()
     channel = get_channel_id()
     if not client or not channel:
@@ -232,7 +434,7 @@ async def list_threads():
 @app.get("/chat/thread/{thread_ts}")
 async def get_thread(thread_ts: str):
     """Get all messages in a Slack thread."""
-    from src.slack.listener import get_slack_client, get_channel_id
+    from src.slack.listener import get_channel_id, get_slack_client
     client = get_slack_client()
     channel = get_channel_id()
     if not client or not channel:

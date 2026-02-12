@@ -240,16 +240,80 @@ async def run_gemini(
 async def run_o3(
     task_prompt: str,
     system_prompt: str = "",
+    timeout_seconds: int = 300,
 ) -> dict[str, Any]:
-    """Call OpenAI o3 for systems architecture consulting."""
+    """Route o3 calls through Codex CLI, with LangChain fallback."""
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        logger.warning("Codex CLI not found, falling back to LangChain ChatOpenAI")
+        return await _run_o3_langchain(task_prompt, system_prompt)
+
+    full_prompt = task_prompt
+    if system_prompt:
+        full_prompt = f"{system_prompt}\n\n---\n\nTASK:\n{task_prompt}"
+
+    # Args passed as array — safe from shell injection
+    cmd = [codex_bin, "--model", "o3", "--quiet", full_prompt]
+
+    logger.info("[o3] Spawning Codex CLI for systems consulting")
+    start_time = time.time()
+
+    try:
+        env = {**os.environ}
+        api_key = _load_key("OPENAI_API_KEY")
+        if api_key:
+            env["OPENAI_API_KEY"] = api_key
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_seconds
+            )
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return {
+                "output": f"Codex CLI timed out after {timeout_seconds}s",
+                "cost": 0.0, "model": "codex:o3", "agent": "systems_consultant",
+            }
+
+        elapsed = time.time() - start_time
+        output = stdout.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0 and not output:
+            errors = stderr.decode("utf-8", errors="replace").strip()
+            output = f"Codex exited with code {proc.returncode}: {errors[:500]}"
+
+        cost_tracker.record("codex:o3", "systems_consultant", 0, 0)
+        logger.info("[o3] Codex CLI completed in %.1fs (%d chars)", elapsed, len(output))
+
+        return {
+            "output": output,
+            "cost": 0.0, "model": "codex:o3", "agent": "systems_consultant",
+            "mode": "codex_cli", "elapsed_seconds": elapsed,
+        }
+
+    except Exception as e:
+        logger.error("[o3] Codex CLI error: %s", e)
+        return await _run_o3_langchain(task_prompt, system_prompt)
+
+
+async def _run_o3_langchain(
+    task_prompt: str,
+    system_prompt: str = "",
+) -> dict[str, Any]:
+    """Fallback: call o3 via LangChain if Codex CLI unavailable."""
     api_key = _load_key("OPENAI_API_KEY")
     if not api_key:
         return {"output": "ERROR: No OpenAI API key found", "cost": 0.0}
 
-    llm = ChatOpenAI(
-        model="o3",
-        api_key=api_key,
-    )
+    llm = ChatOpenAI(model="o3", api_key=api_key)
 
     messages = []
     if system_prompt:
@@ -261,9 +325,7 @@ async def run_o3(
         cost = cost_tracker.record("o3", "systems_consultant", 2000, 1000)
         return {
             "output": response.content,
-            "cost": cost,
-            "model": "o3",
-            "agent": "systems_consultant",
+            "cost": cost, "model": "o3", "agent": "systems_consultant",
         }
     except Exception as e:
         return {"output": f"o3 error: {str(e)}", "cost": 0.0}

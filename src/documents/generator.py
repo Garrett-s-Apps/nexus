@@ -1,43 +1,184 @@
 """
 NEXUS Document Generator
 
-Creates docx, pptx, and pdf files based on CEO natural language requests.
-Uses Claude to generate content, then python-docx/python-pptx/reportlab
-to create the actual files. Uploads to Slack.
+Creates DOCX, PPTX, PDF, and image files from natural language requests.
+Uses Gemini for content generation, then python-docx/python-pptx/reportlab/PIL
+to create the actual files.
 """
 
-import os
 import json
+import os
 import tempfile
-import anthropic
-from typing import Any
+from datetime import datetime
+
+import google.genai as genai
+
+from src.config import get_key as _load_key  # consolidated key loading
 
 
-def _load_key(key_name: str) -> str | None:
+def _gather_internal_context(message: str) -> str:
+    """Check if a request references internal NEXUS data and return it as context.
+
+    This prevents Gemini from hallucinating when the user asks for documents
+    about things NEXUS actually knows (org chart, agents, team structure, etc.).
+    """
+    msg_lower = message.lower()
+    context_parts = []
+
+    # Org chart / team / agents / reporting structure
+    org_keywords = ["org chart", "org structure", "organization", "reporting structure",
+                    "team structure", "our team", "my team", "company structure",
+                    "who reports to", "direct reports", "headcount", "agents"]
+    if any(kw in msg_lower for kw in org_keywords):
+        try:
+            from src.agents.org_chart import ORG_CHART, get_org_summary
+            context_parts.append(
+                "=== NEXUS INTERNAL DATA: Organization Chart ===\n"
+                f"{get_org_summary()}\n"
+                "=== END INTERNAL DATA ===\n"
+            )
+        except ImportError:
+            pass
+
+    # Model distribution / costs
+    cost_keywords = ["model cost", "model distribution", "token cost", "budget",
+                     "cost breakdown", "spending"]
+    if any(kw in msg_lower for kw in cost_keywords):
+        try:
+            from src.agents.org_chart import MODEL_COSTS, ORG_CHART
+            model_counts = {}
+            for cfg in ORG_CHART.values():
+                m = cfg["model"]
+                model_counts[m] = model_counts.get(m, 0) + 1
+            summary = "Model Distribution:\n"
+            for model, count in sorted(model_counts.items()):
+                cost = MODEL_COSTS.get(model, {})
+                summary += f"  {model}: {count} agents (input: ${cost.get('input', '?')}/M, output: ${cost.get('output', '?')}/M)\n"
+            context_parts.append(
+                "=== NEXUS INTERNAL DATA: Model Costs ===\n"
+                f"{summary}"
+                "=== END INTERNAL DATA ===\n"
+            )
+        except ImportError:
+            pass
+
+    # Project / registry info from ORG_CHART.md on disk
+    if not context_parts:
+        # Broader check: if message mentions NEXUS-specific nouns, load org chart file
+        nexus_keywords = ["nexus", "our engineers", "our org", "engineering team",
+                          "product team", "security team", "qa team"]
+        if any(kw in msg_lower for kw in nexus_keywords):
+            org_chart_path = os.path.join(os.path.dirname(__file__), "..", "..", "ORG_CHART.md")
+            org_chart_path = os.path.normpath(org_chart_path)
+            if os.path.exists(org_chart_path):
+                with open(org_chart_path) as f:
+                    content = f.read()
+                context_parts.append(
+                    "=== NEXUS INTERNAL DATA: Organization Chart ===\n"
+                    f"{content}\n"
+                    "=== END INTERNAL DATA ===\n"
+                )
+
+    return "\n".join(context_parts)
+
+
+def _needs_web_enrichment(message: str, has_internal_context: bool) -> str | None:
+    """Determine if a request needs web search and return a search query if so.
+
+    Returns a search query string, or None if web search isn't needed.
+    """
+    msg_lower = message.lower()
+
+    # Explicit web indicators — always search
+    explicit = ["compare to", "compared to", "vs ", "versus", "industry",
+                "benchmark", "best practice", "how does", "market",
+                "competitor", "trend", "research", "statistics", "data on",
+                "according to", "report on", "analysis of"]
+    if any(kw in msg_lower for kw in explicit):
+        # Build a focused search query from the request
+        # Strip NEXUS-internal references to get a cleaner web query
+        clean = msg_lower
+        for strip in ["nexus", "our team", "our org", "my team", "our company",
+                       "pdf", "docx", "pptx", "slides", "document", "report",
+                       "create", "generate", "make", "send", "give me", "show me"]:
+            clean = clean.replace(strip, "")
+        return clean.strip()[:200] or None
+
+    # If we have NO internal context and the request is about something specific,
+    # it's probably about external info — search for it
+    if not has_internal_context:
+        # Topics that are almost certainly external
+        external_signals = ["how to", "what is", "who is", "guide", "tutorial",
+                           "example", "template", "standard", "framework",
+                           "technology", "platform", "tool", "service"]
+        if any(kw in msg_lower for kw in external_signals):
+            return msg_lower[:200]
+
+    return None
+
+
+async def _gather_web_context(query: str) -> str:
+    """Search the web and return results formatted as context for document generation."""
     try:
-        with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith(key_name + "="):
-                    return line.split("=", 1)[1]
-    except FileNotFoundError:
-        pass
-    return os.environ.get(key_name)
+        from src.tools.web_search import format_results_for_context
+        from src.tools.web_search import search as web_search
+        results = await web_search(query, num_results=5)
+        if results:
+            formatted = format_results_for_context(results)
+            return (
+                "=== WEB RESEARCH RESULTS ===\n"
+                f"{formatted}\n"
+                "=== END WEB RESEARCH ===\n"
+            )
+    except Exception as e:
+        print(f"[Documents] Web search failed (non-fatal): {e}")
+    return ""
 
 
-def _get_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=_load_key("ANTHROPIC_API_KEY"))
+def _ask_gemini(prompt: str, system: str = "") -> str:
+    """Generate content using Gemini API, with Claude fallback on rate limit."""
+    # Try Gemini first
+    api_key = _load_key("GOOGLE_AI_API_KEY")
+    if api_key:
+        try:
+            client = genai.Client(api_key=api_key)
+            full_prompt = f"{system}\n\n{prompt}" if system else prompt
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=full_prompt,
+            )
+            return response.text
+        except Exception as e:
+            print(f"[Documents] Gemini failed ({e}), falling back to Claude")
 
+    # Claude fallback
+    anthropic_key = _load_key("ANTHROPIC_API_KEY")
+    if not anthropic_key:
+        raise ValueError("No AI API keys available (tried Gemini and Claude)")
 
-def _ask_claude(prompt: str, system: str = "") -> str:
-    client = _get_client()
-    msg = client.messages.create(
-        model="claude-sonnet-4-20250514",
+    import anthropic
+    client = anthropic.Anthropic(api_key=anthropic_key)
+    messages = [{"role": "user", "content": prompt}]
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
         max_tokens=4096,
-        system=system or "You are a content generator for NEXUS. Respond with exactly what is requested, no preamble.",
-        messages=[{"role": "user", "content": prompt}],
+        system=system or "You generate document content as requested.",
+        messages=messages,
     )
-    return msg.content[0].text
+    return response.content[0].text
+
+
+def _parse_json(content: str) -> dict:
+    """Parse JSON content, stripping markdown fences if present."""
+    content = content.strip()
+    if content.startswith("```"):
+        lines = content.split("\n")
+        # Remove first line (```json or ```)
+        content = "\n".join(lines[1:])
+    if content.endswith("```"):
+        content = content.rsplit("```", 1)[0]
+    content = content.strip()
+    return json.loads(content)
 
 
 # ============================================
@@ -47,57 +188,214 @@ def _ask_claude(prompt: str, system: str = "") -> str:
 def create_docx(title: str, request: str, output_dir: str = None) -> str:
     """Generate a Word document based on the request."""
     from docx import Document
-    from docx.shared import Inches, Pt, Cm
     from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt, RGBColor
 
-    content = _ask_claude(
+    content = _ask_gemini(
         f"Generate the full content for a professional document.\n\n"
         f"Title: {title}\n"
         f"Request: {request}\n\n"
-        f"Return the content as JSON with this structure:\n"
-        f'{{"title": "...", "subtitle": "...", "sections": [{{"heading": "...", "body": "..."}}, ...]}}\n\n'
+        f"Return the content as JSON with this exact structure:\n"
+        f'{{"title": "...", "subtitle": "...", "author": "NEXUS", "sections": ['
+        f'{{"heading": "...", "level": 1, "content": ['
+        f'{{"type": "paragraph", "text": "..."}}, '
+        f'{{"type": "bullets", "items": ["...", "..."]}}, '
+        f'{{"type": "numbered_list", "items": ["...", "..."]}}, '
+        f'{{"type": "table", "headers": ["..."], "rows": [["...", "..."]]}} '
+        f'{{"type": "code", "language": "python", "code": "..."}}, '
+        f'{{"type": "quote", "text": "...", "attribution": "..."}}'
+        f']}}, ...]}}\n\n'
         f"Only return the JSON, nothing else.",
-        system="You generate document content as structured JSON. No markdown, no code fences, just JSON."
+        system="You generate document content as structured JSON. No markdown, no code fences, just JSON. "
+               "If the request includes INTERNAL DATA sections, use that real data as the basis for the document content. "
+               "Do NOT invent or hallucinate information when real data is provided."
     )
 
     try:
-        # Strip markdown fences if present
-        content = content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1]
-        if content.endswith("```"):
-            content = content.rsplit("```", 1)[0]
-        content = content.strip()
-        data = json.loads(content)
+        data = _parse_json(content)
     except json.JSONDecodeError:
         data = {
             "title": title,
             "subtitle": "",
-            "sections": [{"heading": "Content", "body": content}],
+            "author": "NEXUS",
+            "sections": [{"heading": "Content", "level": 1, "content": [{"type": "paragraph", "text": content}]}],
         }
 
     doc = Document()
 
-    # Title
-    title_para = doc.add_heading(data.get("title", title), level=0)
-    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    # Set default fonts
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = 'Calibri'
+    font.size = Pt(11)
 
-    # Subtitle
+    # Cover page
+    title_para = doc.add_paragraph()
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_run = title_para.add_run(data.get("title", title))
+    title_run.font.name = 'Cambria'
+    title_run.font.size = Pt(28)
+    title_run.font.bold = True
+
     if data.get("subtitle"):
-        sub = doc.add_paragraph(data["subtitle"])
-        sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        sub.style.font.size = Pt(14)
+        subtitle_para = doc.add_paragraph()
+        subtitle_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        subtitle_run = subtitle_para.add_run(data["subtitle"])
+        subtitle_run.font.name = 'Calibri'
+        subtitle_run.font.size = Pt(14)
+        subtitle_run.font.color.rgb = RGBColor(0x66, 0x66, 0x88)
 
     doc.add_paragraph("")
+    doc.add_paragraph("")
+
+    generated_para = doc.add_paragraph()
+    generated_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    generated_run = generated_para.add_run(f"Generated by NEXUS\n{datetime.now().strftime('%B %d, %Y')}")
+    generated_run.font.size = Pt(10)
+    generated_run.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+
+    # Page break after cover
+    doc.add_page_break()
+
+    # Table of contents placeholder
+    toc_para = doc.add_paragraph("Table of Contents")
+    toc_para.style = doc.styles['Heading 1']
+    toc_field = doc.add_paragraph()
+    toc_field.add_run("(Table of contents will be generated when opened in Word)")
+    toc_field.paragraph_format.space_after = Pt(12)
+    doc.add_page_break()
+
+    # Section counter for numbering
+    section_counters = {1: 0, 2: 0, 3: 0}
 
     # Sections
     for section in data.get("sections", []):
+        level = section.get("level", 1)
+
         if section.get("heading"):
-            doc.add_heading(section["heading"], level=1)
-        if section.get("body"):
-            for para in section["body"].split("\n\n"):
-                if para.strip():
-                    doc.add_paragraph(para.strip())
+            # Update section numbering
+            section_counters[level] += 1
+            if level == 1:
+                section_counters[2] = 0
+                section_counters[3] = 0
+            elif level == 2:
+                section_counters[3] = 0
+
+            # Create section number
+            if level == 1:
+                section_num = f"{section_counters[1]}. "
+            elif level == 2:
+                section_num = f"{section_counters[1]}.{section_counters[2]}. "
+            else:
+                section_num = f"{section_counters[1]}.{section_counters[2]}.{section_counters[3]}. "
+
+            heading = doc.add_heading(section_num + section["heading"], level=level)
+            heading.paragraph_format.space_before = Pt(12)
+            heading.paragraph_format.space_after = Pt(6)
+            heading_run = heading.runs[0]
+            heading_run.font.name = 'Cambria'
+
+        # Render content items
+        for item in section.get("content", []):
+            item_type = item.get("type")
+
+            if item_type == "paragraph":
+                para = doc.add_paragraph(item.get("text", ""))
+                para.paragraph_format.space_after = Pt(6)
+
+            elif item_type == "bullets":
+                for bullet_text in item.get("items", []):
+                    para = doc.add_paragraph(bullet_text, style='List Bullet')
+                    para.paragraph_format.space_after = Pt(3)
+                doc.add_paragraph("")  # Space after bullet list
+
+            elif item_type == "numbered_list":
+                for num_text in item.get("items", []):
+                    para = doc.add_paragraph(num_text, style='List Number')
+                    para.paragraph_format.space_after = Pt(3)
+                doc.add_paragraph("")  # Space after numbered list
+
+            elif item_type == "table":
+                headers = item.get("headers", [])
+                rows = item.get("rows", [])
+
+                if headers and rows:
+                    table = doc.add_table(rows=1 + len(rows), cols=len(headers))
+                    table.style = 'Light Grid Accent 1'
+
+                    # Header row
+                    header_cells = table.rows[0].cells
+                    for i, header in enumerate(headers):
+                        header_cells[i].text = header
+                        # Style header
+                        for paragraph in header_cells[i].paragraphs:
+                            for run in paragraph.runs:
+                                run.font.bold = True
+
+                    # Data rows
+                    for row_idx, row_data in enumerate(rows):
+                        row_cells = table.rows[row_idx + 1].cells
+                        for col_idx, cell_data in enumerate(row_data):
+                            if col_idx < len(row_cells):
+                                row_cells[col_idx].text = str(cell_data)
+
+                    doc.add_paragraph("")  # Space after table
+
+            elif item_type == "code":
+                code_para = doc.add_paragraph()
+                code_run = code_para.add_run(item.get("code", ""))
+                code_run.font.name = 'Courier New'
+                code_run.font.size = Pt(9)
+
+                # Add light gray background
+                shading_elm = OxmlElement('w:shd')
+                shading_elm.set(qn('w:fill'), 'F0F0F5')
+                code_para._element.get_or_add_pPr().append(shading_elm)
+
+                code_para.paragraph_format.space_after = Pt(6)
+                code_para.paragraph_format.left_indent = Pt(20)
+
+            elif item_type == "quote":
+                quote_para = doc.add_paragraph()
+                quote_para.paragraph_format.left_indent = Pt(40)
+                quote_para.paragraph_format.space_after = Pt(6)
+
+                quote_run = quote_para.add_run(f'"{item.get("text", "")}"')
+                quote_run.font.italic = True
+
+                if item.get("attribution"):
+                    quote_para.add_run(f"\n— {item['attribution']}")
+
+    # Add header
+    section = doc.sections[0]
+    header = section.header
+    header_para = header.paragraphs[0]
+    header_run = header_para.add_run(data.get("title", title))
+    header_run.font.size = Pt(9)
+    header_run.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+
+    # Add footer with page number
+    footer = section.footer
+    footer_para = footer.paragraphs[0]
+    footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    footer_para.add_run("Page ")
+
+    # Add page number field
+    fldChar1 = OxmlElement('w:fldChar')
+    fldChar1.set(qn('w:fldCharType'), 'begin')
+
+    instrText = OxmlElement('w:instrText')
+    instrText.set(qn('xml:space'), 'preserve')
+    instrText.text = "PAGE"
+
+    fldChar2 = OxmlElement('w:fldChar')
+    fldChar2.set(qn('w:fldCharType'), 'end')
+
+    footer_para._element.append(fldChar1)
+    footer_para._element.append(instrText)
+    footer_para._element.append(fldChar2)
 
     output_dir = output_dir or tempfile.mkdtemp()
     safe_title = title[:50].replace(" ", "_").replace("/", "_")
@@ -113,33 +411,35 @@ def create_docx(title: str, request: str, output_dir: str = None) -> str:
 def create_pptx(title: str, request: str, output_dir: str = None) -> str:
     """Generate a PowerPoint presentation based on the request."""
     from pptx import Presentation
-    from pptx.util import Inches, Pt, Emu
     from pptx.dml.color import RGBColor
     from pptx.enum.text import PP_ALIGN
+    from pptx.util import Inches, Pt
 
-    content = _ask_claude(
+    content = _ask_gemini(
         f"Generate content for a professional slide deck.\n\n"
         f"Title: {title}\n"
         f"Request: {request}\n\n"
         f"Return as JSON with this structure:\n"
-        f'{{"title": "...", "subtitle": "...", "slides": [{{"title": "...", "bullets": ["...", "..."], "notes": "..."}}, ...]}}\n\n'
-        f"Generate 6-12 slides. Only return the JSON, nothing else.",
-        system="You generate presentation content as structured JSON. No markdown, no code fences, just JSON."
+        f'{{"title": "...", "subtitle": "...", "slides": ['
+        f'{{"type": "content", "title": "...", "bullets": ["...", "..."], "notes": "..."}}, '
+        f'{{"type": "two_column", "title": "...", "left": ["...", "..."], "right": ["...", "..."], "notes": "..."}}, '
+        f'{{"type": "comparison", "title": "...", "left_header": "...", "left": ["..."], "right_header": "...", "right": ["..."], "notes": "..."}}, '
+        f'{{"type": "quote", "quote": "...", "attribution": "...", "notes": "..."}}, '
+        f'{{"type": "closing", "message": "Thank you", "submessage": "Questions?", "notes": "..."}}'
+        f']}}\n\n'
+        f"Generate 6-12 slides. Use a mix of slide types. Only return the JSON, nothing else.",
+        system="You generate presentation content as structured JSON. No markdown, no code fences, just JSON. "
+               "If the request includes INTERNAL DATA sections, use that real data as the basis for the slides. "
+               "Do NOT invent or hallucinate information when real data is provided."
     )
 
     try:
-        content = content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1]
-        if content.endswith("```"):
-            content = content.rsplit("```", 1)[0]
-        content = content.strip()
-        data = json.loads(content)
+        data = _parse_json(content)
     except json.JSONDecodeError:
         data = {
             "title": title,
             "subtitle": request,
-            "slides": [{"title": "Content", "bullets": [request], "notes": ""}],
+            "slides": [{"type": "content", "title": "Content", "bullets": [request], "notes": ""}],
         }
 
     prs = Presentation()
@@ -157,6 +457,16 @@ def create_pptx(title: str, request: str, output_dir: str = None) -> str:
         fill = background.fill
         fill.solid()
         fill.fore_color.rgb = color
+
+    def add_slide_number(slide, slide_num):
+        """Add slide number to bottom right."""
+        txBox = slide.shapes.add_textbox(Inches(12), Inches(7), Inches(1), Inches(0.3))
+        tf = txBox.text_frame
+        p = tf.paragraphs[0]
+        p.text = str(slide_num)
+        p.font.size = Pt(10)
+        p.font.color.rgb = subtitle_color
+        p.alignment = PP_ALIGN.RIGHT
 
     # Title slide
     slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
@@ -183,53 +493,204 @@ def create_pptx(title: str, request: str, output_dir: str = None) -> str:
         p2.alignment = PP_ALIGN.CENTER
 
     # Accent line
-    from pptx.util import Emu
-    line = slide.shapes.add_shape(
-        1, Inches(4), Inches(4), Inches(5), Pt(3)
-    )
+    line = slide.shapes.add_shape(1, Inches(4), Inches(4), Inches(5), Pt(3))
     line.fill.solid()
     line.fill.fore_color.rgb = accent_color
     line.line.fill.background()
 
     # Content slides
+    slide_num = 1
     for slide_data in data.get("slides", []):
+        slide_type = slide_data.get("type", "content")
+
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         set_slide_bg(slide, bg_color)
 
-        # Title
-        txBox = slide.shapes.add_textbox(Inches(0.8), Inches(0.5), Inches(11.5), Inches(1))
-        tf = txBox.text_frame
-        tf.word_wrap = True
-        p = tf.paragraphs[0]
-        p.text = slide_data.get("title", "")
-        p.font.size = Pt(32)
-        p.font.bold = True
-        p.font.color.rgb = accent_color
+        # Add slide number
+        add_slide_number(slide, slide_num)
+        slide_num += 1
 
-        # Accent underline
-        line = slide.shapes.add_shape(
-            1, Inches(0.8), Inches(1.4), Inches(2), Pt(3)
-        )
-        line.fill.solid()
-        line.fill.fore_color.rgb = accent_color
-        line.line.fill.background()
-
-        # Bullets
-        bullets = slide_data.get("bullets", [])
-        if bullets:
-            txBox = slide.shapes.add_textbox(Inches(1), Inches(1.8), Inches(11), Inches(5))
+        # Title (common to most slide types)
+        if slide_type in ["content", "two_column", "comparison"]:
+            txBox = slide.shapes.add_textbox(Inches(0.8), Inches(0.5), Inches(11.5), Inches(1))
             tf = txBox.text_frame
             tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.text = slide_data.get("title", "")
+            p.font.size = Pt(32)
+            p.font.bold = True
+            p.font.color.rgb = accent_color
 
-            for i, bullet in enumerate(bullets):
+            # Accent underline
+            line = slide.shapes.add_shape(1, Inches(0.8), Inches(1.4), Inches(2), Pt(3))
+            line.fill.solid()
+            line.fill.fore_color.rgb = accent_color
+            line.line.fill.background()
+
+        if slide_type == "content":
+            # Bullets
+            bullets = slide_data.get("bullets", [])
+            if bullets:
+                txBox = slide.shapes.add_textbox(Inches(1), Inches(1.8), Inches(11), Inches(5))
+                tf = txBox.text_frame
+                tf.word_wrap = True
+
+                for i, bullet in enumerate(bullets):
+                    if i == 0:
+                        p = tf.paragraphs[0]
+                    else:
+                        p = tf.add_paragraph()
+
+                    # Handle sub-bullets (items starting with "  - " or similar)
+                    if isinstance(bullet, str) and bullet.strip().startswith("-"):
+                        p.text = f"  ▹  {bullet.lstrip('- ').strip()}"
+                        p.level = 1
+                        p.font.size = Pt(16)
+                    else:
+                        p.text = f"▸  {bullet}"
+                        p.level = 0
+                        p.font.size = Pt(20)
+
+                    p.font.color.rgb = text_color
+                    p.space_after = Pt(12)
+
+        elif slide_type == "two_column":
+            # Two columns side by side
+            left_items = slide_data.get("left", [])
+            right_items = slide_data.get("right", [])
+
+            # Left column
+            txBox_left = slide.shapes.add_textbox(Inches(0.8), Inches(1.8), Inches(5.5), Inches(5))
+            tf_left = txBox_left.text_frame
+            tf_left.word_wrap = True
+
+            for i, item in enumerate(left_items):
                 if i == 0:
-                    p = tf.paragraphs[0]
+                    p = tf_left.paragraphs[0]
                 else:
-                    p = tf.add_paragraph()
-                p.text = f"▸  {bullet}"
-                p.font.size = Pt(20)
+                    p = tf_left.add_paragraph()
+                p.text = f"▸  {item}"
+                p.font.size = Pt(18)
                 p.font.color.rgb = text_color
-                p.space_after = Pt(12)
+                p.space_after = Pt(10)
+
+            # Right column
+            txBox_right = slide.shapes.add_textbox(Inches(6.8), Inches(1.8), Inches(5.5), Inches(5))
+            tf_right = txBox_right.text_frame
+            tf_right.word_wrap = True
+
+            for i, item in enumerate(right_items):
+                if i == 0:
+                    p = tf_right.paragraphs[0]
+                else:
+                    p = tf_right.add_paragraph()
+                p.text = f"▸  {item}"
+                p.font.size = Pt(18)
+                p.font.color.rgb = text_color
+                p.space_after = Pt(10)
+
+        elif slide_type == "comparison":
+            # Comparison with headers
+            left_header = slide_data.get("left_header", "Option A")
+            right_header = slide_data.get("right_header", "Option B")
+            left_items = slide_data.get("left", [])
+            right_items = slide_data.get("right", [])
+
+            # Left header
+            txBox_lh = slide.shapes.add_textbox(Inches(0.8), Inches(1.8), Inches(5.5), Inches(0.5))
+            tf_lh = txBox_lh.text_frame
+            p_lh = tf_lh.paragraphs[0]
+            p_lh.text = left_header
+            p_lh.font.size = Pt(24)
+            p_lh.font.bold = True
+            p_lh.font.color.rgb = accent_color
+
+            # Left items
+            txBox_l = slide.shapes.add_textbox(Inches(0.8), Inches(2.5), Inches(5.5), Inches(4.5))
+            tf_l = txBox_l.text_frame
+            tf_l.word_wrap = True
+
+            for i, item in enumerate(left_items):
+                if i == 0:
+                    p = tf_l.paragraphs[0]
+                else:
+                    p = tf_l.add_paragraph()
+                p.text = f"▸  {item}"
+                p.font.size = Pt(16)
+                p.font.color.rgb = text_color
+                p.space_after = Pt(8)
+
+            # Right header
+            txBox_rh = slide.shapes.add_textbox(Inches(6.8), Inches(1.8), Inches(5.5), Inches(0.5))
+            tf_rh = txBox_rh.text_frame
+            p_rh = tf_rh.paragraphs[0]
+            p_rh.text = right_header
+            p_rh.font.size = Pt(24)
+            p_rh.font.bold = True
+            p_rh.font.color.rgb = accent_color
+
+            # Right items
+            txBox_r = slide.shapes.add_textbox(Inches(6.8), Inches(2.5), Inches(5.5), Inches(4.5))
+            tf_r = txBox_r.text_frame
+            tf_r.word_wrap = True
+
+            for i, item in enumerate(right_items):
+                if i == 0:
+                    p = tf_r.paragraphs[0]
+                else:
+                    p = tf_r.add_paragraph()
+                p.text = f"▸  {item}"
+                p.font.size = Pt(16)
+                p.font.color.rgb = text_color
+                p.space_after = Pt(8)
+
+        elif slide_type == "quote":
+            # Large centered quote
+            quote_text = slide_data.get("quote", "")
+            attribution = slide_data.get("attribution", "")
+
+            txBox = slide.shapes.add_textbox(Inches(2), Inches(2.5), Inches(9), Inches(3))
+            tf = txBox.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.text = f'"{quote_text}"'
+            p.font.size = Pt(32)
+            p.font.italic = True
+            p.font.color.rgb = text_color
+            p.alignment = PP_ALIGN.CENTER
+
+            if attribution:
+                txBox_attr = slide.shapes.add_textbox(Inches(2), Inches(5.5), Inches(9), Inches(0.8))
+                tf_attr = txBox_attr.text_frame
+                p_attr = tf_attr.paragraphs[0]
+                p_attr.text = f"— {attribution}"
+                p_attr.font.size = Pt(20)
+                p_attr.font.color.rgb = subtitle_color
+                p_attr.alignment = PP_ALIGN.CENTER
+
+        elif slide_type == "closing":
+            # Thank you / closing slide
+            message = slide_data.get("message", "Thank you")
+            submessage = slide_data.get("submessage", "Questions?")
+
+            txBox = slide.shapes.add_textbox(Inches(1), Inches(2.5), Inches(11), Inches(1.5))
+            tf = txBox.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.text = message
+            p.font.size = Pt(48)
+            p.font.bold = True
+            p.font.color.rgb = text_color
+            p.alignment = PP_ALIGN.CENTER
+
+            txBox2 = slide.shapes.add_textbox(Inches(1), Inches(4.2), Inches(11), Inches(1))
+            tf2 = txBox2.text_frame
+            tf2.word_wrap = True
+            p2 = tf2.paragraphs[0]
+            p2.text = submessage
+            p2.font.size = Pt(24)
+            p2.font.color.rgb = accent_color
+            p2.alignment = PP_ALIGN.CENTER
 
         # Speaker notes
         if slide_data.get("notes"):
@@ -248,40 +709,70 @@ def create_pptx(title: str, request: str, output_dir: str = None) -> str:
 
 def create_pdf(title: str, request: str, output_dir: str = None) -> str:
     """Generate a PDF document based on the request."""
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch
     from reportlab.lib.colors import HexColor
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (
+        ListFlowable,
+        ListItem,
+        PageBreak,
+        Paragraph,
+        Preformatted,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
 
-    content = _ask_claude(
+    content = _ask_gemini(
         f"Generate the full content for a professional document.\n\n"
         f"Title: {title}\n"
         f"Request: {request}\n\n"
         f"Return as JSON with this structure:\n"
-        f'{{"title": "...", "subtitle": "...", "sections": [{{"heading": "...", "body": "..."}}, ...]}}\n\n'
+        f'{{"title": "...", "subtitle": "...", "sections": ['
+        f'{{"heading": "...", "level": 1, "content": ['
+        f'{{"type": "paragraph", "text": "..."}}, '
+        f'{{"type": "bullets", "items": ["...", "..."]}}, '
+        f'{{"type": "numbered_list", "items": ["...", "..."]}}, '
+        f'{{"type": "table", "headers": ["..."], "rows": [["...", "..."]]}} '
+        f'{{"type": "code", "language": "python", "code": "..."}}, '
+        f'{{"type": "quote", "text": "...", "attribution": "..."}}'
+        f']}}, ...]}}\n\n'
         f"Only return the JSON, nothing else.",
-        system="You generate document content as structured JSON. No markdown, no code fences, just JSON."
+        system="You generate document content as structured JSON. No markdown, no code fences, just JSON. "
+               "If the request includes INTERNAL DATA sections, use that real data as the basis for the document content. "
+               "Do NOT invent or hallucinate information when real data is provided."
     )
 
     try:
-        content = content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1]
-        if content.endswith("```"):
-            content = content.rsplit("```", 1)[0]
-        content = content.strip()
-        data = json.loads(content)
+        data = _parse_json(content)
     except json.JSONDecodeError:
         data = {
             "title": title,
             "subtitle": "",
-            "sections": [{"heading": "Content", "body": content}],
+            "sections": [{"heading": "Content", "level": 1, "content": [{"type": "paragraph", "text": content}]}],
         }
 
     output_dir = output_dir or tempfile.mkdtemp()
     safe_title = title[:50].replace(" ", "_").replace("/", "_")
     filepath = os.path.join(output_dir, f"{safe_title}.pdf")
+
+    # Custom page template with header/footer
+    def add_page_elements(canvas, doc):
+        canvas.saveState()
+
+        # Header
+        canvas.setFont('Helvetica', 9)
+        canvas.setFillColor(HexColor("#999999"))
+        canvas.drawString(inch, letter[1] - 0.5*inch, data.get("title", title))
+
+        # Page number
+        page_num = canvas.getPageNumber()
+        canvas.drawRightString(letter[0] - inch, 0.5*inch, f"Page {page_num}")
+
+        canvas.restoreState()
 
     doc = SimpleDocTemplate(
         filepath,
@@ -293,12 +784,15 @@ def create_pdf(title: str, request: str, output_dir: str = None) -> str:
     )
 
     styles = getSampleStyleSheet()
+
+    # Custom styles
     styles.add(ParagraphStyle(
         name="DocTitle",
         parent=styles["Title"],
-        fontSize=28,
+        fontSize=24,
         spaceAfter=6,
         textColor=HexColor("#1a1a2e"),
+        alignment=TA_CENTER,
     ))
     styles.add(ParagraphStyle(
         name="DocSubtitle",
@@ -306,43 +800,447 @@ def create_pdf(title: str, request: str, output_dir: str = None) -> str:
         fontSize=14,
         spaceAfter=20,
         textColor=HexColor("#666688"),
-        alignment=1,
+        alignment=TA_CENTER,
     ))
     styles.add(ParagraphStyle(
-        name="SectionHead",
+        name="SectionHead1",
         parent=styles["Heading1"],
         fontSize=18,
-        spaceBefore=16,
-        spaceAfter=8,
+        spaceBefore=12,
+        spaceAfter=6,
+        textColor=HexColor("#00d2ff"),
+    ))
+    styles.add(ParagraphStyle(
+        name="SectionHead2",
+        parent=styles["Heading2"],
+        fontSize=14,
+        spaceBefore=10,
+        spaceAfter=5,
         textColor=HexColor("#00d2ff"),
     ))
     styles.add(ParagraphStyle(
         name="BodyText2",
         parent=styles["Normal"],
         fontSize=11,
-        spaceAfter=8,
-        leading=16,
+        spaceAfter=6,
+        leading=14,
+    ))
+    styles.add(ParagraphStyle(
+        name="CodeBlock",
+        parent=styles["Code"],
+        fontName="Courier",
+        fontSize=9,
+        leftIndent=20,
+        spaceAfter=6,
+        backColor=HexColor("#f0f0f5"),
+    ))
+    styles.add(ParagraphStyle(
+        name="QuoteBlock",
+        parent=styles["Normal"],
+        fontSize=11,
+        leftIndent=40,
+        spaceAfter=6,
+        fontName="Helvetica-Oblique",
     ))
 
     story = []
+
+    # Cover page
+    story.append(Spacer(1, 2*inch))
     story.append(Paragraph(data.get("title", title), styles["DocTitle"]))
 
     if data.get("subtitle"):
         story.append(Paragraph(data["subtitle"], styles["DocSubtitle"]))
 
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 0.5*inch))
+    story.append(Paragraph(f"Generated by NEXUS<br/>{datetime.now().strftime('%B %d, %Y')}",
+                          ParagraphStyle(name="Generated", parent=styles["Normal"],
+                                       fontSize=10, textColor=HexColor("#999999"), alignment=TA_CENTER)))
+    story.append(PageBreak())
 
+    # Table of contents placeholder
+    story.append(Paragraph("Table of Contents", styles["SectionHead1"]))
+
+    toc_items = []
+    section_num = 0
     for section in data.get("sections", []):
         if section.get("heading"):
-            story.append(Paragraph(section["heading"], styles["SectionHead"]))
-        if section.get("body"):
-            for para in section["body"].split("\n\n"):
-                if para.strip():
-                    # Escape XML-sensitive characters
-                    safe = para.strip().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    story.append(Paragraph(safe, styles["BodyText2"]))
+            section_num += 1
+            toc_items.append([f"{section_num}.", section["heading"], ""])
 
-    doc.build(story)
+    if toc_items:
+        toc_table = Table(toc_items, colWidths=[0.5*inch, 5*inch, 0.5*inch])
+        toc_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 11),
+            ('TEXTCOLOR', (0, 0), (-1, -1), HexColor("#333333")),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ]))
+        story.append(toc_table)
+
+    story.append(PageBreak())
+
+    # Section counter for numbering
+    section_num = 0
+
+    # Sections
+    for section in data.get("sections", []):
+        level = section.get("level", 1)
+
+        if section.get("heading"):
+            section_num += 1
+            section_text = f"{section_num}. {section['heading']}"
+
+            if level == 1:
+                story.append(Paragraph(section_text, styles["SectionHead1"]))
+            else:
+                story.append(Paragraph(section_text, styles["SectionHead2"]))
+
+        # Render content items
+        for item in section.get("content", []):
+            item_type = item.get("type")
+
+            if item_type == "paragraph":
+                text = item.get("text", "")
+                # Escape XML-sensitive characters
+                safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                story.append(Paragraph(safe, styles["BodyText2"]))
+
+            elif item_type == "bullets":
+                bullet_items = []
+                for bullet_text in item.get("items", []):
+                    safe = bullet_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    bullet_items.append(ListItem(Paragraph(safe, styles["BodyText2"]),
+                                                leftIndent=20, bulletColor=HexColor("#00d2ff")))
+                story.append(ListFlowable(bullet_items, bulletType='bullet'))
+                story.append(Spacer(1, 6))
+
+            elif item_type == "numbered_list":
+                num_items = []
+                for num_text in item.get("items", []):
+                    safe = num_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    num_items.append(ListItem(Paragraph(safe, styles["BodyText2"]), leftIndent=20))
+                story.append(ListFlowable(num_items, bulletType='1'))
+                story.append(Spacer(1, 6))
+
+            elif item_type == "table":
+                headers = item.get("headers", [])
+                rows = item.get("rows", [])
+
+                if headers and rows:
+                    table_data = [headers] + rows
+                    t = Table(table_data)
+                    t.setStyle(TableStyle([
+                        # Header row
+                        ('BACKGROUND', (0, 0), (-1, 0), HexColor("#00d2ff")),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), HexColor("#ffffff")),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, 0), 11),
+                        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+
+                        # Data rows
+                        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                        ('FONTSIZE', (0, 1), (-1, -1), 10),
+                        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [HexColor("#ffffff"), HexColor("#f5f5f5")]),
+
+                        # Grid
+                        ('GRID', (0, 0), (-1, -1), 0.5, HexColor("#cccccc")),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                        ('TOPPADDING', (0, 0), (-1, -1), 4),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                    ]))
+                    story.append(t)
+                    story.append(Spacer(1, 12))
+
+            elif item_type == "code":
+                code_text = item.get("code", "")
+                story.append(Preformatted(code_text, styles["CodeBlock"]))
+
+            elif item_type == "quote":
+                quote_text = item.get("text", "")
+                attribution = item.get("attribution", "")
+
+                # Create quote with left border effect using table
+                quote_content = f'"{quote_text}"'
+                if attribution:
+                    quote_content += f"\n— {attribution}"
+
+                safe = quote_content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+                quote_table = Table([[Paragraph(safe, styles["QuoteBlock"])]], colWidths=[5*inch])
+                quote_table.setStyle(TableStyle([
+                    ('LEFTPADDING', (0, 0), (0, 0), 10),
+                    ('RIGHTPADDING', (0, 0), (0, 0), 10),
+                    ('TOPPADDING', (0, 0), (0, 0), 6),
+                    ('BOTTOMPADDING', (0, 0), (0, 0), 6),
+                    ('LINEAFTER', (0, 0), (0, 0), 3, HexColor("#00d2ff")),
+                ]))
+                story.append(quote_table)
+                story.append(Spacer(1, 6))
+
+    doc.build(story, onFirstPage=add_page_elements, onLaterPages=add_page_elements)
+    return filepath
+
+
+# ============================================
+# IMAGE
+# ============================================
+
+def _extract_image_prompt(raw_description: str) -> str:
+    """Extract a clean, focused image prompt from a raw request.
+
+    Strips internal context blocks, web research sections, and meta-instructions
+    so the image model gets a clear visual description.
+    """
+    # Strip NEXUS internal data sections
+    import re
+    clean = re.sub(r'===\s*(NEXUS INTERNAL DATA|WEB RESEARCH|END INTERNAL|END WEB).*?===\s*',
+                   '', raw_description, flags=re.DOTALL)
+    # Strip enrichment instructions
+    clean = re.sub(r'IMPORTANT:.*?(?=\n\n|\Z)', '', clean, flags=re.DOTALL)
+    clean = re.sub(r'Prefer internal data.*?(?=\n\n|\Z)', '', clean, flags=re.DOTALL)
+    clean = re.sub(r'Do NOT make up.*?(?=\n\n|\Z)', '', clean, flags=re.DOTALL)
+    clean = clean.strip()
+
+    # If still too long, ask LLM to distill into an image prompt
+    if len(clean) > 500:
+        try:
+            from src.agents.org_chart import HAIKU
+            from src.agents.base import allm_call
+            import asyncio
+            loop = asyncio.get_event_loop()
+            summary, _ = loop.run_until_complete(allm_call(
+                f"Distill this into a concise image generation prompt (1-3 sentences). "
+                f"Focus on what the image should LOOK like visually:\n\n{clean[:2000]}",
+                HAIKU, max_tokens=200))
+            return summary.strip()
+        except Exception:
+            pass
+
+    return clean[:500] if clean else raw_description[:500]
+
+
+def _try_gemini_image_generation(description: str, output_path: str) -> bool:
+    """Generate an image using Gemini's native image generation.
+
+    Tries models in order: gemini-2.5-flash-image (production),
+    gemini-3-pro-image-preview (pro quality).
+    Returns True if successful, False to fall back to PIL.
+    """
+    api_key = _load_key("GOOGLE_AI_API_KEY")
+    if not api_key:
+        return False
+
+    # Clean the prompt before sending to image models
+    clean_prompt = _extract_image_prompt(description)
+    print(f"[Documents] Image prompt: {clean_prompt[:100]}...")
+
+    models = ["gemini-2.5-flash-image", "gemini-3-pro-image-preview"]
+
+    for model_name in models:
+        try:
+            from google.genai import types
+
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model=model_name,
+                contents=clean_prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"],
+                ),
+            )
+
+            for part in response.parts:
+                if part.inline_data is not None:
+                    image = part.as_image()
+                    image.save(output_path)
+                    print(f"[Documents] Image generated with {model_name}")
+                    return True
+
+            print(f"[Documents] {model_name} returned no image data")
+
+        except Exception as e:
+            print(f"[Documents] {model_name} failed ({e})")
+
+    print("[Documents] All Gemini image models failed, falling back to PIL")
+    return False
+
+
+def create_image(description: str, output_dir: str = None) -> str:
+    """Generate an image: tries Gemini native generation first, falls back to PIL."""
+
+    output_dir = output_dir or os.path.expanduser("~/.nexus/documents/images")
+    os.makedirs(output_dir, exist_ok=True)
+
+    safe_title = description[:50].replace(" ", "_").replace("/", "_").replace("\n", "_")
+    filepath = os.path.join(output_dir, f"{safe_title}.png")
+
+    # Try Gemini native image generation
+    if _try_gemini_image_generation(description, filepath):
+        return filepath
+
+    # Fallback: PIL diagram with improved visuals
+    import math
+    from PIL import Image, ImageDraw, ImageFont
+
+    # Extract a clean prompt for the diagram structure
+    clean_desc = _extract_image_prompt(description)
+
+    prompt = (
+        f"Create a structured diagram for: '{clean_desc}'\n\n"
+        f"Return JSON: {{"
+        f'"title": "...", '
+        f'"style": "org_chart"|"flowchart"|"architecture"|"simple", '
+        f'"boxes": [{{"label": "...", "sublabel": "...", "x": 100, "y": 100, '
+        f'"width": 180, "height": 70, "color": "#00D2FF"|"#FF6B6B"|"#4ECB71"|"#FFD93D"|"#A78BFA"}}, ...], '
+        f'"connections": [{{"from": 0, "to": 1, "label": "...", "style": "solid"|"dashed"}}, ...]}}\n\n'
+        f"Canvas: 1600x1000. Space boxes well. Use color to group related items. Only return JSON."
+    )
+
+    content = _ask_gemini(prompt, system=(
+        "You generate professional diagram layouts as JSON. "
+        "Use the full canvas. Assign distinct colors to different groups/departments. "
+        "Add sublabels for roles/descriptions. If internal data is provided, use it accurately."))
+
+    try:
+        data = _parse_json(content)
+    except json.JSONDecodeError:
+        data = {
+            "title": clean_desc[:60],
+            "style": "simple",
+            "boxes": [{"label": clean_desc[:40], "x": 600, "y": 400, "width": 400, "height": 200}],
+            "connections": [],
+        }
+
+    width, height = 1600, 1000
+    bg_color = (18, 18, 32)
+    text_color = (255, 255, 255)
+    muted_color = (160, 160, 200)
+
+    img = Image.new('RGB', (width, height), bg_color)
+    draw = ImageDraw.Draw(img)
+
+    # Subtle grid background
+    for gx in range(0, width, 40):
+        draw.line([(gx, 0), (gx, height)], fill=(25, 25, 45), width=1)
+    for gy in range(0, height, 40):
+        draw.line([(0, gy), (width, gy)], fill=(25, 25, 45), width=1)
+
+    # Load fonts
+    try:
+        title_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 36)
+        box_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 16)
+        sub_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
+        label_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 11)
+    except OSError:
+        title_font = box_font = sub_font = label_font = ImageFont.load_default()
+
+    # Draw title with accent line
+    title = data.get("title", "Diagram")
+    title_bbox = draw.textbbox((0, 0), title, font=title_font)
+    title_w = title_bbox[2] - title_bbox[0]
+    draw.text(((width - title_w) / 2, 25), title, fill=(0, 210, 255), font=title_font)
+    draw.line([(width/2 - title_w/2, 70), (width/2 + title_w/2, 70)], fill=(0, 210, 255), width=2)
+
+    # Subtitle with timestamp
+    sub_text = f"Generated by NEXUS  |  {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    sub_bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
+    draw.text(((width - (sub_bbox[2] - sub_bbox[0])) / 2, 78), sub_text, fill=muted_color, font=sub_font)
+
+    boxes = data.get("boxes", [])
+    connections = data.get("connections", [])
+
+    def hex_to_rgb(h):
+        h = h.lstrip('#')
+        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+    def darken(rgb, factor=0.3):
+        return tuple(max(0, int(c * factor)) for c in rgb)
+
+    # Draw connections
+    for conn in connections:
+        fi, ti = conn.get("from", 0), conn.get("to", 0)
+        if fi < len(boxes) and ti < len(boxes):
+            fb, tb = boxes[fi], boxes[ti]
+            fx = fb.get("x", 0) + fb.get("width", 100) / 2
+            fy = fb.get("y", 0) + fb.get("height", 60) / 2
+            tx = tb.get("x", 0) + tb.get("width", 100) / 2
+            ty = tb.get("y", 0) + tb.get("height", 60) / 2
+
+            line_color = (60, 60, 100)
+            style = conn.get("style", "solid")
+
+            if style == "dashed":
+                # Dashed line
+                length = math.sqrt((tx-fx)**2 + (ty-fy)**2)
+                if length > 0:
+                    dx, dy = (tx-fx)/length, (ty-fy)/length
+                    dash_len, gap_len = 8, 6
+                    pos = 0
+                    while pos < length:
+                        sx = fx + dx * pos
+                        sy = fy + dy * pos
+                        ex = fx + dx * min(pos + dash_len, length)
+                        ey = fy + dy * min(pos + dash_len, length)
+                        draw.line([(sx, sy), (ex, ey)], fill=line_color, width=2)
+                        pos += dash_len + gap_len
+            else:
+                draw.line([(fx, fy), (tx, ty)], fill=line_color, width=2)
+
+            # Arrowhead
+            angle = math.atan2(ty - fy, tx - fx)
+            sz = 10
+            pts = [
+                (tx, ty),
+                (tx - sz * math.cos(angle - math.pi/6), ty - sz * math.sin(angle - math.pi/6)),
+                (tx - sz * math.cos(angle + math.pi/6), ty - sz * math.sin(angle + math.pi/6)),
+            ]
+            draw.polygon(pts, fill=line_color)
+
+            if conn.get("label"):
+                mx, my = (fx + tx) / 2, (fy + ty) / 2
+                lb = draw.textbbox((0, 0), conn["label"], font=label_font)
+                lw = lb[2] - lb[0]
+                # Background pill for label
+                draw.rounded_rectangle(
+                    [mx - lw/2 - 6, my - 10, mx + lw/2 + 6, my + 6],
+                    radius=4, fill=(30, 30, 50))
+                draw.text((mx - lw/2, my - 8), conn["label"], fill=muted_color, font=label_font)
+
+    # Draw boxes with rounded corners and color accents
+    for box in boxes:
+        x, y = box.get("x", 0), box.get("y", 0)
+        w, h = box.get("width", 180), box.get("height", 70)
+        label = box.get("label", "")
+        sublabel = box.get("sublabel", "")
+        accent = hex_to_rgb(box.get("color", "#00D2FF"))
+        bg = darken(accent, 0.15)
+
+        # Rounded rectangle with accent top border
+        draw.rounded_rectangle([x, y, x+w, y+h], radius=8, fill=bg, outline=(50, 50, 70), width=1)
+        draw.rounded_rectangle([x, y, x+w, y+4], radius=2, fill=accent)
+
+        # Label (centered)
+        lb = draw.textbbox((0, 0), label, font=box_font)
+        lw, lh = lb[2] - lb[0], lb[3] - lb[1]
+        ty_offset = (h - lh) / 2 - (6 if sublabel else 0)
+        draw.text((x + (w - lw) / 2, y + ty_offset), label, fill=text_color, font=box_font)
+
+        # Sublabel
+        if sublabel:
+            sb = draw.textbbox((0, 0), sublabel, font=sub_font)
+            sw = sb[2] - sb[0]
+            draw.text((x + (w - sw) / 2, y + ty_offset + lh + 4), sublabel, fill=muted_color, font=sub_font)
+
+    # Footer
+    footer = "NEXUS Virtual Company"
+    fb = draw.textbbox((0, 0), footer, font=sub_font)
+    draw.text((width - (fb[2] - fb[0]) - 20, height - 25), footer, fill=(50, 50, 80), font=sub_font)
+
+    img.save(filepath, quality=95)
     return filepath
 
 
@@ -358,6 +1256,7 @@ def detect_doc_request(message: str) -> dict | None:
         "docx": ["docx", "word doc", "word document", ".docx"],
         "pptx": ["pptx", "powerpoint", "slide deck", "slides", "presentation", ".pptx", "pitch deck"],
         "pdf": ["pdf", ".pdf"],
+        "image": ["image", "diagram", "chart", "architecture diagram", "flowchart", "infographic"],
     }
 
     for fmt, keywords in format_map.items():
@@ -378,8 +1277,33 @@ async def generate_document(message: str, doc_info: dict) -> dict:
 
     fmt = doc_info["format"]
 
+    # Gather internal NEXUS data relevant to the request
+    internal_context = _gather_internal_context(message)
+
+    # Search the web if the request needs public info
+    web_context = ""
+    search_query = _needs_web_enrichment(message, bool(internal_context))
+    if search_query:
+        web_context = await _gather_web_context(search_query)
+
+    # Build enriched request with all available context
+    enriched_request = message
+    context_parts = []
+    if internal_context:
+        context_parts.append(internal_context)
+    if web_context:
+        context_parts.append(web_context)
+    if context_parts:
+        enriched_request = (
+            f"{message}\n\n"
+            f"IMPORTANT: Use the following real data to generate this document. "
+            f"Prefer internal data over web results when both are available. "
+            f"Do NOT make up or hallucinate information — use exactly what is provided.\n\n"
+            + "\n".join(context_parts)
+        )
+
     # Extract a title from the message
-    title = _ask_claude(
+    title = _ask_gemini(
         f"Extract a short document title (3-8 words) from this request: {message}\n\nReturn only the title, nothing else.",
         system="You extract concise titles. Return only the title text."
     ).strip().strip('"').strip("'")
@@ -391,11 +1315,13 @@ async def generate_document(message: str, doc_info: dict) -> dict:
     loop = asyncio.get_event_loop()
 
     if fmt == "docx":
-        filepath = await loop.run_in_executor(None, create_docx, title, message, output_dir)
+        filepath = await loop.run_in_executor(None, create_docx, title, enriched_request, output_dir)
     elif fmt == "pptx":
-        filepath = await loop.run_in_executor(None, create_pptx, title, message, output_dir)
+        filepath = await loop.run_in_executor(None, create_pptx, title, enriched_request, output_dir)
     elif fmt == "pdf":
-        filepath = await loop.run_in_executor(None, create_pdf, title, message, output_dir)
+        filepath = await loop.run_in_executor(None, create_pdf, title, enriched_request, output_dir)
+    elif fmt == "image":
+        filepath = await loop.run_in_executor(None, create_image, enriched_request, output_dir)
     else:
         return {"error": f"Unsupported format: {fmt}"}
 

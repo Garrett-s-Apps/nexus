@@ -9,14 +9,14 @@ The LangGraph graph rebuilds dynamically after every org change.
 The ORG_CHART.md auto-regenerates after every change.
 """
 
-import os
 import json
+import os
 import sqlite3
-import yaml
 import time
-from typing import Any
 from dataclasses import dataclass
+from typing import Any
 
+import yaml
 
 DB_PATH = os.path.expanduser("~/.nexus/registry.db")
 YAML_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "config", "agents.yaml")

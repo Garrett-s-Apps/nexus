@@ -5,11 +5,11 @@ SQLite-backed session storage. Conversations survive server restarts.
 Each session tracks: directive, state snapshots, messages, cost.
 """
 
-import os
 import json
+import os
 import time
+
 import aiosqlite
-from typing import Any
 
 DB_PATH = os.path.expanduser("~/.nexus/sessions.db")
 

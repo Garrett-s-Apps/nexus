@@ -11,9 +11,9 @@ Uses the CEO agent (Opus) to interpret ambiguous input.
 """
 
 import json
-from src.agents.sdk_bridge import run_planning_agent
-from src.agents.registry import registry
 
+from src.agents.registry import registry
+from src.agents.sdk_bridge import run_planning_agent
 
 CEO_INTERPRETER_PROMPT = """You are the CEO's chief interpreter at NEXUS. Garrett (the human CEO) has
 sent a message. Your job is to classify it and extract structured intent.

@@ -2,26 +2,13 @@
 NEXUS Conversation Engine — persistent memory version.
 """
 
-import os
-import json
 import asyncio
+
 import anthropic
-from typing import Any
 
 from src.agents.registry import registry
+from src.config import get_key as _load_key  # consolidated key loading
 from src.memory.store import memory
-
-
-def _load_key(key_name: str) -> str | None:
-    try:
-        with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith(key_name + "="):
-                    return line.split("=", 1)[1]
-    except FileNotFoundError:
-        pass
-    return os.environ.get(key_name)
 
 
 def _get_client() -> anthropic.AsyncAnthropic:

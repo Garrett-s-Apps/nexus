@@ -5,10 +5,9 @@ Handles all git interactions: branching, committing, PR creation.
 NEXUS commits to feature branches, never directly to main.
 """
 
+import json
 import os
 import subprocess
-import json
-from typing import Any
 
 
 def _run(cmd: list[str], cwd: str = None) -> tuple[int, str, str]:
@@ -237,3 +236,149 @@ _This PR was created by NEXUS autonomous engineering system._
         # Return to original branch
         self.run_git("checkout", original_branch)
         return sha
+
+    # ============================================
+    # AUTO-DEPLOY TO GITHUB ORG
+    # ============================================
+
+    def deploy_to_github(
+        self,
+        org: str = None,
+        repo_name: str = None,
+        description: str = "",
+        private: bool = False,
+    ) -> dict:
+        """
+        Deploy project to a GitHub org. Creates the repo if needed,
+        sets remote, and pushes. Returns repo URL or error.
+
+        Args:
+            org: GitHub org (defaults to GITHUB_ORG env var / Garrett-s-Apps)
+            repo_name: Repo name (defaults to project directory name)
+            description: Repo description
+            private: Whether the repo should be private
+        """
+        if org is None:
+            org = os.environ.get("GITHUB_ORG", "Garrett-s-Apps")
+        if repo_name is None:
+            repo_name = os.path.basename(self.path)
+
+        full_name = f"{org}/{repo_name}"
+
+        # Check if repo already exists on GitHub
+        code, stdout, _ = _run(
+            ["gh", "repo", "view", full_name, "--json", "url", "-q", ".url"],
+            cwd=self.path,
+        )
+
+        if code != 0:
+            # Repo doesn't exist — create it
+            visibility = "--private" if private else "--public"
+            create_cmd = [
+                "gh", "repo", "create", full_name,
+                visibility,
+                "--source", self.path,
+                "--push",
+            ]
+            if description:
+                create_cmd.extend(["--description", description])
+
+            code, stdout, stderr = _run(create_cmd, cwd=self.path)
+            if code != 0:
+                return {"error": f"Failed to create repo: {stderr}"}
+
+            return {
+                "url": f"https://github.com/{full_name}",
+                "created": True,
+                "repo": full_name,
+            }
+
+        # Repo exists — ensure remote is set and push
+        repo_url = stdout.strip()
+        code, current_remote, _ = self.run_git("remote", "get-url", "origin")
+        expected_remote = f"https://github.com/{full_name}.git"
+
+        if code != 0 or full_name not in current_remote:
+            # Add or update origin remote
+            self.run_git("remote", "remove", "origin")
+            self.run_git("remote", "add", "origin", expected_remote)
+
+        branch = self.current_branch()
+        self.push(branch)
+
+        return {
+            "url": repo_url,
+            "created": False,
+            "repo": full_name,
+        }
+
+    # ============================================
+    # START ON LOCALHOST
+    # ============================================
+
+    def start_localhost(self) -> dict:
+        """
+        Detect project type and return the command to start a dev server.
+        Does NOT start the server itself — returns info for the engine
+        to spawn as a background process.
+        """
+        has_file = lambda name: os.path.isfile(os.path.join(self.path, name))
+
+        if has_file("package.json"):
+            # Node.js project
+            pkg_path = os.path.join(self.path, "package.json")
+            try:
+                with open(pkg_path) as f:
+                    pkg = json.loads(f.read())
+                scripts = pkg.get("scripts", {})
+                if "dev" in scripts:
+                    cmd = "npm run dev"
+                elif "start" in scripts:
+                    cmd = "npm start"
+                else:
+                    cmd = "npx serve ."
+            except Exception:
+                cmd = "npm start"
+
+            # Auto-install deps if node_modules missing
+            needs_install = not os.path.isdir(os.path.join(self.path, "node_modules"))
+
+            return {
+                "type": "node",
+                "cmd": cmd,
+                "install_cmd": "npm install" if needs_install else None,
+                "cwd": self.path,
+            }
+
+        elif has_file("requirements.txt") or has_file("pyproject.toml"):
+            # Python project
+            if has_file("manage.py"):
+                cmd = "python manage.py runserver"
+            elif has_file("app.py") or has_file("main.py"):
+                entry = "app.py" if has_file("app.py") else "main.py"
+                cmd = f"python {entry}"
+            else:
+                cmd = "uvicorn main:app --reload --port 8000"
+
+            return {
+                "type": "python",
+                "cmd": cmd,
+                "install_cmd": "pip install -r requirements.txt" if has_file("requirements.txt") else None,
+                "cwd": self.path,
+            }
+
+        elif has_file("index.html"):
+            # Static site
+            return {
+                "type": "static",
+                "cmd": "npx serve .",
+                "install_cmd": None,
+                "cwd": self.path,
+            }
+
+        return {
+            "type": "unknown",
+            "cmd": None,
+            "cwd": self.path,
+            "error": "Could not detect project type",
+        }

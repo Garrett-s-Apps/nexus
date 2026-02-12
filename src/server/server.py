@@ -1,445 +1,474 @@
 """
-NEXUS Server
+NEXUS Server (v1)
 
-FastAPI server running on localhost:4200. Single entry point for all clients.
-Now with dynamic org management and CEO natural language interpretation.
+FastAPI on localhost:4200.
+- POST /message — messages from Garrett
+- GET /events — SSE stream for dashboard
+- GET /state — world state snapshot
+- GET /agents, /org, /directive, /services, /health, /cost
 """
 
 import asyncio
 import json
-import os
-import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, BackgroundTasks
-from pydantic import BaseModel, Field
-from typing import Literal
 
-from src.agents.registry import registry
-from src.agents.ceo_interpreter import execute_org_change
-from src.agents.org_chart_generator import generate_org_chart, update_org_chart_in_repo
-from src.agents.sdk_bridge import run_sdk_agent, run_planning_agent
-from src.cost.tracker import cost_tracker
-from src.slack.notifier import notify, notify_demo, notify_completion, notify_escalation, notify_kpi
-from src.session.store import session_store
-from src.kpi.tracker import kpi_tracker
-from src.git_ops.git import GitOps
-from src.security.scanner import run_full_audit
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 
-
-sessions: dict[str, dict] = {}
-active_runs: dict[str, asyncio.Task] = {}
-
-
-class MessageRequest(BaseModel):
-    message: str
-    source: Literal["slack", "ide", "cli", "api", "happy_coder"] = "api"
-    project_path: str = ""
-    session_id: str | None = None
-    history: list[dict] = Field(default_factory=list)
-
-
-class TalkRequest(BaseModel):
-    agent_name: str
-    message: str
-    source: Literal["slack", "ide", "cli", "api", "happy_coder"] = "api"
-    session_id: str | None = None
-
-
-class StatusResponse(BaseModel):
-    status: str
-    active_sessions: int
-    active_runs: int
-    total_cost: float
-    hourly_rate: float
-    active_agents: int
-    sessions: list[dict] = Field(default_factory=list)
-
-
-async def execute_directive_bg(session_id: str, directive: str, project_path: str, source: str, project_id: str = ""):
-    try:
-        await session_store.create_session(session_id, directive, source, project_path)
-        await session_store.add_message(session_id, "user", directive)
-
-        from src.orchestrator.task_runner import run_task
-        result = await run_task(session_id, directive, project_path, project_id)
-
-        sessions[session_id]["state"] = result
-        sessions[session_id]["status"] = result.get("status", "complete")
-        await session_store.update_status(session_id, result.get("status", "complete"))
-
-    except Exception as e:
-        import traceback
-        sessions[session_id]["status"] = "error"
-        sessions[session_id]["error"] = str(e)
-        await session_store.update_status(session_id, "error", str(e))
-        print(f"[Server] Directive execution failed: {e}")
-        print(f"[Server] Traceback:\n{traceback.format_exc()}")
-        notify_escalation("orchestrator", f"Execution failed: {str(e)[:200]}")
-
-    finally:
-        if session_id in active_runs:
-            del active_runs[session_id]
+from src.agents.org_chart import get_org_summary
+from src.memory.store import memory
+from src.observability.api_routes import router as metrics_router
+from src.security.auth_gate import (
+    AUTH_COOKIE,
+    SESSION_TTL,
+    create_session,
+    invalidate_session,
+    verify_passphrase,
+    verify_session,
+)
+from src.security.jwt_auth import sign_response
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize persistent memory
-    from src.memory.store import memory
+    print("[Server] Initializing...")
     memory.init()
+    memory.emit_event("server", "starting", {})
 
-    # Initialize session persistence
-    await session_store.init()
+    from src.orchestrator.engine import engine
+    await engine.start()
 
-    if not registry.is_initialized():
-        registry.load_from_yaml()
-        notify("Nexus initialized from default org structure.")
+    asyncio.create_task(_start_slack())
 
-    nexus_path = os.path.expanduser("~/Projects/nexus")
-    if os.path.exists(nexus_path):
-        update_org_chart_in_repo(nexus_path)
-
-    notify("Nexus team is online.")
-
-    # Fire off a Haiku greeting async
-    try:
-        import anthropic
-        def _load_key(key_name):
-            try:
-                with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith(key_name + "="):
-                            return line.split("=", 1)[1]
-            except FileNotFoundError:
-                pass
-            return os.environ.get(key_name)
-
-        api_key = _load_key("ANTHROPIC_API_KEY")
-        client = anthropic.Anthropic(api_key=api_key)
-        agents = registry.get_active_agents()
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=60,
-            system="You are Nexus, an AI engineering org that just came online. Write ONE short, witty sentence about being ready for work. Be casual and fun — like a team Slack message. No emojis. No markdown.",
-            messages=[{"role": "user", "content": f"We have {len(agents)} agents online. Say something."}],
-        )
-        notify(resp.content[0].text)
-    except Exception as e:
-        print(f"[Server] Haiku greeting failed: {e}")
-
-    # Resume any interrupted tasks from before restart
-    from src.orchestrator.task_runner import resume_pending_tasks
-    await resume_pending_tasks()
-
+    print("[Server] NEXUS v1 running on http://localhost:4200")
+    memory.emit_event("server", "ready", {"port": 4200})
     yield
-    # On shutdown, self-commit any pending changes
-    if os.path.exists(os.path.join(nexus_path, ".git")):
-        git = GitOps(nexus_path)
-        if not git.status()["clean"]:
-            git.self_commit("auto-save on shutdown")
-    notify("Nexus server shutting down.")
+
+    print("[Server] Shutting down...")
+    from src.orchestrator.engine import engine as eng
+    await eng.stop()
+    memory.emit_event("server", "stopped", {})
 
 
-app = FastAPI(
-    title="NEXUS Server",
-    description="Enterprise multi-agent orchestration system",
-    version="0.3.0",
-    lifespan=lifespan,
+async def _start_slack():
+    try:
+        from src.slack.listener import start_slack_listener
+        await start_slack_listener()
+    except Exception as e:
+        print(f"[Server] Slack failed (non-fatal): {e}")
+
+
+app = FastAPI(title="NEXUS", version="3.0.0", lifespan=lifespan)
+app.include_router(metrics_router)
+
+_ALLOWED_ORIGINS = [
+    "http://localhost:4200",
+    "http://localhost:4201",
+    "http://127.0.0.1:4200",
+    "http://127.0.0.1:4201",
+    "https://nexus-dashboard-black-nine.vercel.app",
+]
+
+
+def _origin_allowed(origin: str) -> bool:
+    """Allow listed origins plus any *.trycloudflare.com tunnel."""
+    if origin in _ALLOWED_ORIGINS:
+        return True
+    if origin.endswith(".trycloudflare.com") and origin.startswith("https://"):
+        return True
+    return False
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"https://.*\.trycloudflare\.com",
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok", "version": "0.3.0", "active_agents": len(registry.get_active_agents())}
+@app.middleware("http")
+async def jwt_signing_middleware(request: Request, call_next):
+    """Attach an integrity JWT to every JSON response."""
+    response = await call_next(request)
 
+    content_type = response.headers.get("content-type", "")
+    if "application/json" not in content_type:
+        return response
 
-@app.get("/status", response_model=StatusResponse)
-async def status():
-    return StatusResponse(
-        status="running",
-        active_sessions=len(sessions),
-        active_runs=len(active_runs),
-        total_cost=cost_tracker.total_cost,
-        hourly_rate=cost_tracker.hourly_rate,
-        active_agents=len(registry.get_active_agents()),
-        sessions=[
-            {
-                "id": sid,
-                "directive": s.get("directive", ""),
-                "status": s.get("status", "unknown"),
-                "source": s.get("source", "unknown"),
-            }
-            for sid, s in sessions.items()
-        ],
+    body_chunks = []
+    async for chunk in response.body_iterator:
+        body_chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
+    body = b"".join(body_chunks)
+
+    try:
+        import json as _json
+        data = _json.loads(body)
+        token = sign_response(data)
+        response.headers["X-Nexus-JWT"] = token
+    except Exception:
+        pass
+
+    from starlette.responses import Response as StarletteResponse
+    return StarletteResponse(
+        content=body,
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=response.media_type,
     )
 
 
-@app.post("/message")
-async def handle_message(req: MessageRequest, background_tasks: BackgroundTasks):
-    session_id = req.session_id or str(uuid.uuid4())
 
-    try:
-        from src.agents.conversation import converse, resolve_project
-
-        result = await converse(req.message, history=req.history)
-
-        answer = result["answer"]
-        actions = result.get("actions", [])
-
-        # Process any actions
-        for action in actions:
-            if action["type"] == "execute":
-                # Find the project and kick off execution
-                project = resolve_project(action["name"])
-                if project:
-                    proj_path = os.path.expanduser(project.get("path", "~/Projects"))
-                    directive = f"{project.get('description', action['name'])}"
-                    project_id = project.get("id", "")
-
-                    sessions[session_id] = {
-                        "directive": directive,
-                        "source": req.source,
-                        "project_path": proj_path,
-                        "status": "running",
-                        "state": None,
-                        "error": None,
-                    }
-
-                    task = asyncio.create_task(
-                        execute_directive_bg(session_id, directive, proj_path, req.source, project_id)
-                    )
-                    active_runs[session_id] = task
-
-            elif action["type"] == "org_change":
-                try:
-                    # Parse and execute org change
-                    intent = {
-                        "category": "ORG_CHANGE",
-                        "sub_type": action["action"],
-                        "details": json.loads(action["details"]) if isinstance(action["details"], str) else action["details"],
-                    }
-                    from src.agents.ceo_interpreter import execute_org_change
-                    org_result = await execute_org_change(intent)
-                    answer += f"\n\n{org_result}"
-                except Exception as e:
-                    answer += f"\n\nOrg change failed: {e}"
-
-            elif action["type"] == "command":
-                cmd_result = await run_command_internal(action["name"], action.get("args", ""), req.source)
-                if "dashboard" in cmd_result:
-                    answer += f"\n```{cmd_result['dashboard']}```"
-                elif "reporting_tree" in cmd_result:
-                    answer += f"\n```{cmd_result['reporting_tree']}```"
-
-        return {
-            "session_id": session_id,
-            "category": "CONVERSATION",
-            "answer": answer,
-            "actions": [a["type"] for a in actions],
-            "cost": result.get("cost", 0),
-        }
-
-    except Exception as e:
-        import traceback
-        print(f"[Server] Message handler error: {e}")
-        print(f"[Server] Traceback:\n{traceback.format_exc()}")
-        return {
-            "session_id": session_id,
-            "category": "ERROR",
-            "error": f"{type(e).__name__}: {str(e)[:300]}",
-        }
+_PUBLIC_PATHS = {
+    "/auth/login", "/auth/check", "/health", "/dashboard/logo.svg",
+    "/events", "/state", "/agents", "/cost", "/org", "/directive",
+    "/services", "/status", "/sessions", "/metrics/health",
+    "/metrics/daily", "/metrics/agents",
+}
+_PUBLIC_PREFIXES = ("/auth/",)
+_TOKEN_HEADER = "Authorization"
 
 
-@app.post("/talk")
-async def talk_to_agent(req: TalkRequest):
-    agent_key = req.agent_name.lower().replace("-", "_").replace(" ", "_")
-    agent = registry.get_agent(agent_key)
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP, respecting reverse-proxy headers."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
 
-    if not agent:
-        found = registry.search_agents(req.agent_name)
-        if found:
-            agent = found[0]
-            agent_key = agent.id
-        else:
-            available = [a.id for a in registry.get_active_agents()]
-            return {"error": f"Unknown agent: {req.agent_name}. Available: {', '.join(available)}"}
 
-    agent_config = agent.to_dict()
+@app.middleware("http")
+async def auth_gate_middleware(request: Request, call_next):
+    """Reject unauthenticated requests to protected routes."""
+    path = request.url.path
 
-    if agent.spawns_sdk:
-        result = await run_sdk_agent(
-            agent_key,
-            agent_config,
-            req.message,
-            sessions.get(req.session_id, {}).get("project_path", os.path.expanduser("~/Projects")),
+    if path in _PUBLIC_PATHS or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        return await call_next(request)
+
+    if path == "/dashboard" or path == "/":
+        return await call_next(request)
+
+    # Check cookie first, then Authorization: Bearer header (for cross-origin)
+    session_id = request.cookies.get(AUTH_COOKIE)
+    if not session_id:
+        auth_header = request.headers.get(_TOKEN_HEADER, "")
+        if auth_header.startswith("Bearer "):
+            session_id = auth_header[7:]
+
+    user_agent = request.headers.get("user-agent", "")
+    client_ip = _get_client_ip(request)
+
+    if not verify_session(session_id, user_agent=user_agent, client_ip=client_ip):
+        from starlette.responses import JSONResponse
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+
+# Rate limiting for login attempts
+_login_attempts = {}  # {ip: [timestamp1, timestamp2, ...]}
+_MAX_LOGIN_ATTEMPTS = 5
+_RATE_LIMIT_WINDOW = 60  # seconds
+
+
+def _cleanup_old_attempts():
+    """Remove attempts older than the rate limit window."""
+    import time
+    cutoff = time.time() - _RATE_LIMIT_WINDOW
+    for ip in list(_login_attempts.keys()):
+        _login_attempts[ip] = [ts for ts in _login_attempts[ip] if ts > cutoff]
+        if not _login_attempts[ip]:
+            del _login_attempts[ip]
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Check if IP has exceeded rate limit. Returns True if allowed, False if rate limited."""
+    import time
+    _cleanup_old_attempts()
+
+    attempts = _login_attempts.get(ip, [])
+    if len(attempts) >= _MAX_LOGIN_ATTEMPTS:
+        return False
+
+    _login_attempts.setdefault(ip, []).append(time.time())
+    return True
+
+
+def _clear_rate_limits():
+    """Clear all rate limit tracking. Used for testing."""
+    global _login_attempts
+    _login_attempts = {}
+
+
+class LoginRequest(BaseModel):
+    passphrase: str
+
+
+@app.post("/auth/login")
+async def auth_login(req: LoginRequest, request: Request):
+    """Verify passphrase and set httponly session cookie."""
+    client_ip = _get_client_ip(request)
+
+    if not _check_rate_limit(client_ip):
+        from starlette.responses import JSONResponse
+        return JSONResponse(
+            {"error": "too many attempts, try again later"},
+            status_code=429
         )
-    else:
-        result = await run_planning_agent(agent_key, agent_config, req.message)
 
-    return {
-        "agent": agent.name,
-        "agent_id": agent.id,
-        "response": result["output"],
-        "cost": result["cost"],
-        "model": result["model"],
-    }
+    if not verify_passphrase(req.passphrase):
+        from starlette.responses import JSONResponse
+        return JSONResponse({"error": "invalid passphrase"}, status_code=403)
+
+    user_agent = request.headers.get("user-agent", "")
+    session_id = create_session(user_agent=user_agent, client_ip=client_ip)
+
+    from starlette.responses import JSONResponse
+    resp = JSONResponse({"ok": True, "token": session_id})
+    resp.set_cookie(
+        AUTH_COOKIE,
+        session_id,
+        max_age=SESSION_TTL,
+        httponly=True,
+        samesite="strict",
+        secure=False,
+        path="/",
+    )
+    return resp
+
+
+@app.get("/auth/check")
+async def auth_check(request: Request):
+    """Let the dashboard check if the current session is valid."""
+    session_id = request.cookies.get(AUTH_COOKIE)
+    user_agent = request.headers.get("user-agent", "")
+    client_ip = _get_client_ip(request)
+    valid = verify_session(session_id, user_agent=user_agent, client_ip=client_ip)
+    return {"authenticated": valid}
+
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request):
+    """Destroy the session and clear the cookie."""
+    session_id = request.cookies.get(AUTH_COOKIE)
+    if session_id:
+        invalidate_session(session_id)
+    from starlette.responses import JSONResponse
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(AUTH_COOKIE, path="/")
+    return resp
+
+
+class MessageRequest(BaseModel):
+    message: str
+    source: str = "api"
+
+
+@app.post("/message")
+async def handle_message(req: MessageRequest):
+    from src.orchestrator.engine import engine
+    response = await engine.handle_message(req.message, req.source)
+    return {"response": response}
+
+
+@app.get("/events")
+async def event_stream(request: Request, last_id: int = 0, token: str = ""):
+    async def generate():
+        current_id = last_id
+        while True:
+            if await request.is_disconnected():
+                break
+            events = memory.get_events_since(current_id, limit=50)
+            for event in events:
+                current_id = event["id"]
+                data = json.dumps({
+                    "id": event["id"], "timestamp": event["timestamp"],
+                    "source": event["source"], "type": event["event_type"],
+                    "data": json.loads(event["data"]) if isinstance(event["data"], str) else event["data"],
+                })
+                yield f"id: {event['id']}\ndata: {data}\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/state")
+async def get_state():
+    snapshot = memory.get_world_snapshot()
+    snapshot["latest_event_id"] = memory.get_latest_event_id()
+    return snapshot
+
+
+@app.get("/agents")
+async def get_agents():
+    agents = memory.get_all_agents()
+    return {"agents": agents, "count": len(agents)}
 
 
 @app.get("/org")
 async def get_org():
+    return {"org": get_org_summary()}
+
+
+@app.get("/directive")
+async def get_directive():
+    directive = memory.get_active_directive()
+    if not directive:
+        return {"directive": None, "task_board": [], "context": []}
     return {
-        "summary": registry.get_org_summary(),
-        "reporting_tree": registry.get_reporting_tree(),
-        "agents": [a.to_dict() for a in registry.get_active_agents()],
-        "changelog": registry.get_changelog(20),
+        "directive": directive,
+        "task_board": memory.get_board_tasks(directive["id"]),
+        "context": memory.get_context_for_directive(directive["id"], limit=20),
     }
 
 
-@app.get("/org/chart")
-async def get_org_chart():
-    return {"chart": generate_org_chart()}
+@app.get("/services")
+async def get_services():
+    return {"services": memory.get_all_services()}
 
 
-@app.get("/session/{session_id}")
-async def get_session(session_id: str):
-    # Check in-memory first, fall back to persistent store
-    if session_id in sessions:
-        return sessions[session_id]
-    persisted = await session_store.get_session(session_id)
-    if persisted:
-        return persisted
-    return {"error": "Session not found"}
-
-
-@app.get("/sessions")
-async def get_sessions():
-    """Get recent session history from persistent store."""
-    return {"sessions": await session_store.get_recent_sessions(20)}
-
-
-@app.get("/kpi")
-async def get_kpi():
-    """Get KPI dashboard data."""
-    summary = kpi_tracker.get_summary(24)
-    dashboard = kpi_tracker.generate_dashboard(24)
-    return {"summary": summary, "dashboard": dashboard}
+@app.get("/health")
+async def health():
+    from src.orchestrator.engine import engine
+    from src.resilience.health_monitor import health_monitor
+    return {
+        "status": "ok", "engine_running": engine.running,
+        "agents": len(memory.get_all_agents()),
+        "active_directive": memory.get_active_directive() is not None,
+        "working_agents": len(memory.get_working_agents()),
+        "resilience": health_monitor.status(),
+    }
 
 
 @app.get("/cost")
 async def get_cost():
-    """Get full CFO cost report."""
-    return {
-        "session_cost": cost_tracker.total_cost,
-        "hourly_rate": cost_tracker.hourly_rate,
-        "monthly_cost": cost_tracker.get_monthly_cost(),
-        "over_budget": cost_tracker.over_budget,
-        "by_model": cost_tracker.by_model,
-        "by_agent": cost_tracker.by_agent,
-        "by_project": cost_tracker.by_project,
-        "daily_breakdown": cost_tracker.get_daily_breakdown(7),
-        "report": cost_tracker.generate_cfo_report(),
-    }
+    try:
+        from src.cost.tracker import cost_tracker
+        return cost_tracker.get_summary()
+    except Exception:
+        return {"total": 0, "note": "Cost tracker not available"}
 
 
-@app.post("/security/scan")
-async def security_scan(project_path: str = os.path.expanduser("~/Projects/nexus")):
-    """Run full security audit on a project."""
-    import asyncio
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, run_full_audit, project_path)
-    return result
+@app.get("/status")
+async def legacy_status():
+    return await get_state()
 
 
-async def run_command_internal(command: str, args: str, source: str) -> dict:
-    if command == "kpi":
-        dashboard = kpi_tracker.generate_dashboard(24)
-        if source == "slack":
-            notify_kpi(dashboard)
-        return {"category": "COMMAND", "command": "kpi", "dashboard": dashboard}
+# ---------------------------------------------------------------------------
+# CLI Session Management
+# ---------------------------------------------------------------------------
 
-    elif command == "cost":
-        report = cost_tracker.generate_cfo_report()
-        return {
-            "category": "COMMAND",
-            "command": "cost",
-            "total_cost": cost_tracker.total_cost,
-            "hourly_rate": cost_tracker.hourly_rate,
-            "by_model": cost_tracker.by_model,
-            "by_agent": cost_tracker.by_agent,
-            "over_budget": cost_tracker.over_budget,
-            "monthly_cost": cost_tracker.get_monthly_cost(),
-            "dashboard": report,
-        }
-
-    elif command == "security":
-        project_path = args or os.path.expanduser("~/Projects/nexus")
-        import asyncio
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, run_full_audit, project_path)
-        if source == "slack":
-            notify(f"```{result['summary']}```")
-        return {
-            "category": "COMMAND",
-            "command": "security",
-            **result,
-        }
-
-    elif command == "status":
-        if args and "org" in args:
-            org_data = await get_org()
-            org_data["category"] = "COMMAND"
-            return org_data
-        result = (await status()).model_dump()
-        result["category"] = "COMMAND"
-        return result
-
-    elif command == "org":
-        org_data = await get_org()
-        org_data["category"] = "COMMAND"
-        return org_data
-
-    else:
-        return {"category": "COMMAND", "error": f"Unknown command: {command}"}
+@app.get("/sessions")
+async def list_sessions():
+    """List all active Claude Code CLI sessions."""
+    from src.sessions.cli_pool import cli_pool
+    return cli_pool.status()
 
 
-def _generate_kpi_dashboard() -> str:
-    agents = registry.get_active_agents()
-    return f"""
-NEXUS Performance Dashboard
-{'=' * 50}
-
-ORGANIZATION
-  Active Agents:      {len(agents)}
-  Executive:          {len([a for a in agents if a.layer == 'executive'])}
-  Management:         {len([a for a in agents if a.layer == 'management'])}
-  Senior:             {len([a for a in agents if a.layer == 'senior'])}
-  Implementation:     {len([a for a in agents if a.layer == 'implementation'])}
-  Quality:            {len([a for a in agents if a.layer == 'quality'])}
-  Consultants:        {len([a for a in agents if a.layer == 'consultant'])}
-
-COST
-  Total Spend:        ${cost_tracker.total_cost:.2f}
-  Hourly Rate:        ${cost_tracker.hourly_rate:.2f}/hr (target: $1.00/hr)
-  Over Budget:        {'YES' if cost_tracker.over_budget else 'No'}
-
-  By Model:
-{chr(10).join(f'    {m}: ${c:.4f}' for m, c in cost_tracker.by_model.items())}
-
-  By Agent:
-{chr(10).join(f'    {a}: ${c:.4f}' for a, c in cost_tracker.by_agent.items())}
-
-SESSIONS
-  Active Sessions:    {len(sessions)}
-  Active Runs:        {len(active_runs)}
-
-{'=' * 50}
-"""
+@app.delete("/sessions/{thread_ts}")
+async def kill_session(thread_ts: str):
+    """Terminate a specific CLI session by thread_ts."""
+    from src.sessions.cli_pool import cli_pool
+    session = cli_pool._sessions.get(thread_ts)
+    if not session:
+        return {"error": "Session not found", "thread_ts": thread_ts}
+    await session.kill()
+    del cli_pool._sessions[thread_ts]
+    return {"ok": True, "thread_ts": thread_ts}
 
 
-def start_server(host: str = "127.0.0.1", port: int = 4200):
-    import uvicorn
-    uvicorn.run(app, host=host, port=port)
+@app.delete("/sessions")
+async def kill_all_sessions():
+    """Terminate all CLI sessions."""
+    from src.sessions.cli_pool import cli_pool
+    count = cli_pool.active_count()
+    await cli_pool.shutdown()
+    return {"ok": True, "killed": count}
 
 
-if __name__ == "__main__":
-    start_server()
+@app.get("/dashboard")
+async def serve_dashboard():
+    import os
+    dashboard_path = os.path.join(os.path.dirname(__file__), "..", "dashboard", "index.html")
+    dashboard_path = os.path.normpath(dashboard_path)
+    if os.path.exists(dashboard_path):
+        return FileResponse(dashboard_path, media_type="text/html")
+    return {"error": "Dashboard not found", "path": dashboard_path}
+
+
+@app.get("/chat/threads")
+async def list_threads():
+    """List recent Slack threads (directives and conversations)."""
+    from src.slack.listener import get_channel_id, get_slack_client
+    client = get_slack_client()
+    channel = get_channel_id()
+    if not client or not channel:
+        return {"threads": [], "error": "Slack not connected"}
+
+    try:
+        result = await client.conversations_history(channel=channel, limit=30)
+        threads = []
+        for msg in result.get("messages", []):
+            if msg.get("reply_count", 0) > 0 or msg.get("subtype") is None:
+                threads.append({
+                    "thread_ts": msg.get("thread_ts") or msg.get("ts"),
+                    "text": msg.get("text", "")[:200],
+                    "user": msg.get("user", ""),
+                    "reply_count": msg.get("reply_count", 0),
+                    "ts": msg.get("ts"),
+                })
+        return {"threads": threads}
+    except Exception as e:
+        return {"threads": [], "error": str(e)}
+
+
+@app.get("/chat/thread/{thread_ts}")
+async def get_thread(thread_ts: str):
+    """Get all messages in a Slack thread."""
+    from src.slack.listener import get_channel_id, get_slack_client
+    client = get_slack_client()
+    channel = get_channel_id()
+    if not client or not channel:
+        return {"messages": [], "error": "Slack not connected"}
+
+    try:
+        result = await client.conversations_replies(channel=channel, ts=thread_ts, limit=100)
+        messages = [
+            {
+                "ts": msg.get("ts"),
+                "user": msg.get("user", "bot"),
+                "text": msg.get("text", ""),
+                "is_bot": msg.get("bot_id") is not None,
+            }
+            for msg in result.get("messages", [])
+        ]
+        return {"messages": messages, "thread_ts": thread_ts}
+    except Exception as e:
+        return {"messages": [], "error": str(e)}
+
+
+@app.post("/chat/send")
+async def send_chat(req: MessageRequest):
+    """Send a message through the engine (creates or continues a thread)."""
+    from src.orchestrator.engine import engine
+    response = await engine.handle_message(req.message, source="dashboard")
+    return {"response": response}
+
+
+@app.get("/dashboard/logo.svg")
+async def serve_logo():
+    import os
+    logo_path = os.path.join(os.path.dirname(__file__), "..", "dashboard", "logo.svg")
+    logo_path = os.path.normpath(logo_path)
+    if os.path.exists(logo_path):
+        return FileResponse(logo_path, media_type="image/svg+xml")
+    return {"error": "Logo not found"}

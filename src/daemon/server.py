@@ -9,16 +9,16 @@ import asyncio
 import os
 import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, BackgroundTasks
-from pydantic import BaseModel, Field
 from typing import Literal
 
-from src.agents.registry import registry
-from src.agents.ceo_interpreter import interpret_ceo_input, execute_org_change, execute_question
-from src.agents.org_chart_generator import generate_org_chart, update_org_chart_in_repo
-from src.agents.sdk_bridge import cost_tracker, run_sdk_agent, run_planning_agent
-from src.slack.notifier import notify, notify_demo, notify_completion, notify_escalation, notify_kpi
+from fastapi import BackgroundTasks, FastAPI
+from pydantic import BaseModel, Field
 
+from src.agents.ceo_interpreter import execute_org_change, execute_question, interpret_ceo_input
+from src.agents.org_chart_generator import generate_org_chart, update_org_chart_in_repo
+from src.agents.registry import registry
+from src.agents.sdk_bridge import cost_tracker, run_planning_agent, run_sdk_agent
+from src.slack.notifier import notify, notify_completion, notify_demo, notify_escalation, notify_kpi
 
 sessions: dict[str, dict] = {}
 active_runs: dict[str, asyncio.Task] = {}

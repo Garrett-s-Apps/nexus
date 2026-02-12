@@ -4,38 +4,24 @@ NEXUS Slack Notifier
 Sends notifications to the #garrett-nexus Slack channel.
 """
 
-import os
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-KEYS_PATH = os.path.expanduser("~/.nexus/.env.keys")
-
-
-def _load_keys():
-    keys = {}
-    try:
-        with open(KEYS_PATH) as f:
-            for line in f:
-                line = line.strip()
-                if "=" in line and not line.startswith("#"):
-                    k, v = line.split("=", 1)
-                    keys[k] = v
-    except FileNotFoundError:
-        pass
-    return keys
+from src.config import get_key
 
 
 def get_client():
-    keys = _load_keys()
-    return WebClient(token=keys["SLACK_BOT_TOKEN"])
+    token = get_key("SLACK_BOT_TOKEN")
+    if not token:
+        raise RuntimeError("SLACK_BOT_TOKEN not configured")
+    return WebClient(token=token)
 
 
 def get_channel():
-    keys = _load_keys()
-    return keys.get("SLACK_CHANNEL", "nexus")
+    return get_key("SLACK_CHANNEL") or "nexus"
 
 
-def notify(message, blocks=None):
+def notify(message, blocks=None, thread_ts=None):
     client = get_client()
     channel = get_channel()
     try:
@@ -43,7 +29,12 @@ def notify(message, blocks=None):
     except SlackApiError:
         pass
     try:
-        client.chat_postMessage(channel=channel, text=message, blocks=blocks)
+        kwargs = {"channel": channel, "text": message}
+        if blocks:
+            kwargs["blocks"] = blocks
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        client.chat_postMessage(**kwargs)
     except SlackApiError as e:
         print(f"Slack notification failed: {e.response['error']}")
 

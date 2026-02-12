@@ -1,36 +1,29 @@
 """
 Agent SDK Bridge
 
-Spawns Claude Agent SDK sessions for agents that need to interact with
-the filesystem (write code, run bash, edit files, commit to git).
-
-Also handles direct API calls for non-Anthropic models (Gemini, o3).
+Three execution modes for agents:
+1. Claude Code CLI — spawns `claude --dangerously-skip-permissions` for
+   implementation agents. Uses Max subscription ($0 API cost).
+2. Claude Agent SDK — spawns SDK sessions for agents needing filesystem access.
+3. Direct API — Gemini and o3 via LangChain.
 """
 
-import os
 import asyncio
+import logging
+import os
+import shutil
 import time
 from typing import Any
-from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
+
+from claude_agent_sdk import ClaudeAgentOptions, query
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+
+logger = logging.getLogger("nexus.sdk_bridge")
 
 
-def _load_key(key_name: str) -> str | None:
-    val = os.environ.get(key_name)
-    if val:
-        return val
-    try:
-        with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith(key_name + "="):
-                    return line.split("=", 1)[1]
-    except FileNotFoundError:
-        pass
-    return None
-
+from src.config import get_key as _load_key
 
 MODEL_MAP = {
     "opus": "opus",
@@ -38,8 +31,113 @@ MODEL_MAP = {
     "haiku": "haiku",
 }
 
+CLI_MODEL_MAP = {
+    "opus": "claude-opus-4-6",
+    "sonnet": "claude-sonnet-4-5-20250929",
+    "haiku": "claude-haiku-4-5-20251001",
+}
+
 
 from src.cost.tracker import cost_tracker
+
+async def run_claude_code(
+    agent_name: str,
+    agent_config: dict,
+    task_prompt: str,
+    project_path: str,
+    timeout_seconds: int = 600,
+) -> dict[str, Any]:
+    """
+    Spawn a Claude Code CLI session in --dangerously-skip-permissions mode.
+    Uses the Max subscription so API cost is $0. The CLI handles all tool
+    use (file read/write, bash, grep, glob) autonomously.
+
+    Falls back to Agent SDK if the CLI binary is not found.
+    """
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        logger.warning(f"[{agent_name}] Claude CLI not found, falling back to SDK")
+        return await run_sdk_agent(agent_name, agent_config, task_prompt, project_path)
+
+    model_key = agent_config.get("model", "sonnet")
+    model_id = CLI_MODEL_MAP.get(model_key, CLI_MODEL_MAP["sonnet"])
+    system_prompt = agent_config.get("system_prompt", "")
+
+    full_prompt = task_prompt
+    if system_prompt:
+        full_prompt = f"{system_prompt}\n\n---\n\nTASK:\n{task_prompt}"
+
+    cmd = [
+        claude_bin,
+        "--dangerously-skip-permissions",
+        "--model", model_id,
+        "--output-format", "text",
+        "--verbose",
+        "-p", full_prompt,
+    ]
+
+    logger.info(f"[{agent_name}] Spawning Claude Code CLI ({model_id}) in {project_path}")
+    start_time = time.time()
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=project_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+        )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_seconds
+            )
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            elapsed = time.time() - start_time
+            logger.error(f"[{agent_name}] Claude Code CLI timed out after {elapsed:.0f}s")
+            return {
+                "output": f"Claude Code CLI timed out after {timeout_seconds}s",
+                "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
+                "model": f"claude-code:{model_id}", "agent": agent_name,
+                "mode": "claude_code_cli", "elapsed_seconds": elapsed,
+            }
+
+        elapsed = time.time() - start_time
+        output = stdout.decode("utf-8", errors="replace").strip()
+        errors = stderr.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0 and not output:
+            output = f"CLI exited with code {proc.returncode}: {errors[:1000]}"
+
+        cost_tracker.record(
+            model=f"claude-code:{model_key}",
+            agent_name=agent_name,
+            tokens_in=0, tokens_out=0,
+            project=project_path,
+        )
+
+        logger.info(f"[{agent_name}] Claude Code CLI completed in {elapsed:.1f}s ({len(output)} chars)")
+
+        return {
+            "output": output,
+            "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
+            "model": f"claude-code:{model_id}", "agent": agent_name,
+            "mode": "claude_code_cli", "elapsed_seconds": elapsed,
+        }
+
+    except FileNotFoundError:
+        logger.warning(f"[{agent_name}] Claude CLI binary not executable, falling back to SDK")
+        return await run_sdk_agent(agent_name, agent_config, task_prompt, project_path)
+    except Exception as e:
+        logger.error(f"[{agent_name}] Claude Code CLI error: {e}")
+        return {
+            "output": f"Claude Code CLI error: {str(e)}",
+            "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
+            "model": f"claude-code:{model_key}", "agent": agent_name,
+            "mode": "claude_code_cli",
+        }
 
 
 async def run_sdk_agent(
@@ -52,7 +150,6 @@ async def run_sdk_agent(
     Spawn a Claude Agent SDK session for an agent that needs filesystem access.
     Returns the agent's output and cost information.
     """
-    # Apply model downgrade if CFO enforcement active
     model = cost_tracker.get_effective_model(MODEL_MAP.get(agent_config.get("model", "sonnet"), "sonnet"))
     system_prompt = agent_config.get("system_prompt", "")
     allowed_tools = agent_config.get("tools", ["Read", "Grep", "Glob"])
@@ -135,16 +232,79 @@ async def run_gemini(
 async def run_o3(
     task_prompt: str,
     system_prompt: str = "",
+    timeout_seconds: int = 300,
 ) -> dict[str, Any]:
-    """Call OpenAI o3 for systems architecture consulting."""
+    """Route o3 calls through Codex CLI, with LangChain fallback."""
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        logger.warning("Codex CLI not found, falling back to LangChain ChatOpenAI")
+        return await _run_o3_langchain(task_prompt, system_prompt)
+
+    full_prompt = task_prompt
+    if system_prompt:
+        full_prompt = f"{system_prompt}\n\n---\n\nTASK:\n{task_prompt}"
+
+    cmd = [codex_bin, "--model", "o3", "--quiet", full_prompt]
+
+    logger.info("[o3] Spawning Codex CLI for systems consulting")
+    start_time = time.time()
+
+    try:
+        env = {**os.environ}
+        api_key = _load_key("OPENAI_API_KEY")
+        if api_key:
+            env["OPENAI_API_KEY"] = api_key
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_seconds
+            )
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return {
+                "output": f"Codex CLI timed out after {timeout_seconds}s",
+                "cost": 0.0, "model": "codex:o3", "agent": "systems_consultant",
+            }
+
+        elapsed = time.time() - start_time
+        output = stdout.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0 and not output:
+            errors = stderr.decode("utf-8", errors="replace").strip()
+            output = f"Codex exited with code {proc.returncode}: {errors[:500]}"
+
+        cost_tracker.record("codex:o3", "systems_consultant", 0, 0)
+        logger.info("[o3] Codex CLI completed in %.1fs (%d chars)", elapsed, len(output))
+
+        return {
+            "output": output,
+            "cost": 0.0, "model": "codex:o3", "agent": "systems_consultant",
+            "mode": "codex_cli", "elapsed_seconds": elapsed,
+        }
+
+    except Exception as e:
+        logger.error("[o3] Codex CLI error: %s", e)
+        return await _run_o3_langchain(task_prompt, system_prompt)
+
+
+async def _run_o3_langchain(
+    task_prompt: str,
+    system_prompt: str = "",
+) -> dict[str, Any]:
+    """Fallback: call o3 via LangChain if Codex CLI unavailable."""
     api_key = _load_key("OPENAI_API_KEY")
     if not api_key:
         return {"output": "ERROR: No OpenAI API key found", "cost": 0.0}
 
-    llm = ChatOpenAI(
-        model="o3",
-        api_key=api_key,
-    )
+    llm = ChatOpenAI(model="o3", api_key=api_key)
 
     messages = []
     if system_prompt:
@@ -156,12 +316,23 @@ async def run_o3(
         cost = cost_tracker.record("o3", "systems_consultant", 2000, 1000)
         return {
             "output": response.content,
-            "cost": cost,
-            "model": "o3",
-            "agent": "systems_consultant",
+            "cost": cost, "model": "o3", "agent": "systems_consultant",
         }
     except Exception as e:
         return {"output": f"o3 error: {str(e)}", "cost": 0.0}
+
+
+async def run_web_search(query: str, num_results: int = 5) -> dict[str, Any]:
+    """Web search capability available to all agents."""
+    from src.tools.web_search import format_results_for_context, search
+    results = await search(query, num_results)
+    return {
+        "output": format_results_for_context(results),
+        "results": results,
+        "cost": 0.0,
+        "model": "web_search",
+        "agent": "web_search",
+    }
 
 
 async def run_planning_agent(

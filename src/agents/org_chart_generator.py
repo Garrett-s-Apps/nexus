@@ -7,7 +7,8 @@ Called after every org change so the org chart always reflects reality.
 
 import os
 import time
-from src.agents.registry import registry, Agent
+
+from src.agents.registry import registry
 
 
 def generate_org_chart(output_path: str | None = None) -> str:

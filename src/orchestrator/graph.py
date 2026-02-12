@@ -7,20 +7,49 @@ the flow of work through the organization.
 """
 
 import asyncio
-import yaml
+import json
+import logging
 import os
-from typing import Any, Literal
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
+import uuid
 
-from src.orchestrator.state import NexusState, WorkstreamTask, PRReview, CostSnapshot
+import yaml
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+
+from src.agents.org_chart import get_model_for_budget
 from src.agents.sdk_bridge import (
-    run_sdk_agent,
-    run_planning_agent,
-    run_gemini,
-    run_o3,
     cost_tracker,
+    run_claude_code,
+    run_gemini,
+    run_planning_agent,
+    run_sdk_agent,
 )
+from src.orchestrator.state import CostSnapshot, NexusState, PRReview, WorkstreamTask
+
+logger = logging.getLogger(__name__)
+
+# Prefer Claude Code CLI for implementation agents (uses Max subscription, $0 cost).
+# Falls back to Agent SDK automatically if claude CLI isn't installed.
+USE_CLAUDE_CODE = os.environ.get("USE_CLAUDE_CODE", "true").lower() in ("true", "1", "yes")
+
+
+async def _run_impl_agent(agent_key: str, agent_config: dict, prompt: str, project_path: str) -> dict:
+    """Route implementation work through Claude Code CLI or Agent SDK."""
+    if USE_CLAUDE_CODE and agent_config.get("spawns_sdk"):
+        return await run_claude_code(agent_key, agent_config, prompt, project_path)
+    return await run_sdk_agent(agent_key, agent_config, prompt, project_path)
+
+
+async def safe_node(node_fn, state: NexusState, timeout: int = 300) -> dict:
+    """Wrap any node function with timeout and error handling."""
+    try:
+        return await asyncio.wait_for(node_fn(state), timeout=timeout)
+    except TimeoutError:
+        logger.error("Node %s timed out after %ds", node_fn.__name__, timeout)
+        return {"error": f"{node_fn.__name__} timed out after {timeout}s", "escalation_reason": "timeout"}
+    except Exception as e:
+        logger.error("Node %s failed: %s", node_fn.__name__, e)
+        return {"error": str(e), "escalation_reason": f"{node_fn.__name__} exception"}
 
 
 def _load_agent_configs() -> dict:
@@ -228,29 +257,36 @@ If not, say NEEDS_REVISION and list specific changes needed.""",
 
 
 async def decomposition_node(state: NexusState) -> dict:
-    """Engineering managers decompose work into specific tasks."""
-    tasks = []
+    """Engineering managers decompose work into specific tasks (parallel)."""
+    em_names = ["em_frontend", "em_backend", "em_platform"]
 
-    for em_name in ["em_frontend", "em_backend", "em_platform"]:
-        result = await run_planning_agent(
+    coros = [
+        run_planning_agent(
             em_name,
             AGENTS[em_name],
             f"""Technical design: {state.technical_design}
 Your domain: {AGENTS[em_name]['name']}
 
 Break down the work in YOUR domain into specific, implementable tasks.
-For each task, specify:
-- task_id: unique identifier
-- description: what needs to be done
-- assigned_agent: which implementation agent should do it
-- language: primary language for this task
-- dependencies: which other tasks must complete first
+Output as a JSON array:
+[{{"id": "unique_id", "description": "what to do", "assigned_agent": "agent_key", "language": "python", "dependencies": []}}]
 
-Output as a structured list.""",
+If you cannot produce JSON, output a bullet list with one task per line.""",
         )
+        for em_name in em_names
+    ]
 
-        parsed_tasks = _parse_tasks(result["output"], em_name)
+    results = await asyncio.gather(*coros, return_exceptions=True)
+
+    tasks = []
+    total_cost = state.cost
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            logger.error("EM %s failed during decomposition: %s", em_names[i], result)
+            continue
+        parsed_tasks = _parse_tasks(result["output"], em_names[i])
         tasks.extend(parsed_tasks)
+        total_cost = _update_cost(total_cost, result)
 
     parallel_groups = _identify_parallel_groups(tasks)
 
@@ -258,29 +294,47 @@ Output as a structured list.""",
         "workstreams": tasks,
         "parallel_forks": parallel_groups,
         "current_phase": "implementation",
-        "cost": _update_cost(state.cost, result),
+        "cost": total_cost,
     }
 
 
 async def implementation_node(state: NexusState) -> dict:
-    """Execute implementation tasks via Agent SDK sessions."""
-    results = []
-    files_changed = []
-    commits = []
+    """Execute implementation tasks via Agent SDK sessions with per-task tracking."""
+    updated_tasks = []
+    all_results = []
+    failed_tasks = list(state.failed_tasks)
+    retry_counts = dict(state.retry_counts)
+    defect_ids = list(state.defect_ids)
 
     for fork_group in state.parallel_forks:
-        parallel_tasks = [t for t in state.workstreams if t.id in fork_group]
+        parallel_tasks = [t for t in state.workstreams if t.id in fork_group and t.status != "completed"]
 
         coros = []
+        task_index = []
         for task in parallel_tasks:
             agent_key = task.assigned_agent
-            if agent_key in AGENTS and AGENTS[agent_key].get("spawns_sdk"):
-                coros.append(
-                    run_sdk_agent(
-                        agent_key,
-                        AGENTS[agent_key],
-                        f"""TASK: {task.description}
+            if agent_key not in AGENTS or not AGENTS[agent_key].get("spawns_sdk"):
+                continue
 
+            # Cost-aware model downgrade when budget is tight
+            agent_cfg = AGENTS[agent_key]
+            if "model" in agent_cfg:
+                budget_left = state.cost.budget_remaining if state.cost.budget_remaining > 0 else None
+                agent_cfg = {**agent_cfg, "model": get_model_for_budget(agent_cfg["model"], budget_left)}
+
+            # Build defect context if this is a retry
+            defect_context = ""
+            if task.id in retry_counts:
+                defect_context = f"\n\nPREVIOUS ATTEMPT FAILED. This is retry #{retry_counts[task.id]}."
+                if task.result:
+                    defect_context += f"\nPrevious error: {task.result}"
+
+            coros.append(
+                _run_impl_agent(
+                    agent_key,
+                    AGENTS[agent_key],
+                    f"""TASK: {task.description}
+{defect_context}
 Technical design context:
 {state.technical_design}
 
@@ -299,34 +353,56 @@ RULES:
 - Write meaningful tests alongside implementation
 
 Implement this task completely. Write the code, create the files, run tests.""",
-                        state.project_path,
-                    )
+                    state.project_path,
                 )
+            )
+            task_index.append(task)
 
         if coros:
             group_results = await asyncio.gather(*coros, return_exceptions=True)
-            for r in group_results:
-                if isinstance(r, dict):
-                    results.append(r)
+            for i, result in enumerate(group_results):
+                task = task_index[i]
+                task.attempts += 1
 
-    updated_tasks = []
+                if isinstance(result, Exception):
+                    task.status = "failed"
+                    task.result = str(result)
+                    retry_counts[task.id] = retry_counts.get(task.id, 0) + 1
+                    if retry_counts[task.id] >= 3:
+                        defect_id = f"DEF-{uuid.uuid4().hex[:8]}"
+                        defect_ids.append(defect_id)
+                        failed_tasks.append(task.id)
+                        logger.error("Task %s failed 3 times, filing defect %s", task.id, defect_id)
+                elif isinstance(result, dict):
+                    task.status = "completed"
+                    task.result = result.get("output", "")[:500]
+                    all_results.append(result)
+
+    # Preserve already-completed tasks unchanged
+    completed_ids = {t.id for t in state.workstreams if t.status == "completed"}
     for task in state.workstreams:
-        task.status = "completed"
-        updated_tasks.append(task)
+        if task.id in completed_ids and task not in updated_tasks:
+            updated_tasks.append(task)
+        else:
+            # Find the updated version from parallel_tasks processing
+            updated_tasks.append(task)
 
     return {
         "workstreams": updated_tasks,
+        "failed_tasks": failed_tasks,
+        "defect_ids": defect_ids,
+        "retry_counts": retry_counts,
         "current_phase": "quality_gate",
-        "cost": _update_cost_multi(state.cost, results),
+        "cost": _update_cost_multi(state.cost, all_results),
     }
 
 
 async def linting_node(state: NexusState) -> dict:
     """Run linting across all changed files."""
-    result = await run_sdk_agent(
+    result = await _run_impl_agent(
         "linting_agent",
         AGENTS["linting_agent"],
-        f"""Run linters on all files in this project.
+        """Run linters on all files in this project.
 
 Check for:
 1. TypeScript: any usage of type:any, @ts-ignore, @ts-expect-error
@@ -353,7 +429,7 @@ Run: eslint, ruff, or appropriate linter for each file type found.""",
 
 async def testing_node(state: NexusState) -> dict:
     """Run tests and generate coverage."""
-    test_fe = run_sdk_agent(
+    test_fe = _run_impl_agent(
         "test_frontend",
         AGENTS["test_frontend"],
         f"""Write and run meaningful frontend tests for the recent implementation.
@@ -367,7 +443,7 @@ Run the tests and report results.""",
         state.project_path,
     )
 
-    test_be = run_sdk_agent(
+    test_be = _run_impl_agent(
         "test_backend",
         AGENTS["test_backend"],
         f"""Write and run meaningful backend tests for the recent implementation.
@@ -393,10 +469,10 @@ Run the tests and report results.""",
 
 async def security_scan_node(state: NexusState) -> dict:
     """Security consultant runs full security audit."""
-    result = await run_sdk_agent(
+    result = await _run_impl_agent(
         "security_consultant",
         AGENTS["security_consultant"],
-        f"""Run a full security audit on this project:
+        """Run a full security audit on this project:
 
 1. Secret scan: look for API keys, passwords, tokens in code and configs
 2. Dependency scan: check for known CVEs in all dependencies
@@ -442,17 +518,48 @@ Be specific about any issues found and recommend exact fixes.""",
 
 async def quality_gate_node(state: NexusState) -> dict:
     """QA Lead determines if quality is sufficient to proceed to PR."""
-    lint_passed = state.lint_results.get("passed", False)
-    no_any_violations = state.any_type_violations == 0
-    security_ok = "CRITICAL" not in str(state.security_scan_results)
+    gate_details = {}
 
-    if not lint_passed or not no_any_violations or not security_ok:
+    # Reject empty results — means the check didn't actually run
+    lint_ran = bool(state.lint_results)
+    lint_passed = state.lint_results.get("passed", False) if lint_ran else False
+    gate_details["lint_ran"] = lint_ran
+    gate_details["lint_passed"] = lint_passed
+
+    tests_ran = bool(state.test_results)
+    gate_details["tests_ran"] = tests_ran
+
+    security_ran = bool(state.security_scan_results)
+    security_ok = "CRITICAL" not in str(state.security_scan_results) if security_ran else False
+    gate_details["security_ran"] = security_ran
+    gate_details["security_ok"] = security_ok
+
+    no_any_violations = state.any_type_violations == 0
+    gate_details["no_any_violations"] = no_any_violations
+
+    no_failed_tasks = len(state.failed_tasks) == 0
+    gate_details["no_failed_tasks"] = no_failed_tasks
+
+    # Calculate quality score (0-100)
+    checks = [lint_ran, lint_passed, tests_ran, security_ran, security_ok, no_any_violations, no_failed_tasks]
+    quality_score = round((sum(checks) / len(checks)) * 100, 1)
+
+    all_passed = lint_passed and no_any_violations and security_ok and lint_ran and tests_ran and security_ran
+
+    if not all_passed:
+        failed_gates = [k for k, v in gate_details.items() if not v]
         return {
             "current_phase": "implementation",
-            "error": f"Quality gate failed: lint={lint_passed}, any_violations={state.any_type_violations}, security={security_ok}",
+            "quality_score": quality_score,
+            "quality_gate_details": gate_details,
+            "error": f"Quality gate failed ({quality_score}/100): {', '.join(failed_gates)}",
         }
 
-    return {"current_phase": "pr_review"}
+    return {
+        "current_phase": "pr_review",
+        "quality_score": quality_score,
+        "quality_gate_details": gate_details,
+    }
 
 
 async def pr_review_node(state: NexusState) -> dict:
@@ -463,7 +570,7 @@ async def pr_review_node(state: NexusState) -> dict:
     coros = []
     for reviewer_key in reviewers:
         coros.append(
-            run_sdk_agent(
+            _run_impl_agent(
                 reviewer_key,
                 AGENTS[reviewer_key],
                 f"""Review the recent changes in this project.
@@ -504,6 +611,37 @@ If rejected, respond with REJECTED and specific feedback on what to fix.""",
         "pr_approved": all_approved,
         "pr_loop_count": state.pr_loop_count + 1,
         "cost": _update_cost_multi(state.cost, [r for r in results if isinstance(r, dict)]),
+    }
+
+
+async def escalation_node(state: NexusState) -> dict:
+    """Escalation handler — triggered when errors or low quality scores require CEO attention."""
+    reason = state.escalation_reason or state.error or "Unknown escalation trigger"
+    defect_id = f"ESC-{uuid.uuid4().hex[:8]}"
+
+    logger.warning("ESCALATION [%s]: %s (quality_score=%s)", defect_id, reason, state.quality_score)
+
+    result = await run_planning_agent(
+        "ceo",
+        AGENTS["ceo"],
+        f"""ESCALATION ALERT
+
+Something went wrong during execution and needs your awareness:
+- Reason: {reason}
+- Quality Score: {state.quality_score}/100
+- Failed Tasks: {state.failed_tasks}
+- Defects Filed: {state.defect_ids}
+- Error: {state.error}
+
+This is an informational escalation. The system will proceed to demo with warnings.
+Summarize the risk and any recommendations for Garrett in 2-3 sentences.""",
+    )
+
+    return {
+        "defect_ids": state.defect_ids + [defect_id],
+        "escalation_reason": f"[{defect_id}] {reason} — CEO notified",
+        "error": None,
+        "cost": _update_cost(state.cost, result),
     }
 
 
@@ -554,6 +692,7 @@ def route_after_executive_consensus(state: NexusState) -> str:
     if state.executive_consensus:
         return "vp_engineering"
     if state.executive_loop_count >= 3:
+        logger.warning("Executive consensus not reached after 3 loops, proceeding anyway")
         return "vp_engineering"
     return "ceo"
 
@@ -562,6 +701,7 @@ def route_after_tech_review(state: NexusState) -> str:
     if state.tech_plan_approved:
         return "decomposition"
     if state.tech_plan_loop_count >= 3:
+        logger.warning("Tech plan not approved after 3 loops, proceeding anyway")
         return "decomposition"
     return "vp_engineering"
 
@@ -569,6 +709,9 @@ def route_after_tech_review(state: NexusState) -> str:
 def route_after_quality_gate(state: NexusState) -> str:
     if state.current_phase == "pr_review":
         return "pr_review"
+    # Escalate if quality is too low after repeated attempts
+    if state.error and state.quality_score < 50:
+        return "escalation"
     return "implementation"
 
 
@@ -576,8 +719,17 @@ def route_after_pr_review(state: NexusState) -> str:
     if state.pr_approved:
         return "demo"
     if state.pr_loop_count >= 3:
+        if state.quality_score < 70:
+            logger.warning("PR not approved after 3 loops with quality %s/100, escalating", state.quality_score)
+            return "escalation"
+        logger.warning("PR not approved after 3 loops, proceeding to demo with warnings")
         return "demo"
     return "implementation"
+
+
+def route_after_escalation(state: NexusState) -> str:
+    """After escalation, proceed to demo with warnings logged."""
+    return "demo"
 
 
 # ============================================
@@ -609,6 +761,7 @@ def build_nexus_graph() -> StateGraph:
     graph.add_node("quality_gate", quality_gate_node)
     graph.add_node("pr_review", pr_review_node)
     graph.add_node("demo", demo_node)
+    graph.add_node("escalation", escalation_node)
 
     # --- Define edges (the org chart as a flow) ---
 
@@ -654,18 +807,25 @@ def build_nexus_graph() -> StateGraph:
     graph.add_edge("security_scan", "quality_gate")
     graph.add_edge("visual_qa", "quality_gate")
 
-    # Quality Gate → PR Review or back to Implementation
+    # Quality Gate → PR Review, back to Implementation, or Escalation
     graph.add_conditional_edges(
         "quality_gate",
         route_after_quality_gate,
-        {"pr_review": "pr_review", "implementation": "implementation"},
+        {"pr_review": "pr_review", "implementation": "implementation", "escalation": "escalation"},
     )
 
-    # PR Review → Demo or back to Implementation
+    # PR Review → Demo, back to Implementation, or Escalation
     graph.add_conditional_edges(
         "pr_review",
         route_after_pr_review,
-        {"demo": "demo", "implementation": "implementation"},
+        {"demo": "demo", "implementation": "implementation", "escalation": "escalation"},
+    )
+
+    # Escalation → Demo (always proceed after escalation)
+    graph.add_conditional_edges(
+        "escalation",
+        route_after_escalation,
+        {"demo": "demo"},
     )
 
     # Demo → End
@@ -735,10 +895,34 @@ def _parse_budget(text: str) -> dict[str, float]:
                 budget[key] = val
             except (ValueError, IndexError):
                 pass
-    return budget if budget else {"total": 5.0}
+    return budget if budget else {}
 
 
 def _parse_tasks(text: str, em_source: str) -> list[WorkstreamTask]:
+    """Parse tasks from EM output — try JSON first, fall back to text parsing."""
+    # Try JSON extraction first
+    try:
+        # Find JSON array in the output
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start >= 0 and end > start:
+            raw = json.loads(text[start:end])
+            tasks = []
+            for i, item in enumerate(raw):
+                tasks.append(
+                    WorkstreamTask(
+                        id=item.get("id", f"{em_source}_{i + 1}"),
+                        description=item.get("description", ""),
+                        assigned_agent=item.get("assigned_agent", _infer_agent(item.get("description", ""), em_source)),
+                        language=item.get("language") or _infer_language(item.get("description", "")),
+                    )
+                )
+            if tasks:
+                return tasks
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+
+    # Fallback: text parsing
     tasks = []
     task_id = 0
     for line in text.split("\n"):
@@ -784,4 +968,33 @@ def _infer_language(task_text: str) -> str | None:
 
 
 def _identify_parallel_groups(tasks: list[WorkstreamTask]) -> list[list[str]]:
-    return [[t.id for t in tasks]]
+    """Group tasks by dependency depth for parallel execution.
+
+    Level 0: tasks with no dependencies → run in parallel
+    Level 1: tasks depending on level 0 → run after level 0 completes
+    etc.
+    """
+    if not tasks:
+        return []
+
+    # Build dependency graph from task descriptions (heuristic: tasks from same EM
+    # with sequential IDs may depend on prior tasks if they reference them)
+    # For now, group by EM source so each EM's tasks run sequentially
+    # but different EMs run in parallel
+    em_groups: dict[str, list[str]] = {}
+    for t in tasks:
+        prefix = t.id.rsplit("_", 1)[0] if "_" in t.id else "default"
+        em_groups.setdefault(prefix, []).append(t.id)
+
+    # Build levels: first task from each EM at level 0, second at level 1, etc.
+    max_depth = max(len(v) for v in em_groups.values()) if em_groups else 1
+    levels = []
+    for depth in range(max_depth):
+        level = []
+        for em_tasks in em_groups.values():
+            if depth < len(em_tasks):
+                level.append(em_tasks[depth])
+        if level:
+            levels.append(level)
+
+    return levels if levels else [[t.id for t in tasks]]

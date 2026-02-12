@@ -5,11 +5,10 @@ Tracks productivity, quality, cost, and security metrics.
 Stores historical data in SQLite for trend analysis.
 """
 
-import os
-import time
 import json
+import os
 import sqlite3
-from typing import Any
+import time
 
 DB_PATH = os.path.expanduser("~/.nexus/kpi.db")
 

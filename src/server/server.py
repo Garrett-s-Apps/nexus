@@ -1,445 +1,169 @@
 """
-NEXUS Server
+NEXUS Server (v1)
 
-FastAPI server running on localhost:4200. Single entry point for all clients.
-Now with dynamic org management and CEO natural language interpretation.
+FastAPI on localhost:4200.
+- POST /message — messages from Garrett
+- GET /events — SSE stream for dashboard
+- GET /state — world state snapshot
+- GET /agents, /org, /directive, /services, /health, /cost
 """
 
 import asyncio
-import os
-import uuid
+import json
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, BackgroundTasks
-from pydantic import BaseModel, Field
-from typing import Literal
 
-from src.agents.registry import registry
-from src.agents.ceo_interpreter import interpret_ceo_input, execute_org_change, execute_question
-from src.agents.org_chart_generator import generate_org_chart, update_org_chart_in_repo
-from src.agents.sdk_bridge import run_sdk_agent, run_planning_agent
-from src.cost.tracker import cost_tracker
-from src.slack.notifier import notify, notify_demo, notify_completion, notify_escalation, notify_kpi
-from src.session.store import session_store
-from src.kpi.tracker import kpi_tracker
-from src.git_ops.git import GitOps
-from src.security.scanner import run_full_audit
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
-
-sessions: dict[str, dict] = {}
-active_runs: dict[str, asyncio.Task] = {}
-
-
-class MessageRequest(BaseModel):
-    message: str
-    source: Literal["slack", "ide", "cli", "api", "happy_coder"] = "api"
-    project_path: str = ""
-    session_id: str | None = None
-
-
-class TalkRequest(BaseModel):
-    agent_name: str
-    message: str
-    source: Literal["slack", "ide", "cli", "api", "happy_coder"] = "api"
-    session_id: str | None = None
-
-
-class StatusResponse(BaseModel):
-    status: str
-    active_sessions: int
-    active_runs: int
-    total_cost: float
-    hourly_rate: float
-    active_agents: int
-    sessions: list[dict] = Field(default_factory=list)
-
-
-async def execute_directive_bg(session_id: str, directive: str, project_path: str, source: str):
-    try:
-        notify(f"Received directive: _{directive}_\nStarting execution...")
-
-        # Persist session
-        await session_store.create_session(session_id, directive, source, project_path)
-        await session_store.add_message(session_id, "user", directive)
-
-        from src.orchestrator.graph import compile_nexus_dynamic
-        nexus_app = compile_nexus_dynamic()
-
-        from src.orchestrator.state import NexusState
-        initial_state = NexusState(
-            directive=directive,
-            source=source,
-            session_id=session_id,
-            project_path=project_path or os.path.expanduser("~/Projects"),
-        )
-
-        config = {"configurable": {"thread_id": session_id}}
-        result = await nexus_app.ainvoke(initial_state.model_dump(), config=config)
-
-        sessions[session_id]["state"] = result
-        sessions[session_id]["status"] = "complete"
-
-        # Persist state and completion
-        await session_store.save_state(session_id, result)
-        await session_store.update_status(session_id, "complete")
-
-        # Track KPIs
-        total_cost = result.get("cost", {}).get("total_cost_usd", 0)
-        kpi_tracker.record_task_completion("orchestrator", directive[:100], total_cost, 0)
-
-        # Auto-commit if project has git
-        if project_path and os.path.exists(os.path.join(project_path, ".git")):
-            git = GitOps(project_path)
-            if not git.status()["clean"]:
-                branch = git.create_feature_branch(directive[:30])
-                sha = git.commit(f"feat: {directive[:60]}", cost=total_cost)
-                if sha:
-                    await session_store.add_message(
-                        session_id, "system", f"Committed {sha} on {branch}", cost=0
-                    )
-
-        if result.get("demo_summary"):
-            notify_demo(
-                project=project_path or "NEXUS Project",
-                summary=result["demo_summary"],
-                metrics=result.get("demo_metrics", {}),
-            )
-        else:
-            notify_completion(
-                project=project_path or "NEXUS Project",
-                feature=directive[:50],
-                cost=total_cost,
-            )
-
-    except Exception as e:
-        sessions[session_id]["status"] = "error"
-        sessions[session_id]["error"] = str(e)
-        await session_store.update_status(session_id, "error", str(e))
-        notify_escalation("orchestrator", f"Execution failed: {str(e)}")
-
-    finally:
-        if session_id in active_runs:
-            del active_runs[session_id]
+from src.agents.org_chart import get_org_summary
+from src.memory.store import memory
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize persistence
-    await session_store.init()
+    print("[Server] Initializing...")
+    memory.init()
+    memory.emit_event("server", "starting", {})
 
-    if not registry.is_initialized():
-        registry.load_from_yaml()
-        notify("NEXUS initialized from default org structure.")
+    from src.orchestrator.engine import engine
+    await engine.start()
 
-    nexus_path = os.path.expanduser("~/Projects/nexus")
-    if os.path.exists(nexus_path):
-        update_org_chart_in_repo(nexus_path)
+    asyncio.create_task(_start_slack())
 
-    notify("NEXUS server started. All systems operational.")
+    print("[Server] NEXUS v1 running on http://localhost:4200")
+    memory.emit_event("server", "ready", {"port": 4200})
     yield
-    # On shutdown, self-commit any pending changes
-    if os.path.exists(os.path.join(nexus_path, ".git")):
-        git = GitOps(nexus_path)
-        if not git.status()["clean"]:
-            git.self_commit("auto-save on shutdown")
-    notify("NEXUS server shutting down.")
+
+    print("[Server] Shutting down...")
+    from src.orchestrator.engine import engine as eng
+    await eng.stop()
+    memory.emit_event("server", "stopped", {})
 
 
-app = FastAPI(
-    title="NEXUS Server",
-    description="Enterprise multi-agent orchestration system",
-    version="0.3.0",
-    lifespan=lifespan,
+async def _start_slack():
+    try:
+        from src.slack.listener import start_slack_listener
+        await start_slack_listener()
+    except Exception as e:
+        print(f"[Server] Slack failed (non-fatal): {e}")
+
+
+app = FastAPI(title="NEXUS", version="1.0.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
 )
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok", "version": "0.3.0", "active_agents": len(registry.get_active_agents())}
-
-
-@app.get("/status", response_model=StatusResponse)
-async def status():
-    return StatusResponse(
-        status="running",
-        active_sessions=len(sessions),
-        active_runs=len(active_runs),
-        total_cost=cost_tracker.total_cost,
-        hourly_rate=cost_tracker.hourly_rate,
-        active_agents=len(registry.get_active_agents()),
-        sessions=[
-            {
-                "id": sid,
-                "directive": s.get("directive", ""),
-                "status": s.get("status", "unknown"),
-                "source": s.get("source", "unknown"),
-            }
-            for sid, s in sessions.items()
-        ],
-    )
+class MessageRequest(BaseModel):
+    message: str
+    source: str = "api"
 
 
 @app.post("/message")
-async def handle_message(req: MessageRequest, background_tasks: BackgroundTasks):
-    session_id = req.session_id or str(uuid.uuid4())
-
-    intent = await interpret_ceo_input(req.message)
-    category = intent.get("category", "DIRECTIVE")
-    summary = intent.get("summary", req.message[:100])
-
-    if category == "ORG_CHANGE":
-        result_text = await execute_org_change(intent)
-
-        # Self-commit org chart update
-        nexus_path = os.path.expanduser("~/Projects/nexus")
-        if os.path.exists(os.path.join(nexus_path, ".git")):
-            update_org_chart_in_repo(nexus_path)
-            git = GitOps(nexus_path)
-            git.self_commit(f"org: {summary[:60]}", cost=intent.get("_cost", 0))
-
-        if req.source == "slack":
-            notify(f"*Org Change:* {summary}\n\n{result_text}")
-
-        return {
-            "session_id": session_id,
-            "category": "ORG_CHANGE",
-            "summary": summary,
-            "result": result_text,
-            "org_summary": registry.get_org_summary(),
-            "cost": intent.get("_cost", 0),
-        }
-
-    elif category == "QUESTION":
-        answer = await execute_question(intent)
-
-        if req.source == "slack":
-            notify(f"*Q:* {summary}\n\n{answer[:2000]}")
-
-        return {
-            "session_id": session_id,
-            "category": "QUESTION",
-            "summary": summary,
-            "answer": answer,
-            "cost": intent.get("_cost", 0),
-        }
-
-    elif category == "COMMAND":
-        command = intent.get("details", {}).get("command", "status")
-        return await run_command_internal(command, intent.get("details", {}).get("args", ""), req.source)
-
-    else:
-        sessions[session_id] = {
-            "directive": req.message,
-            "source": req.source,
-            "project_path": req.project_path,
-            "status": "running",
-            "state": None,
-            "error": None,
-        }
-
-        task = asyncio.create_task(
-            execute_directive_bg(session_id, req.message, req.project_path, req.source)
-        )
-        active_runs[session_id] = task
-
-        return {
-            "session_id": session_id,
-            "category": "DIRECTIVE",
-            "summary": summary,
-            "status": "started",
-            "message": f"Directive received. The org is working on it. Session: {session_id}",
-        }
+async def handle_message(req: MessageRequest):
+    from src.orchestrator.engine import engine
+    response = await engine.handle_message(req.message, req.source)
+    return {"response": response}
 
 
-@app.post("/talk")
-async def talk_to_agent(req: TalkRequest):
-    agent_key = req.agent_name.lower().replace("-", "_").replace(" ", "_")
-    agent = registry.get_agent(agent_key)
+@app.get("/events")
+async def event_stream(request: Request, last_id: int = 0):
+    async def generate():
+        current_id = last_id
+        while True:
+            if await request.is_disconnected():
+                break
+            events = memory.get_events_since(current_id, limit=50)
+            for event in events:
+                current_id = event["id"]
+                data = json.dumps({
+                    "id": event["id"], "timestamp": event["timestamp"],
+                    "source": event["source"], "type": event["event_type"],
+                    "data": json.loads(event["data"]) if isinstance(event["data"], str) else event["data"],
+                })
+                yield f"id: {event['id']}\nevent: {event['event_type']}\ndata: {data}\n\n"
+            await asyncio.sleep(1)
 
-    if not agent:
-        found = registry.search_agents(req.agent_name)
-        if found:
-            agent = found[0]
-            agent_key = agent.id
-        else:
-            available = [a.id for a in registry.get_active_agents()]
-            return {"error": f"Unknown agent: {req.agent_name}. Available: {', '.join(available)}"}
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-    agent_config = agent.to_dict()
 
-    if agent.spawns_sdk:
-        result = await run_sdk_agent(
-            agent_key,
-            agent_config,
-            req.message,
-            sessions.get(req.session_id, {}).get("project_path", os.path.expanduser("~/Projects")),
-        )
-    else:
-        result = await run_planning_agent(agent_key, agent_config, req.message)
+@app.get("/state")
+async def get_state():
+    return memory.get_world_snapshot()
 
-    return {
-        "agent": agent.name,
-        "agent_id": agent.id,
-        "response": result["output"],
-        "cost": result["cost"],
-        "model": result["model"],
-    }
+
+@app.get("/agents")
+async def get_agents():
+    agents = memory.get_all_agents()
+    return {"agents": agents, "count": len(agents)}
 
 
 @app.get("/org")
 async def get_org():
+    return {"org": get_org_summary()}
+
+
+@app.get("/directive")
+async def get_directive():
+    directive = memory.get_active_directive()
+    if not directive:
+        return {"directive": None, "task_board": [], "context": []}
     return {
-        "summary": registry.get_org_summary(),
-        "reporting_tree": registry.get_reporting_tree(),
-        "agents": [a.to_dict() for a in registry.get_active_agents()],
-        "changelog": registry.get_changelog(20),
+        "directive": directive,
+        "task_board": memory.get_board_tasks(directive["id"]),
+        "context": memory.get_context_for_directive(directive["id"], limit=20),
     }
 
 
-@app.get("/org/chart")
-async def get_org_chart():
-    return {"chart": generate_org_chart()}
+@app.get("/services")
+async def get_services():
+    return {"services": memory.get_all_services()}
 
 
-@app.get("/session/{session_id}")
-async def get_session(session_id: str):
-    # Check in-memory first, fall back to persistent store
-    if session_id in sessions:
-        return sessions[session_id]
-    persisted = await session_store.get_session(session_id)
-    if persisted:
-        return persisted
-    return {"error": "Session not found"}
-
-
-@app.get("/sessions")
-async def get_sessions():
-    """Get recent session history from persistent store."""
-    return {"sessions": await session_store.get_recent_sessions(20)}
-
-
-@app.get("/kpi")
-async def get_kpi():
-    """Get KPI dashboard data."""
-    summary = kpi_tracker.get_summary(24)
-    dashboard = kpi_tracker.generate_dashboard(24)
-    return {"summary": summary, "dashboard": dashboard}
+@app.get("/health")
+async def health():
+    from src.orchestrator.engine import engine
+    return {
+        "status": "ok", "engine_running": engine.running,
+        "agents": len(memory.get_all_agents()),
+        "active_directive": memory.get_active_directive() is not None,
+        "working_agents": len(memory.get_working_agents()),
+    }
 
 
 @app.get("/cost")
 async def get_cost():
-    """Get full CFO cost report."""
-    return {
-        "session_cost": cost_tracker.total_cost,
-        "hourly_rate": cost_tracker.hourly_rate,
-        "monthly_cost": cost_tracker.get_monthly_cost(),
-        "over_budget": cost_tracker.over_budget,
-        "by_model": cost_tracker.by_model,
-        "by_agent": cost_tracker.by_agent,
-        "by_project": cost_tracker.by_project,
-        "daily_breakdown": cost_tracker.get_daily_breakdown(7),
-        "report": cost_tracker.generate_cfo_report(),
-    }
+    try:
+        from src.cost.tracker import cost_tracker
+        return cost_tracker.get_summary()
+    except Exception:
+        return {"total": 0, "note": "Cost tracker not available"}
 
 
-@app.post("/security/scan")
-async def security_scan(project_path: str = os.path.expanduser("~/Projects/nexus")):
-    """Run full security audit on a project."""
-    import asyncio
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, run_full_audit, project_path)
-    return result
+@app.get("/status")
+async def legacy_status():
+    return await get_state()
 
 
-async def run_command_internal(command: str, args: str, source: str) -> dict:
-    if command == "kpi":
-        dashboard = kpi_tracker.generate_dashboard(24)
-        if source == "slack":
-            notify_kpi(dashboard)
-        return {"category": "COMMAND", "command": "kpi", "dashboard": dashboard}
-
-    elif command == "cost":
-        report = cost_tracker.generate_cfo_report()
-        return {
-            "category": "COMMAND",
-            "command": "cost",
-            "total_cost": cost_tracker.total_cost,
-            "hourly_rate": cost_tracker.hourly_rate,
-            "by_model": cost_tracker.by_model,
-            "by_agent": cost_tracker.by_agent,
-            "over_budget": cost_tracker.over_budget,
-            "monthly_cost": cost_tracker.get_monthly_cost(),
-            "dashboard": report,
-        }
-
-    elif command == "security":
-        project_path = args or os.path.expanduser("~/Projects/nexus")
-        import asyncio
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, run_full_audit, project_path)
-        if source == "slack":
-            notify(f"```{result['summary']}```")
-        return {
-            "category": "COMMAND",
-            "command": "security",
-            **result,
-        }
-
-    elif command == "status":
-        if args and "org" in args:
-            org_data = await get_org()
-            org_data["category"] = "COMMAND"
-            return org_data
-        result = (await status()).model_dump()
-        result["category"] = "COMMAND"
-        return result
-
-    elif command == "org":
-        org_data = await get_org()
-        org_data["category"] = "COMMAND"
-        return org_data
-
+@app.get("/dashboard")
+async def legacy_dashboard():
+    state = memory.get_world_snapshot()
+    directive = state.get("directive")
+    agents = state.get("agents", [])
+    lines = ["NEXUS v1.0", "=" * 40]
+    if directive:
+        lines.append(f"Directive: {directive['text'][:80]}")
+        lines.append(f"Status: {directive['status']}")
     else:
-        return {"category": "COMMAND", "error": f"Unknown command: {command}"}
-
-
-def _generate_kpi_dashboard() -> str:
-    agents = registry.get_active_agents()
-    return f"""
-NEXUS Performance Dashboard
-{'=' * 50}
-
-ORGANIZATION
-  Active Agents:      {len(agents)}
-  Executive:          {len([a for a in agents if a.layer == 'executive'])}
-  Management:         {len([a for a in agents if a.layer == 'management'])}
-  Senior:             {len([a for a in agents if a.layer == 'senior'])}
-  Implementation:     {len([a for a in agents if a.layer == 'implementation'])}
-  Quality:            {len([a for a in agents if a.layer == 'quality'])}
-  Consultants:        {len([a for a in agents if a.layer == 'consultant'])}
-
-COST
-  Total Spend:        ${cost_tracker.total_cost:.2f}
-  Hourly Rate:        ${cost_tracker.hourly_rate:.2f}/hr (target: $1.00/hr)
-  Over Budget:        {'YES' if cost_tracker.over_budget else 'No'}
-
-  By Model:
-{chr(10).join(f'    {m}: ${c:.4f}' for m, c in cost_tracker.by_model.items())}
-
-  By Agent:
-{chr(10).join(f'    {a}: ${c:.4f}' for a, c in cost_tracker.by_agent.items())}
-
-SESSIONS
-  Active Sessions:    {len(sessions)}
-  Active Runs:        {len(active_runs)}
-
-{'=' * 50}
-"""
-
-
-def start_server(host: str = "127.0.0.1", port: int = 4200):
-    import uvicorn
-    uvicorn.run(app, host=host, port=port)
-
-
-if __name__ == "__main__":
-    start_server()
+        lines.append("Standing by.")
+    working = [a for a in agents if a["status"] in ("working", "thinking")]
+    lines.append(f"\nAgents: {len(working)} working, {len(agents) - len(working)} idle")
+    for a in working:
+        lines.append(f"  [{a['status']}] {a['name']}: {a['last_action'][:50]}")
+    return {"dashboard": "\n".join(lines)}

@@ -1,36 +1,29 @@
 """
 Agent SDK Bridge
 
-Spawns Claude Agent SDK sessions for agents that need to interact with
-the filesystem (write code, run bash, edit files, commit to git).
-
-Also handles direct API calls for non-Anthropic models (Gemini, o3).
+Three execution modes for agents:
+1. Claude Code CLI — spawns `claude --dangerously-skip-permissions` for
+   implementation agents. Uses Max subscription ($0 API cost).
+2. Claude Agent SDK — spawns SDK sessions for agents needing filesystem access.
+3. Direct API — Gemini and o3 via LangChain.
 """
 
-import os
 import asyncio
+import logging
+import os
+import shutil
 import time
 from typing import Any
-from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
+
+from claude_agent_sdk import ClaudeAgentOptions, query
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+
+logger = logging.getLogger("nexus.sdk_bridge")
 
 
-def _load_key(key_name: str) -> str | None:
-    val = os.environ.get(key_name)
-    if val:
-        return val
-    try:
-        with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith(key_name + "="):
-                    return line.split("=", 1)[1]
-    except FileNotFoundError:
-        pass
-    return None
-
+from src.config import get_key as _load_key  # consolidated key loading
 
 MODEL_MAP = {
     "opus": "opus",
@@ -38,8 +31,120 @@ MODEL_MAP = {
     "haiku": "haiku",
 }
 
+# Claude Code CLI model flag mapping
+CLI_MODEL_MAP = {
+    "opus": "claude-opus-4-6",
+    "sonnet": "claude-sonnet-4-5-20250929",
+    "haiku": "claude-haiku-4-5-20251001",
+}
+
 
 from src.cost.tracker import cost_tracker
+
+# ---------------------------------------------------------------------------
+# Claude Code CLI Bridge (Max subscription — $0 API cost)
+# ---------------------------------------------------------------------------
+
+async def run_claude_code(
+    agent_name: str,
+    agent_config: dict,
+    task_prompt: str,
+    project_path: str,
+    timeout_seconds: int = 600,
+) -> dict[str, Any]:
+    """
+    Spawn a Claude Code CLI session in --dangerously-skip-permissions mode.
+    Uses the Max subscription so API cost is $0. The CLI handles all tool
+    use (file read/write, bash, grep, glob) autonomously.
+
+    Falls back to Agent SDK if the CLI binary is not found.
+    """
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        logger.warning(f"[{agent_name}] Claude CLI not found, falling back to SDK")
+        return await run_sdk_agent(agent_name, agent_config, task_prompt, project_path)
+
+    model_key = agent_config.get("model", "sonnet")
+    model_id = CLI_MODEL_MAP.get(model_key, CLI_MODEL_MAP["sonnet"])
+    system_prompt = agent_config.get("system_prompt", "")
+
+    full_prompt = task_prompt
+    if system_prompt:
+        full_prompt = f"{system_prompt}\n\n---\n\nTASK:\n{task_prompt}"
+
+    # Build argument list — no shell interpolation, safe from injection
+    cmd = [
+        claude_bin,
+        "--dangerously-skip-permissions",
+        "--model", model_id,
+        "--output-format", "text",
+        "--verbose",
+        "-p", full_prompt,
+    ]
+
+    logger.info(f"[{agent_name}] Spawning Claude Code CLI ({model_id}) in {project_path}")
+    start_time = time.time()
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=project_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+        )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_seconds
+            )
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            elapsed = time.time() - start_time
+            logger.error(f"[{agent_name}] Claude Code CLI timed out after {elapsed:.0f}s")
+            return {
+                "output": f"Claude Code CLI timed out after {timeout_seconds}s",
+                "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
+                "model": f"claude-code:{model_id}", "agent": agent_name,
+                "mode": "claude_code_cli", "elapsed_seconds": elapsed,
+            }
+
+        elapsed = time.time() - start_time
+        output = stdout.decode("utf-8", errors="replace").strip()
+        errors = stderr.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0 and not output:
+            output = f"CLI exited with code {proc.returncode}: {errors[:1000]}"
+
+        # Record $0 cost but track the event for analytics
+        cost_tracker.record(
+            model=f"claude-code:{model_key}",
+            agent_name=agent_name,
+            tokens_in=0, tokens_out=0,
+            project=project_path,
+        )
+
+        logger.info(f"[{agent_name}] Claude Code CLI completed in {elapsed:.1f}s ({len(output)} chars)")
+
+        return {
+            "output": output,
+            "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
+            "model": f"claude-code:{model_id}", "agent": agent_name,
+            "mode": "claude_code_cli", "elapsed_seconds": elapsed,
+        }
+
+    except FileNotFoundError:
+        logger.warning(f"[{agent_name}] Claude CLI binary not executable, falling back to SDK")
+        return await run_sdk_agent(agent_name, agent_config, task_prompt, project_path)
+    except Exception as e:
+        logger.error(f"[{agent_name}] Claude Code CLI error: {e}")
+        return {
+            "output": f"Claude Code CLI error: {str(e)}",
+            "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
+            "model": f"claude-code:{model_key}", "agent": agent_name,
+            "mode": "claude_code_cli",
+        }
 
 
 async def run_sdk_agent(

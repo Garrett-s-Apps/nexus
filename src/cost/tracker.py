@@ -10,12 +10,12 @@ Extends the basic cost tracker with:
 """
 
 import os
-import time
-import json
 import sqlite3
-from typing import Any
+import time
 
-DB_PATH = os.path.expanduser("~/.nexus/cost.db")
+from src.config import COST_DB_PATH
+
+DB_PATH = COST_DB_PATH
 
 # Model pricing per 1M tokens (input/output)
 MODEL_PRICING = {
@@ -26,6 +26,10 @@ MODEL_PRICING = {
     "gemini-2.5-pro": {"input": 1.25, "output": 10.0},
     "o3": {"input": 10.0, "output": 40.0},
     "gpt-4o": {"input": 2.50, "output": 10.0},
+    # Claude Code CLI uses Max subscription — $0 API cost
+    "claude-code:opus": {"input": 0.0, "output": 0.0},
+    "claude-code:sonnet": {"input": 0.0, "output": 0.0},
+    "claude-code:haiku": {"input": 0.0, "output": 0.0},
 }
 
 # Default budget allocation
@@ -203,7 +207,6 @@ class CostTracker:
 
     def get_monthly_cost(self) -> float:
         """Get current month's total cost from persistent store."""
-        import calendar
         now = time.time()
         # Start of current month
         t = time.localtime(now)

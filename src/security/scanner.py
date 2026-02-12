@@ -8,11 +8,10 @@ Runs security scans on project code:
 - OWASP Top 10 checklist
 """
 
+import json
 import os
 import re
 import subprocess
-import json
-from typing import Any
 
 
 def _run(cmd: list[str], cwd: str = None) -> tuple[int, str, str]:
@@ -64,7 +63,7 @@ def scan_secrets(project_path: str) -> list[dict]:
 
             # Skip binary files
             try:
-                with open(filepath, "r", errors="ignore") as f:
+                with open(filepath, errors="ignore") as f:
                     content = f.read()
             except (OSError, PermissionError):
                 continue
@@ -180,7 +179,7 @@ def scan_sast(project_path: str) -> list[dict]:
             rel_path = os.path.relpath(filepath, project_path)
 
             try:
-                with open(filepath, "r", errors="ignore") as f:
+                with open(filepath, errors="ignore") as f:
                     content = f.read()
             except (OSError, PermissionError):
                 continue

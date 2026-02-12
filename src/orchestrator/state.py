@@ -7,10 +7,10 @@ communicate without talking to each other directly.
 """
 
 from __future__ import annotations
-from typing import Literal, Any
-from dataclasses import dataclass, field
+
+from typing import Any, Literal
+
 from pydantic import BaseModel, Field
-from langgraph.graph import MessagesState
 
 
 class WorkstreamTask(BaseModel):
@@ -102,6 +102,13 @@ class NexusState(BaseModel):
 
     # --- Cost Tracking ---
     cost: CostSnapshot = Field(default_factory=CostSnapshot)
+
+    # --- Quality Tracking (Phase 3) ---
+    quality_score: float = 0.0
+    failed_tasks: list[str] = Field(default_factory=list)
+    defect_ids: list[str] = Field(default_factory=list)
+    retry_counts: dict[str, int] = Field(default_factory=dict)
+    quality_gate_details: dict[str, bool] = Field(default_factory=dict)
 
     # --- Flow Control ---
     current_phase: Literal[

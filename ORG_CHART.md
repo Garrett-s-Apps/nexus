@@ -1,6 +1,6 @@
 # NEXUS Organization Chart
 
-_Auto-generated from live registry at 2026-02-11 01:37:59_
+_Auto-generated from live registry at 2026-02-11 11:43:49_
 
 ## Reporting Structure
 

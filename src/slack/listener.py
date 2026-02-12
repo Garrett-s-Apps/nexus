@@ -34,20 +34,20 @@ from src.tools.web_search import search as web_search
 
 
 def _is_action_command(text: str) -> bool:
-    """Detect messages that are action commands, not document requests.
+    """Detect messages that are direct CEO action commands.
 
-    These must always route to the engine/CEO interpreter, never to doc generation.
+    Only matches imperative commands (verb at the start of the message).
+    Conversational messages like "can you build..." route to CLI sessions.
     """
     msg_lower = text.lower().strip()
-    action_verbs = [
+    # Direct commands: verb must be at the START of the message
+    direct_verbs = [
         "hire", "fire", "reassign", "promote", "demote", "restructure",
-        "deploy", "build", "fix", "ship", "launch", "start", "stop",
-        "run", "execute", "test", "scan", "audit", "migrate",
-        "create a project", "spin up", "stand up", "shut down",
+        "deploy", "ship", "launch", "shut down",
+        "create a project", "spin up", "stand up",
         "consolidate", "merge team", "split team",
     ]
-    return any(msg_lower.startswith(verb) or f" {verb} " in f" {msg_lower} "
-               for verb in action_verbs)
+    return any(msg_lower.startswith(verb) for verb in direct_verbs)
 
 
 async def classify_doc_request(text: str) -> dict | None:

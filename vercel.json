@@ -1,16 +1,10 @@
 {
   "version": 2,
-  "name": "nexus-dashboard",
-  "builds": [
-    {
-      "src": "src/dashboard/**",
-      "use": "@vercel/static"
-    }
-  ],
-  "routes": [
-    { "src": "/logo.svg", "dest": "/src/dashboard/logo.svg" },
-    { "src": "/", "dest": "/src/dashboard/index.html" },
-    { "src": "/(.*)", "dest": "/src/dashboard/$1" }
+  "buildCommand": "",
+  "outputDirectory": "src/dashboard",
+  "rewrites": [
+    { "source": "/logo.svg", "destination": "/logo.svg" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ],
   "headers": [
     {

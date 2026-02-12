@@ -21,6 +21,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
 from src.config import get_key
+from src.sessions.cli_pool import cli_pool
 
 
 def md_to_slack(text: str) -> str:
@@ -265,7 +266,17 @@ async def start_slack_listener():
             from src.orchestrator.engine import engine
 
             thread_ts = event.get("thread_ts") or event.get("ts")
-            response = await engine.handle_message(text, source="slack", thread_ts=thread_ts)
+            is_threaded_reply = event.get("thread_ts") is not None
+
+            # Route threaded replies through persistent CLI sessions when available
+            if is_threaded_reply and cli_pool.active_count() > 0:
+                session = cli_pool._sessions.get(thread_ts)
+                if session and session.alive:
+                    response = await session.send(text)
+                else:
+                    response = await engine.handle_message(text, source="slack", thread_ts=thread_ts)
+            else:
+                response = await engine.handle_message(text, source="slack", thread_ts=thread_ts)
 
             slack_text = md_to_slack(response)
 

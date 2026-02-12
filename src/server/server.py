@@ -14,11 +14,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.agents.org_chart import get_org_summary
 from src.memory.store import memory
+from src.observability.api_routes import router as metrics_router
 
 
 @asynccontextmanager
@@ -50,7 +51,8 @@ async def _start_slack():
         print(f"[Server] Slack failed (non-fatal): {e}")
 
 
-app = FastAPI(title="NEXUS", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="NEXUS", version="3.0.0", lifespan=lifespan)
+app.include_router(metrics_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -129,11 +131,13 @@ async def get_services():
 @app.get("/health")
 async def health():
     from src.orchestrator.engine import engine
+    from src.resilience.health_monitor import health_monitor
     return {
         "status": "ok", "engine_running": engine.running,
         "agents": len(memory.get_all_agents()),
         "active_directive": memory.get_active_directive() is not None,
         "working_agents": len(memory.get_working_agents()),
+        "resilience": health_monitor.status(),
     }
 
 
@@ -152,18 +156,10 @@ async def legacy_status():
 
 
 @app.get("/dashboard")
-async def legacy_dashboard():
-    state = memory.get_world_snapshot()
-    directive = state.get("directive")
-    agents = state.get("agents", [])
-    lines = ["NEXUS v1.0", "=" * 40]
-    if directive:
-        lines.append(f"Directive: {directive['text'][:80]}")
-        lines.append(f"Status: {directive['status']}")
-    else:
-        lines.append("Standing by.")
-    working = [a for a in agents if a["status"] in ("working", "thinking")]
-    lines.append(f"\nAgents: {len(working)} working, {len(agents) - len(working)} idle")
-    for a in working:
-        lines.append(f"  [{a['status']}] {a['name']}: {a['last_action'][:50]}")
-    return {"dashboard": "\n".join(lines)}
+async def serve_dashboard():
+    import os
+    dashboard_path = os.path.join(os.path.dirname(__file__), "..", "dashboard", "index.html")
+    dashboard_path = os.path.normpath(dashboard_path)
+    if os.path.exists(dashboard_path):
+        return FileResponse(dashboard_path, media_type="text/html")
+    return {"error": "Dashboard not found", "path": dashboard_path}

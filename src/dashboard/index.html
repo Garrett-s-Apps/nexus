@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEXUS Command Center</title>
+<style>
+  :root {
+    --bg: #0a0a1a; --surface: #12122a; --border: #1e1e3a;
+    --text: #e0e0f0; --dim: #8888aa; --accent: #00D2FF;
+    --secondary: #7B61FF; --success: #00E676; --warning: #FFD740;
+    --danger: #FF5252; --radius: 10px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'SF Mono', 'Fira Code', monospace; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 32px; border-bottom: 1px solid var(--border);
+  }
+  .header h1 { font-size: 24px; letter-spacing: 4px; color: var(--accent); }
+  .header .status { display: flex; align-items: center; gap: 8px; }
+  .header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--success); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; padding: 24px 32px; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; transition: border-color 0.2s;
+  }
+  .card:hover { border-color: var(--accent); }
+  .card-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 20px; cursor: pointer; user-select: none;
+  }
+  .card-header h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 2px; color: var(--dim); }
+  .card-summary { font-size: 28px; font-weight: bold; color: var(--accent); }
+  .card-body { padding: 0 20px 16px; display: none; }
+  .card.expanded .card-body { display: block; }
+  .card-header .chevron { transition: transform 0.2s; color: var(--dim); }
+  .card.expanded .card-header .chevron { transform: rotate(180deg); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--dim); padding: 8px 0; border-bottom: 1px solid var(--border); font-weight: normal; text-transform: uppercase; letter-spacing: 1px; font-size: 11px; }
+  td { padding: 8px 0; border-bottom: 1px solid var(--border); }
+
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;
+  }
+  .badge-ok { background: rgba(0,230,118,0.15); color: var(--success); }
+  .badge-warn { background: rgba(255,215,64,0.15); color: var(--warning); }
+  .badge-err { background: rgba(255,82,82,0.15); color: var(--danger); }
+  .badge-idle { background: rgba(136,136,170,0.15); color: var(--dim); }
+
+  .event-log { max-height: 300px; overflow-y: auto; font-size: 12px; }
+  .event-row { display: flex; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .event-time { color: var(--dim); flex-shrink: 0; width: 60px; }
+  .event-source { color: var(--secondary); flex-shrink: 0; width: 100px; }
+
+  .circuit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+  .circuit-chip {
+    padding: 8px 12px; border-radius: 6px; text-align: center; font-size: 12px;
+    border: 1px solid var(--border);
+  }
+  .circuit-closed { border-color: var(--success); color: var(--success); }
+  .circuit-open { border-color: var(--danger); color: var(--danger); background: rgba(255,82,82,0.08); }
+  .circuit-half_open { border-color: var(--warning); color: var(--warning); }
+
+  .empty { color: var(--dim); font-style: italic; padding: 16px 0; text-align: center; }
+  footer { text-align: center; padding: 24px; color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>NEXUS</h1>
+  <div class="status"><div class="dot"></div><span id="engine-status">Connecting...</span></div>
+</div>
+
+<div class="grid">
+  <div class="card" id="card-directive">
+    <div class="card-header" onclick="toggle(this)">
+      <div><h2>Active Directive</h2><div class="card-summary" id="directive-summary">--</div></div>
+      <span class="chevron">&#9660;</span>
+    </div>
+    <div class="card-body" id="directive-detail"></div>
+  </div>
+
+  <div class="card" id="card-agents">
+    <div class="card-header" onclick="toggle(this)">
+      <div><h2>Agents</h2><div class="card-summary" id="agents-summary">--</div></div>
+      <span class="chevron">&#9660;</span>
+    </div>
+    <div class="card-body" id="agents-detail"></div>
+  </div>
+
+  <div class="card" id="card-cost">
+    <div class="card-header" onclick="toggle(this)">
+      <div><h2>Cost</h2><div class="card-summary" id="cost-summary">--</div></div>
+      <span class="chevron">&#9660;</span>
+    </div>
+    <div class="card-body" id="cost-detail"></div>
+  </div>
+
+  <div class="card" id="card-health">
+    <div class="card-header" onclick="toggle(this)">
+      <div><h2>Health</h2><div class="card-summary" id="health-summary">--</div></div>
+      <span class="chevron">&#9660;</span>
+    </div>
+    <div class="card-body" id="health-detail"></div>
+  </div>
+
+  <div class="card" id="card-circuits">
+    <div class="card-header" onclick="toggle(this)">
+      <div><h2>Circuit Breakers</h2><div class="card-summary" id="circuits-summary">--</div></div>
+      <span class="chevron">&#9660;</span>
+    </div>
+    <div class="card-body" id="circuits-detail"></div>
+  </div>
+
+  <div class="card" id="card-escalations">
+    <div class="card-header" onclick="toggle(this)">
+      <div><h2>Escalations</h2><div class="card-summary" id="escalations-summary">0</div></div>
+      <span class="chevron">&#9660;</span>
+    </div>
+    <div class="card-body" id="escalations-detail"></div>
+  </div>
+
+  <div class="card expanded" id="card-events" style="grid-column: 1 / -1;">
+    <div class="card-header" onclick="toggle(this)">
+      <div><h2>Live Events</h2><div class="card-summary" id="events-summary">0</div></div>
+      <span class="chevron">&#9660;</span>
+    </div>
+    <div class="card-body">
+      <div class="event-log" id="event-log"></div>
+    </div>
+  </div>
+</div>
+
+<footer>NEXUS v3.0 &mdash; Autonomous AI Organization Platform</footer>
+
+<script>
+const API = window.location.origin;
+let eventCount = 0;
+
+function toggle(header) {
+  header.closest('.card').classList.toggle('expanded');
+}
+
+function el(tag, attrs, children) {
+  const e = document.createElement(tag);
+  if (attrs) Object.entries(attrs).forEach(([k, v]) => {
+    if (k === 'class') e.className = v;
+    else if (k === 'style') e.style.cssText = v;
+    else e.setAttribute(k, v);
+  });
+  if (typeof children === 'string') e.textContent = children;
+  else if (Array.isArray(children)) children.forEach(c => { if (c) e.appendChild(c); });
+  return e;
+}
+
+function badge(text, type) {
+  return el('span', {class: `badge badge-${type}`}, text);
+}
+
+function buildTable(headers, rows) {
+  const table = el('table');
+  const thead = el('tr', null, headers.map(h => el('th', null, h)));
+  table.appendChild(thead);
+  rows.forEach(cells => {
+    const tr = el('tr', null, cells.map(c => {
+      const td = el('td');
+      if (c instanceof HTMLElement) td.appendChild(c);
+      else td.textContent = String(c);
+      return td;
+    }));
+    table.appendChild(tr);
+  });
+  return table;
+}
+
+function clear(id) { document.getElementById(id).replaceChildren(); }
+
+async function fetchJSON(path) {
+  try { return await (await fetch(API + path)).json(); }
+  catch { return null; }
+}
+
+async function refreshState() {
+  const [state, agents, directive, cost, health, metricsHealth] = await Promise.all([
+    fetchJSON('/state'), fetchJSON('/agents'), fetchJSON('/directive'),
+    fetchJSON('/cost'), fetchJSON('/health'), fetchJSON('/metrics/health'),
+  ]);
+
+  if (health) {
+    const running = health.engine_running;
+    document.getElementById('engine-status').textContent = running ? 'Engine Online' : 'Engine Offline';
+    document.querySelector('.dot').style.background = running ? 'var(--success)' : 'var(--danger)';
+    document.getElementById('health-summary').textContent = running ? 'OK' : 'DOWN';
+
+    const rows = [
+      ['Engine', running ? badge('Running', 'ok') : badge('Stopped', 'err')],
+      ['Active Agents', String(health.working_agents || 0)],
+      ['Total Agents', String(health.agents || 0)],
+    ];
+    if (health.resilience) {
+      rows.push(['Uptime', Math.round(health.resilience.uptime_seconds || 0) + 's']);
+      rows.push(['Health Checks', String(health.resilience.check_count || 0)]);
+      rows.push(['Dead Letter Queue', String(health.resilience.dead_letter_depth || 0)]);
+    }
+    const container = document.getElementById('health-detail');
+    container.replaceChildren(buildTable(['Metric', 'Value'], rows));
+  }
+
+  if (directive) {
+    const d = directive.directive;
+    const container = document.getElementById('directive-detail');
+    if (d) {
+      document.getElementById('directive-summary').textContent = d.status || 'active';
+      const frag = document.createDocumentFragment();
+      frag.appendChild(el('p', {style: 'margin-bottom:12px;color:var(--text)'}, d.text || '--'));
+      if (directive.task_board && directive.task_board.length) {
+        const rows = directive.task_board.map(t => {
+          const st = t.status === 'completed' ? 'ok' : t.status === 'failed' ? 'err' : 'idle';
+          return [(t.description||'').substring(0,60), badge(t.status, st), t.assigned_to||'--'];
+        });
+        frag.appendChild(buildTable(['Task', 'Status', 'Agent'], rows));
+      }
+      container.replaceChildren(frag);
+    } else {
+      document.getElementById('directive-summary').textContent = 'Idle';
+      container.replaceChildren(el('div', {class: 'empty'}, 'No active directive'));
+    }
+  }
+
+  if (agents) {
+    const list = agents.agents || [];
+    const working = list.filter(a => a.status === 'working' || a.status === 'thinking').length;
+    document.getElementById('agents-summary').textContent = working + ' / ' + list.length;
+    const rows = list.slice(0, 20).map(a => {
+      const st = a.status === 'working' ? 'ok' : a.status === 'thinking' ? 'warn' : 'idle';
+      return [a.name || a.agent_id, badge(a.status, st), (a.last_action||'--').substring(0,40)];
+    });
+    document.getElementById('agents-detail').replaceChildren(buildTable(['Agent', 'Status', 'Last Action'], rows));
+  }
+
+  if (cost) {
+    const total = cost.total_cost_usd || cost.total || 0;
+    const rate = cost.hourly_rate || 0;
+    document.getElementById('cost-summary').textContent = '$' + total.toFixed(2);
+    const rows = [['Total Spend', '$' + total.toFixed(2)], ['Hourly Rate', '$' + rate.toFixed(2) + '/hr']];
+    if (cost.by_model) {
+      Object.entries(cost.by_model).forEach(([m, c]) => rows.push([m, '$' + Number(c).toFixed(3)]));
+    }
+    document.getElementById('cost-detail').replaceChildren(buildTable(['Metric', 'Value'], rows));
+  }
+
+  if (metricsHealth) {
+    const circuits = metricsHealth.circuits || [];
+    const openCount = circuits.filter(c => c.state === 'open').length;
+    document.getElementById('circuits-summary').textContent = openCount > 0 ? openCount + ' OPEN' : circuits.length > 0 ? circuits.length + ' OK' : '--';
+
+    const circuitContainer = document.getElementById('circuits-detail');
+    if (circuits.length) {
+      const grid = el('div', {class: 'circuit-grid'});
+      circuits.forEach(c => {
+        const chip = el('div', {class: 'circuit-chip circuit-' + c.state});
+        chip.appendChild(el('span', null, c.name));
+        chip.appendChild(document.createElement('br'));
+        chip.appendChild(el('small', null, c.state));
+        grid.appendChild(chip);
+      });
+      circuitContainer.replaceChildren(grid);
+    } else {
+      circuitContainer.replaceChildren(el('div', {class: 'empty'}, 'No circuits registered'));
+    }
+
+    const esc = metricsHealth.escalation || {};
+    document.getElementById('escalations-summary').textContent = String(esc.total_escalations || 0);
+    const recent = esc.recent_escalations || [];
+    const escContainer = document.getElementById('escalations-detail');
+    if (recent.length) {
+      const rows = recent.map(e => [e.id, e.agent, e.reason]);
+      escContainer.replaceChildren(buildTable(['ID', 'Agent', 'Reason'], rows));
+    } else {
+      escContainer.replaceChildren(el('div', {class: 'empty'}, 'No escalations'));
+    }
+  }
+}
+
+function connectSSE() {
+  const es = new EventSource(API + '/events?last_id=0');
+  es.onmessage = (e) => {
+    eventCount++;
+    document.getElementById('events-summary').textContent = String(eventCount);
+    try {
+      const data = JSON.parse(e.data);
+      const log = document.getElementById('event-log');
+      const time = data.timestamp ? (data.timestamp.split('T')[1] || '').substring(0,8) : '';
+      const row = el('div', {class: 'event-row'}, [
+        el('span', {class: 'event-time'}, time),
+        el('span', {class: 'event-source'}, data.source || '--'),
+        el('span', null, data.type || '--'),
+      ]);
+      log.prepend(row);
+      while (log.children.length > 200) log.removeChild(log.lastChild);
+    } catch { /* ignore malformed events */ }
+  };
+  es.onerror = () => { setTimeout(connectSSE, 5000); es.close(); };
+}
+
+refreshState();
+setInterval(refreshState, 5000);
+connectSSE();
+</script>
+</body>
+</html>

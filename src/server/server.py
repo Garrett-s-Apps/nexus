@@ -294,7 +294,7 @@ async def event_stream(request: Request, last_id: int = 0, token: str = ""):
                     "source": event["source"], "type": event["event_type"],
                     "data": json.loads(event["data"]) if isinstance(event["data"], str) else event["data"],
                 })
-                yield f"id: {event['id']}\nevent: {event['event_type']}\ndata: {data}\n\n"
+                yield f"id: {event['id']}\ndata: {data}\n\n"
             await asyncio.sleep(1)
 
     return StreamingResponse(generate(), media_type="text/event-stream",

@@ -14,7 +14,7 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, UTC
 
 from src.agents.base import Agent
 from src.agents.org_chart import ORG_CHART
@@ -115,7 +115,7 @@ Plain text only. No JSON.""", max_tokens=400)
 
                 memory._conn.cursor().execute(
                     "UPDATE task_board SET description=?,updated_at=? WHERE id=?",
-                    (enriched.strip(), datetime.utcnow().isoformat(), task["id"]))
+                    (enriched.strip(), datetime.now(UTC).isoformat(), task["id"]))
                 memory._conn.commit()
                 logger.info(f"[{self.name}] Enriched task: {task['title']}")
 

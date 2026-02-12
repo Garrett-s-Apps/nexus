@@ -989,11 +989,66 @@ def create_pdf(title: str, request: str, output_dir: str = None) -> str:
 # IMAGE
 # ============================================
 
+def _try_gemini_image_generation(description: str, output_path: str) -> bool:
+    """Try to generate an image using Gemini's native image generation.
+
+    Returns True if successful, False to fall back to PIL.
+    """
+    api_key = _load_key("GOOGLE_AI_API_KEY")
+    if not api_key:
+        return False
+
+    try:
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash-exp-image-generation",
+            contents=description,
+            config=types.GenerateContentConfig(
+                response_modalities=["TEXT", "IMAGE"],
+            ),
+        )
+
+        # Extract generated image from response parts
+        for part in response.candidates[0].content.parts:
+            if part.inline_data is not None:
+                import base64
+                image_data = part.inline_data.data
+                # inline_data.data is already bytes
+                if isinstance(image_data, str):
+                    image_data = base64.b64decode(image_data)
+                with open(output_path, "wb") as f:
+                    f.write(image_data)
+                print(f"[Documents] Gemini image generation succeeded")
+                return True
+
+        print("[Documents] Gemini returned no image data, falling back to PIL")
+        return False
+
+    except Exception as e:
+        print(f"[Documents] Gemini image generation failed ({e}), falling back to PIL")
+        return False
+
+
 def create_image(description: str, output_dir: str = None) -> str:
-    """Generate a diagram image using PIL based on the description."""
+    """Generate an image: tries Gemini native image generation first, falls back to PIL diagrams."""
+
+    output_dir = output_dir or os.path.expanduser("~/.nexus/documents/images")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Extract a short title for the filename
+    safe_title = description[:50].replace(" ", "_").replace("/", "_").replace("\n", "_")
+    filepath = os.path.join(output_dir, f"{safe_title}.png")
+
+    # Try Gemini native image generation first
+    if _try_gemini_image_generation(description, filepath):
+        return filepath
+
+    # Fallback: PIL diagram generation
     from PIL import Image, ImageDraw, ImageFont
 
-    # Ask Gemini to structure the diagram
+    # Ask Gemini/Claude to structure the diagram
     prompt = (
         f"Based on this description: '{description}'\n\n"
         f"Generate a structured diagram description as JSON with this format:\n"
@@ -1102,14 +1157,7 @@ def create_image(description: str, output_dir: str = None) -> str:
         text_y = y + (h - label_height) / 2
         draw.text((text_x, text_y), label, fill=text_color, font=box_font)
 
-    # Save image
-    output_dir = output_dir or os.path.expanduser("~/.nexus/documents/images")
-    os.makedirs(output_dir, exist_ok=True)
-
-    safe_title = data.get("title", "diagram")[:50].replace(" ", "_").replace("/", "_")
-    filepath = os.path.join(output_dir, f"{safe_title}.png")
     img.save(filepath)
-
     return filepath
 
 

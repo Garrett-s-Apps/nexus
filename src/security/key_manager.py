@@ -22,7 +22,6 @@ PRIVATE_KEY_PATH = os.path.join(KEYS_DIR, "nexus_private.pem")
 PUBLIC_KEY_PATH = os.path.join(KEYS_DIR, "nexus_public.pem")
 META_PATH = os.path.join(KEYS_DIR, "key_meta.json")
 
-# Rotate after 30 days
 ROTATION_INTERVAL_SECONDS = 30 * 24 * 3600
 
 
@@ -36,7 +35,6 @@ def _generate_key_pair():
 
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
-    # Write private key with restricted permissions
     private_pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,

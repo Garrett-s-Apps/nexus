@@ -28,8 +28,6 @@ from src.orchestrator.state import CostSnapshot, NexusState, PRReview, Workstrea
 
 logger = logging.getLogger(__name__)
 
-# Prefer Claude Code CLI for implementation agents (uses Max subscription, $0 cost).
-# Falls back to Agent SDK automatically if claude CLI isn't installed.
 USE_CLAUDE_CODE = os.environ.get("USE_CLAUDE_CODE", "true").lower() in ("true", "1", "yes")
 
 
@@ -60,14 +58,6 @@ def _load_agent_configs() -> dict:
 
 
 AGENTS = _load_agent_configs()
-
-
-# ============================================
-# NODE FUNCTIONS
-# Each function is a node in the LangGraph graph.
-# It receives the current state and returns updates.
-# ============================================
-
 
 async def intake_node(state: NexusState) -> dict:
     """Parse the incoming directive and set up the session."""
@@ -316,13 +306,11 @@ async def implementation_node(state: NexusState) -> dict:
             if agent_key not in AGENTS or not AGENTS[agent_key].get("spawns_sdk"):
                 continue
 
-            # Cost-aware model downgrade when budget is tight
             agent_cfg = AGENTS[agent_key]
             if "model" in agent_cfg:
                 budget_left = state.cost.budget_remaining if state.cost.budget_remaining > 0 else None
                 agent_cfg = {**agent_cfg, "model": get_model_for_budget(agent_cfg["model"], budget_left)}
 
-            # Build defect context if this is a retry
             defect_context = ""
             if task.id in retry_counts:
                 defect_context = f"\n\nPREVIOUS ATTEMPT FAILED. This is retry #{retry_counts[task.id]}."
@@ -378,13 +366,11 @@ Implement this task completely. Write the code, create the files, run tests.""",
                     task.result = result.get("output", "")[:500]
                     all_results.append(result)
 
-    # Preserve already-completed tasks unchanged
     completed_ids = {t.id for t in state.workstreams if t.status == "completed"}
     for task in state.workstreams:
         if task.id in completed_ids and task not in updated_tasks:
             updated_tasks.append(task)
         else:
-            # Find the updated version from parallel_tasks processing
             updated_tasks.append(task)
 
     return {

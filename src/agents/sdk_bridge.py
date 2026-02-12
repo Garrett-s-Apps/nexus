@@ -23,7 +23,7 @@ from langchain_openai import ChatOpenAI
 logger = logging.getLogger("nexus.sdk_bridge")
 
 
-from src.config import get_key as _load_key  # consolidated key loading
+from src.config import get_key as _load_key
 
 MODEL_MAP = {
     "opus": "opus",
@@ -31,7 +31,6 @@ MODEL_MAP = {
     "haiku": "haiku",
 }
 
-# Claude Code CLI model flag mapping
 CLI_MODEL_MAP = {
     "opus": "claude-opus-4-6",
     "sonnet": "claude-sonnet-4-5-20250929",
@@ -40,10 +39,6 @@ CLI_MODEL_MAP = {
 
 
 from src.cost.tracker import cost_tracker
-
-# ---------------------------------------------------------------------------
-# Claude Code CLI Bridge (Max subscription — $0 API cost)
-# ---------------------------------------------------------------------------
 
 async def run_claude_code(
     agent_name: str,
@@ -72,7 +67,6 @@ async def run_claude_code(
     if system_prompt:
         full_prompt = f"{system_prompt}\n\n---\n\nTASK:\n{task_prompt}"
 
-    # Build argument list — no shell interpolation, safe from injection
     cmd = [
         claude_bin,
         "--dangerously-skip-permissions",
@@ -117,7 +111,6 @@ async def run_claude_code(
         if proc.returncode != 0 and not output:
             output = f"CLI exited with code {proc.returncode}: {errors[:1000]}"
 
-        # Record $0 cost but track the event for analytics
         cost_tracker.record(
             model=f"claude-code:{model_key}",
             agent_name=agent_name,
@@ -157,7 +150,6 @@ async def run_sdk_agent(
     Spawn a Claude Agent SDK session for an agent that needs filesystem access.
     Returns the agent's output and cost information.
     """
-    # Apply model downgrade if CFO enforcement active
     model = cost_tracker.get_effective_model(MODEL_MAP.get(agent_config.get("model", "sonnet"), "sonnet"))
     system_prompt = agent_config.get("system_prompt", "")
     allowed_tools = agent_config.get("tools", ["Read", "Grep", "Glob"])
@@ -252,7 +244,6 @@ async def run_o3(
     if system_prompt:
         full_prompt = f"{system_prompt}\n\n---\n\nTASK:\n{task_prompt}"
 
-    # Args passed as array — safe from shell injection
     cmd = [codex_bin, "--model", "o3", "--quiet", full_prompt]
 
     logger.info("[o3] Spawning Codex CLI for systems consulting")
@@ -333,7 +324,7 @@ async def _run_o3_langchain(
 
 async def run_web_search(query: str, num_results: int = 5) -> dict[str, Any]:
     """Web search capability available to all agents."""
-    from src.tools.web_search import search, format_results_for_context
+    from src.tools.web_search import format_results_for_context, search
     results = await search(query, num_results)
     return {
         "output": format_results_for_context(results),

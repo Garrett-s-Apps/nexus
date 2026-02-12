@@ -13,3 +13,4 @@ build/
 *.log
 *.tar.gz
 .DS_Store
+.vercel

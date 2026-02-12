@@ -12,7 +12,7 @@ import json
 import os
 import sqlite3
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 
 from src.config import MEMORY_DB_PATH
 
@@ -128,7 +128,7 @@ class Memory:
         with self._lock:
             c = self._conn.cursor()
             c.execute("INSERT INTO messages (timestamp,role,content,source,category,cost) VALUES (?,?,?,?,?,?)",
-                      (datetime.utcnow().isoformat(), role, content, source, category, cost))
+                      (datetime.now(UTC).isoformat(), role, content, source, category, cost))
             self._conn.commit()
 
     def get_recent_messages(self, limit=50):
@@ -137,7 +137,7 @@ class Memory:
         rows = [dict(r) for r in c.fetchall()]; rows.reverse(); return rows
 
     def get_messages_since(self, hours=24):
-        since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        since = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
         c = self._conn.cursor()
         c.execute("SELECT role,content,timestamp FROM messages WHERE timestamp>? ORDER BY id", (since,))
         return [dict(r) for r in c.fetchall()]
@@ -150,7 +150,7 @@ class Memory:
         with self._lock:
             c = self._conn.cursor()
             c.execute("INSERT INTO summaries (timestamp,period_start,period_end,summary,message_count) VALUES (?,?,?,?,?)",
-                      (datetime.utcnow().isoformat(), period_start, period_end, summary, message_count))
+                      (datetime.now(UTC).isoformat(), period_start, period_end, summary, message_count))
             self._conn.commit()
 
     def get_recent_summaries(self, limit=10):
@@ -166,7 +166,7 @@ class Memory:
 
     # === PROJECTS ===
     def create_project(self, project_id, name, description="", path="", tech_stack=""):
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._lock:
             c = self._conn.cursor()
             c.execute("""INSERT INTO projects (id,name,description,path,tech_stack,created_at,updated_at)
@@ -189,14 +189,14 @@ class Memory:
         with self._lock:
             self._conn.cursor().execute(
                 "UPDATE projects SET status=?,total_cost=total_cost+?,updated_at=? WHERE id=?",
-                (status, cost, datetime.utcnow().isoformat(), project_id))
+                (status, cost, datetime.now(UTC).isoformat(), project_id))
             self._conn.commit()
 
     def add_project_note(self, project_id, content, note_type="discussion"):
         with self._lock:
             self._conn.cursor().execute(
                 "INSERT INTO project_notes (project_id,timestamp,note_type,content) VALUES (?,?,?,?)",
-                (project_id, datetime.utcnow().isoformat(), note_type, content))
+                (project_id, datetime.now(UTC).isoformat(), note_type, content))
             self._conn.commit()
 
     def get_project_notes(self, project_id, limit=20):
@@ -215,7 +215,7 @@ class Memory:
         with self._lock:
             self._conn.cursor().execute(
                 "INSERT INTO context (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
-                (key, value, datetime.utcnow().isoformat()))
+                (key, value, datetime.now(UTC).isoformat()))
             self._conn.commit()
 
     def get_context(self, key):
@@ -227,7 +227,7 @@ class Memory:
 
     # === LEGACY TASKS ===
     def create_task(self, task_id, directive, project_path="", project_id=""):
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._lock:
             self._conn.cursor().execute(
                 "INSERT INTO tasks (id,project_id,directive,project_path,status,created_at,updated_at) VALUES (?,?,?,?,'queued',?,?)",
@@ -236,9 +236,9 @@ class Memory:
         return {"id": task_id, "status": "queued"}
 
     def update_task(self, task_id, status=None, current_step=None, progress=None, error=None, cost=None):
-        updates, values = ["updated_at=?"], [datetime.utcnow().isoformat()]
+        updates, values = ["updated_at=?"], [datetime.now(UTC).isoformat()]
         if status: updates.append("status=?"); values.append(status)
-        if status == "complete": updates.append("completed_at=?"); values.append(datetime.utcnow().isoformat())
+        if status == "complete": updates.append("completed_at=?"); values.append(datetime.now(UTC).isoformat())
         if current_step: updates.append("current_step=?"); values.append(current_step)
         if progress: updates.append("progress=?"); values.append(json.dumps(progress))
         if error: updates.append("error=?"); values.append(error)
@@ -264,7 +264,7 @@ class Memory:
 
     # === V1: DIRECTIVES ===
     def create_directive(self, directive_id, text, intent="", project_path=""):
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._lock:
             self._conn.cursor().execute(
                 "INSERT INTO directives (id,text,status,intent,project_path,created_at,updated_at) VALUES (?,?,'received',?,?,?,?)",
@@ -283,7 +283,7 @@ class Memory:
         return dict(row) if row else None
 
     def update_directive(self, directive_id, **kwargs):
-        updates, values = ["updated_at=?"], [datetime.utcnow().isoformat()]
+        updates, values = ["updated_at=?"], [datetime.now(UTC).isoformat()]
         for k, v in kwargs.items():
             if k in ("status", "intent", "project_path"):
                 updates.append(f"{k}=?"); values.append(v)
@@ -298,7 +298,7 @@ class Memory:
         with self._lock:
             c = self._conn.cursor()
             c.execute("INSERT INTO world_context (directive_id,author,type,content,timestamp,supersedes) VALUES (?,?,?,?,?,?)",
-                      (directive_id, author, ctx_type, content, datetime.utcnow().isoformat(), supersedes))
+                      (directive_id, author, ctx_type, content, datetime.now(UTC).isoformat(), supersedes))
             self._conn.commit()
             entry_id = c.lastrowid
         self.emit_event(author, "context_posted", {"id": entry_id, "type": ctx_type, "preview": content[:200]})
@@ -330,7 +330,7 @@ class Memory:
 
     # === V1: TASK BOARD ===
     def create_board_task(self, task_id, directive_id, title, description="", depends_on=None, priority=0):
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._lock:
             self._conn.cursor().execute(
                 "INSERT INTO task_board (id,directive_id,title,description,status,depends_on,priority,created_at,updated_at) VALUES (?,?,?,?,'available',?,?,?,?)",
@@ -343,7 +343,7 @@ class Memory:
         with self._lock:
             c = self._conn.cursor()
             c.execute("UPDATE task_board SET status='claimed',claimed_by=?,updated_at=? WHERE id=? AND status='available'",
-                      (agent_id, datetime.utcnow().isoformat(), task_id))
+                      (agent_id, datetime.now(UTC).isoformat(), task_id))
             self._conn.commit()
             ok = c.rowcount > 0
         if ok: self.emit_event(agent_id, "task_claimed", {"task_id": task_id})
@@ -352,27 +352,27 @@ class Memory:
     def start_board_task(self, task_id):
         with self._lock:
             self._conn.cursor().execute("UPDATE task_board SET status='in_progress',updated_at=? WHERE id=?",
-                                         (datetime.utcnow().isoformat(), task_id))
+                                         (datetime.now(UTC).isoformat(), task_id))
             self._conn.commit()
 
     def complete_board_task(self, task_id, output=""):
         with self._lock:
             self._conn.cursor().execute("UPDATE task_board SET status='complete',output=?,updated_at=? WHERE id=?",
-                                         (output, datetime.utcnow().isoformat(), task_id))
+                                         (output, datetime.now(UTC).isoformat(), task_id))
             self._conn.commit()
         self.emit_event("system", "task_completed", {"task_id": task_id})
 
     def fail_board_task(self, task_id, error=""):
         with self._lock:
             self._conn.cursor().execute("UPDATE task_board SET status='failed',output=?,updated_at=? WHERE id=?",
-                                         (f"ERROR: {error}", datetime.utcnow().isoformat(), task_id))
+                                         (f"ERROR: {error}", datetime.now(UTC).isoformat(), task_id))
             self._conn.commit()
         self.emit_event("system", "task_failed", {"task_id": task_id, "error": error[:200]})
 
     def reset_board_task(self, task_id):
         with self._lock:
             self._conn.cursor().execute("UPDATE task_board SET status='available',claimed_by=NULL,output=NULL,updated_at=? WHERE id=?",
-                                         (datetime.utcnow().isoformat(), task_id))
+                                         (datetime.now(UTC).isoformat(), task_id))
             self._conn.commit()
 
     def get_available_tasks(self, directive_id=None):
@@ -398,7 +398,7 @@ class Memory:
 
     # === V1: AGENT STATE ===
     def register_agent(self, agent_id, name, role, model="haiku"):
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._lock:
             self._conn.cursor().execute(
                 "INSERT INTO agent_state (agent_id,name,role,model,status,updated_at) VALUES (?,?,?,?,'idle',?) "
@@ -407,7 +407,7 @@ class Memory:
             self._conn.commit()
 
     def update_agent(self, agent_id, status=None, current_task=None, last_action=None):
-        updates, values = ["updated_at=?"], [datetime.utcnow().isoformat()]
+        updates, values = ["updated_at=?"], [datetime.now(UTC).isoformat()]
         if status: updates.append("status=?"); values.append(status)
         if current_task is not None: updates.append("current_task=?"); values.append(current_task)
         if last_action: updates.append("last_action=?"); values.append(last_action)
@@ -434,7 +434,7 @@ class Memory:
         if data and not isinstance(data, str): data = json.dumps(data)
         with self._lock:
             self._conn.cursor().execute("INSERT INTO event_log (timestamp,source,event_type,data) VALUES (?,?,?,?)",
-                                         (datetime.utcnow().isoformat(), source, event_type, data or "{}"))
+                                         (datetime.now(UTC).isoformat(), source, event_type, data or "{}"))
             self._conn.commit()
 
     def get_events_since(self, last_id=0, limit=100):
@@ -455,7 +455,7 @@ class Memory:
 
     # === V1: RUNNING SERVICES ===
     def register_service(self, service_id, name, pid=None, port=None, project_path="", url="", log_path=""):
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._lock:
             self._conn.cursor().execute(
                 "INSERT INTO running_services (id,name,pid,port,status,project_path,started_at,url,log_path) "
@@ -560,7 +560,7 @@ class Memory:
     # === DEFECTS ===
     def create_defect(self, defect_id, directive_id, task_id, title, description,
                       severity="medium", filed_by="", file_path="", line_number=0):
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._lock:
             self._conn.cursor().execute(
                 "INSERT INTO defects (id,directive_id,task_id,title,description,severity,status,filed_by,file_path,line_number,created_at,updated_at) "
@@ -583,7 +583,7 @@ class Memory:
         return [dict(r) for r in c.fetchall()]
 
     def resolve_defect(self, defect_id, resolved_by=""):
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._lock:
             self._conn.cursor().execute(
                 "UPDATE defects SET status='resolved',resolved_at=?,updated_at=? WHERE id=?", (now, now, defect_id))
@@ -594,7 +594,7 @@ class Memory:
         with self._lock:
             self._conn.cursor().execute(
                 "UPDATE defects SET assigned_to=?,updated_at=? WHERE id=?",
-                (assigned_to, datetime.utcnow().isoformat(), defect_id))
+                (assigned_to, datetime.now(UTC).isoformat(), defect_id))
             self._conn.commit()
 
     # === PEER DECISIONS ===
@@ -603,7 +603,7 @@ class Memory:
             self._conn.cursor().execute(
                 "INSERT INTO peer_decisions (directive_id,participants,question,decision,rationale,timestamp) VALUES (?,?,?,?,?,?)",
                 (directive_id, json.dumps(participants) if isinstance(participants, list) else participants,
-                 question, decision, rationale, datetime.utcnow().isoformat()))
+                 question, decision, rationale, datetime.now(UTC).isoformat()))
             self._conn.commit()
         self.emit_event("peer", "decision_made", {"participants": participants, "decision": decision[:200]})
 

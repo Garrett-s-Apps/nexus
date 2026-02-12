@@ -989,175 +989,258 @@ def create_pdf(title: str, request: str, output_dir: str = None) -> str:
 # IMAGE
 # ============================================
 
-def _try_gemini_image_generation(description: str, output_path: str) -> bool:
-    """Try to generate an image using Gemini's native image generation.
+def _extract_image_prompt(raw_description: str) -> str:
+    """Extract a clean, focused image prompt from a raw request.
 
+    Strips internal context blocks, web research sections, and meta-instructions
+    so the image model gets a clear visual description.
+    """
+    # Strip NEXUS internal data sections
+    import re
+    clean = re.sub(r'===\s*(NEXUS INTERNAL DATA|WEB RESEARCH|END INTERNAL|END WEB).*?===\s*',
+                   '', raw_description, flags=re.DOTALL)
+    # Strip enrichment instructions
+    clean = re.sub(r'IMPORTANT:.*?(?=\n\n|\Z)', '', clean, flags=re.DOTALL)
+    clean = re.sub(r'Prefer internal data.*?(?=\n\n|\Z)', '', clean, flags=re.DOTALL)
+    clean = re.sub(r'Do NOT make up.*?(?=\n\n|\Z)', '', clean, flags=re.DOTALL)
+    clean = clean.strip()
+
+    # If still too long, ask LLM to distill into an image prompt
+    if len(clean) > 500:
+        try:
+            from src.agents.org_chart import HAIKU
+            from src.agents.base import allm_call
+            import asyncio
+            loop = asyncio.get_event_loop()
+            summary, _ = loop.run_until_complete(allm_call(
+                f"Distill this into a concise image generation prompt (1-3 sentences). "
+                f"Focus on what the image should LOOK like visually:\n\n{clean[:2000]}",
+                HAIKU, max_tokens=200))
+            return summary.strip()
+        except Exception:
+            pass
+
+    return clean[:500] if clean else raw_description[:500]
+
+
+def _try_gemini_image_generation(description: str, output_path: str) -> bool:
+    """Generate an image using Gemini's native image generation.
+
+    Tries models in order: gemini-2.5-flash-image (production),
+    gemini-3-pro-image-preview (pro quality).
     Returns True if successful, False to fall back to PIL.
     """
     api_key = _load_key("GOOGLE_AI_API_KEY")
     if not api_key:
         return False
 
-    try:
-        from google.genai import types
+    # Clean the prompt before sending to image models
+    clean_prompt = _extract_image_prompt(description)
+    print(f"[Documents] Image prompt: {clean_prompt[:100]}...")
 
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-exp-image-generation",
-            contents=description,
-            config=types.GenerateContentConfig(
-                response_modalities=["TEXT", "IMAGE"],
-            ),
-        )
+    models = ["gemini-2.5-flash-image", "gemini-3-pro-image-preview"]
 
-        # Extract generated image from response parts
-        for part in response.candidates[0].content.parts:
-            if part.inline_data is not None:
-                import base64
-                image_data = part.inline_data.data
-                # inline_data.data is already bytes
-                if isinstance(image_data, str):
-                    image_data = base64.b64decode(image_data)
-                with open(output_path, "wb") as f:
-                    f.write(image_data)
-                print(f"[Documents] Gemini image generation succeeded")
-                return True
+    for model_name in models:
+        try:
+            from google.genai import types
 
-        print("[Documents] Gemini returned no image data, falling back to PIL")
-        return False
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model=model_name,
+                contents=clean_prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"],
+                ),
+            )
 
-    except Exception as e:
-        print(f"[Documents] Gemini image generation failed ({e}), falling back to PIL")
-        return False
+            for part in response.parts:
+                if part.inline_data is not None:
+                    image = part.as_image()
+                    image.save(output_path)
+                    print(f"[Documents] Image generated with {model_name}")
+                    return True
+
+            print(f"[Documents] {model_name} returned no image data")
+
+        except Exception as e:
+            print(f"[Documents] {model_name} failed ({e})")
+
+    print("[Documents] All Gemini image models failed, falling back to PIL")
+    return False
 
 
 def create_image(description: str, output_dir: str = None) -> str:
-    """Generate an image: tries Gemini native image generation first, falls back to PIL diagrams."""
+    """Generate an image: tries Gemini native generation first, falls back to PIL."""
 
     output_dir = output_dir or os.path.expanduser("~/.nexus/documents/images")
     os.makedirs(output_dir, exist_ok=True)
 
-    # Extract a short title for the filename
     safe_title = description[:50].replace(" ", "_").replace("/", "_").replace("\n", "_")
     filepath = os.path.join(output_dir, f"{safe_title}.png")
 
-    # Try Gemini native image generation first
+    # Try Gemini native image generation
     if _try_gemini_image_generation(description, filepath):
         return filepath
 
-    # Fallback: PIL diagram generation
+    # Fallback: PIL diagram with improved visuals
+    import math
     from PIL import Image, ImageDraw, ImageFont
 
-    # Ask Gemini/Claude to structure the diagram
+    # Extract a clean prompt for the diagram structure
+    clean_desc = _extract_image_prompt(description)
+
     prompt = (
-        f"Based on this description: '{description}'\n\n"
-        f"Generate a structured diagram description as JSON with this format:\n"
-        f'{{"title": "...", "boxes": [{{"label": "...", "x": 100, "y": 100, "width": 150, "height": 80}}, ...], '
-        f'"connections": [{{"from": 0, "to": 1, "label": "..."}}, ...]}}\n\n'
-        f"Use coordinates for a 1200x800 canvas. Boxes should not overlap. Only return JSON."
+        f"Create a structured diagram for: '{clean_desc}'\n\n"
+        f"Return JSON: {{"
+        f'"title": "...", '
+        f'"style": "org_chart"|"flowchart"|"architecture"|"simple", '
+        f'"boxes": [{{"label": "...", "sublabel": "...", "x": 100, "y": 100, '
+        f'"width": 180, "height": 70, "color": "#00D2FF"|"#FF6B6B"|"#4ECB71"|"#FFD93D"|"#A78BFA"}}, ...], '
+        f'"connections": [{{"from": 0, "to": 1, "label": "...", "style": "solid"|"dashed"}}, ...]}}\n\n'
+        f"Canvas: 1600x1000. Space boxes well. Use color to group related items. Only return JSON."
     )
 
-    content = _ask_gemini(prompt, system="You generate diagram structures as JSON. No markdown, just JSON. "
-                                       "If the description includes INTERNAL DATA sections, use that real data to build the diagram. "
-                                       "Do NOT invent or hallucinate information when real data is provided.")
+    content = _ask_gemini(prompt, system=(
+        "You generate professional diagram layouts as JSON. "
+        "Use the full canvas. Assign distinct colors to different groups/departments. "
+        "Add sublabels for roles/descriptions. If internal data is provided, use it accurately."))
 
     try:
         data = _parse_json(content)
     except json.JSONDecodeError:
-        # Fallback to simple single box
         data = {
-            "title": description[:50],
-            "boxes": [{"label": description[:30], "x": 400, "y": 300, "width": 400, "height": 200}],
-            "connections": []
+            "title": clean_desc[:60],
+            "style": "simple",
+            "boxes": [{"label": clean_desc[:40], "x": 600, "y": 400, "width": 400, "height": 200}],
+            "connections": [],
         }
 
-    # Create image
-    width, height = 1200, 800
-    bg_color = (26, 26, 46)  # #1A1A2E
-    accent_color = (0, 210, 255)  # #00D2FF
+    width, height = 1600, 1000
+    bg_color = (18, 18, 32)
     text_color = (255, 255, 255)
-    box_color = (40, 40, 60)
+    muted_color = (160, 160, 200)
 
     img = Image.new('RGB', (width, height), bg_color)
     draw = ImageDraw.Draw(img)
 
-    # Try to load a font, fall back to default
-    try:
-        title_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 32)
-        box_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 16)
-        label_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
-    except OSError:
-        title_font = ImageFont.load_default()
-        box_font = ImageFont.load_default()
-        label_font = ImageFont.load_default()
+    # Subtle grid background
+    for gx in range(0, width, 40):
+        draw.line([(gx, 0), (gx, height)], fill=(25, 25, 45), width=1)
+    for gy in range(0, height, 40):
+        draw.line([(0, gy), (width, gy)], fill=(25, 25, 45), width=1)
 
-    # Draw title
+    # Load fonts
+    try:
+        title_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 36)
+        box_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 16)
+        sub_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
+        label_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 11)
+    except OSError:
+        title_font = box_font = sub_font = label_font = ImageFont.load_default()
+
+    # Draw title with accent line
     title = data.get("title", "Diagram")
     title_bbox = draw.textbbox((0, 0), title, font=title_font)
-    title_width = title_bbox[2] - title_bbox[0]
-    draw.text(((width - title_width) / 2, 30), title, fill=accent_color, font=title_font)
+    title_w = title_bbox[2] - title_bbox[0]
+    draw.text(((width - title_w) / 2, 25), title, fill=(0, 210, 255), font=title_font)
+    draw.line([(width/2 - title_w/2, 70), (width/2 + title_w/2, 70)], fill=(0, 210, 255), width=2)
 
-    # Draw connections first (so they appear behind boxes)
+    # Subtitle with timestamp
+    sub_text = f"Generated by NEXUS  |  {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    sub_bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
+    draw.text(((width - (sub_bbox[2] - sub_bbox[0])) / 2, 78), sub_text, fill=muted_color, font=sub_font)
+
     boxes = data.get("boxes", [])
     connections = data.get("connections", [])
 
+    def hex_to_rgb(h):
+        h = h.lstrip('#')
+        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+    def darken(rgb, factor=0.3):
+        return tuple(max(0, int(c * factor)) for c in rgb)
+
+    # Draw connections
     for conn in connections:
-        from_idx = conn.get("from", 0)
-        to_idx = conn.get("to", 0)
+        fi, ti = conn.get("from", 0), conn.get("to", 0)
+        if fi < len(boxes) and ti < len(boxes):
+            fb, tb = boxes[fi], boxes[ti]
+            fx = fb.get("x", 0) + fb.get("width", 100) / 2
+            fy = fb.get("y", 0) + fb.get("height", 60) / 2
+            tx = tb.get("x", 0) + tb.get("width", 100) / 2
+            ty = tb.get("y", 0) + tb.get("height", 60) / 2
 
-        if from_idx < len(boxes) and to_idx < len(boxes):
-            from_box = boxes[from_idx]
-            to_box = boxes[to_idx]
+            line_color = (60, 60, 100)
+            style = conn.get("style", "solid")
 
-            # Calculate center points
-            from_x = from_box["x"] + from_box["width"] / 2
-            from_y = from_box["y"] + from_box["height"] / 2
-            to_x = to_box["x"] + to_box["width"] / 2
-            to_y = to_box["y"] + to_box["height"] / 2
+            if style == "dashed":
+                # Dashed line
+                length = math.sqrt((tx-fx)**2 + (ty-fy)**2)
+                if length > 0:
+                    dx, dy = (tx-fx)/length, (ty-fy)/length
+                    dash_len, gap_len = 8, 6
+                    pos = 0
+                    while pos < length:
+                        sx = fx + dx * pos
+                        sy = fy + dy * pos
+                        ex = fx + dx * min(pos + dash_len, length)
+                        ey = fy + dy * min(pos + dash_len, length)
+                        draw.line([(sx, sy), (ex, ey)], fill=line_color, width=2)
+                        pos += dash_len + gap_len
+            else:
+                draw.line([(fx, fy), (tx, ty)], fill=line_color, width=2)
 
-            # Draw arrow line
-            draw.line([(from_x, from_y), (to_x, to_y)], fill=accent_color, width=2)
-
-            # Draw arrowhead (simple triangle)
-            import math
-            angle = math.atan2(to_y - from_y, to_x - from_x)
-            arrow_size = 10
-            arrow_points = [
-                (to_x, to_y),
-                (to_x - arrow_size * math.cos(angle - math.pi/6),
-                 to_y - arrow_size * math.sin(angle - math.pi/6)),
-                (to_x - arrow_size * math.cos(angle + math.pi/6),
-                 to_y - arrow_size * math.sin(angle + math.pi/6))
+            # Arrowhead
+            angle = math.atan2(ty - fy, tx - fx)
+            sz = 10
+            pts = [
+                (tx, ty),
+                (tx - sz * math.cos(angle - math.pi/6), ty - sz * math.sin(angle - math.pi/6)),
+                (tx - sz * math.cos(angle + math.pi/6), ty - sz * math.sin(angle + math.pi/6)),
             ]
-            draw.polygon(arrow_points, fill=accent_color)
+            draw.polygon(pts, fill=line_color)
 
-            # Draw connection label if present
             if conn.get("label"):
-                mid_x = (from_x + to_x) / 2
-                mid_y = (from_y + to_y) / 2
-                draw.text((mid_x, mid_y - 10), conn["label"], fill=text_color, font=label_font)
+                mx, my = (fx + tx) / 2, (fy + ty) / 2
+                lb = draw.textbbox((0, 0), conn["label"], font=label_font)
+                lw = lb[2] - lb[0]
+                # Background pill for label
+                draw.rounded_rectangle(
+                    [mx - lw/2 - 6, my - 10, mx + lw/2 + 6, my + 6],
+                    radius=4, fill=(30, 30, 50))
+                draw.text((mx - lw/2, my - 8), conn["label"], fill=muted_color, font=label_font)
 
-    # Draw boxes
+    # Draw boxes with rounded corners and color accents
     for box in boxes:
-        x = box.get("x", 0)
-        y = box.get("y", 0)
-        w = box.get("width", 100)
-        h = box.get("height", 60)
+        x, y = box.get("x", 0), box.get("y", 0)
+        w, h = box.get("width", 180), box.get("height", 70)
         label = box.get("label", "")
+        sublabel = box.get("sublabel", "")
+        accent = hex_to_rgb(box.get("color", "#00D2FF"))
+        bg = darken(accent, 0.15)
 
-        # Draw box with border
-        draw.rectangle([x, y, x + w, y + h], fill=box_color, outline=accent_color, width=2)
+        # Rounded rectangle with accent top border
+        draw.rounded_rectangle([x, y, x+w, y+h], radius=8, fill=bg, outline=(50, 50, 70), width=1)
+        draw.rounded_rectangle([x, y, x+w, y+4], radius=2, fill=accent)
 
-        # Draw label (centered)
-        label_bbox = draw.textbbox((0, 0), label, font=box_font)
-        label_width = label_bbox[2] - label_bbox[0]
-        label_height = label_bbox[3] - label_bbox[1]
+        # Label (centered)
+        lb = draw.textbbox((0, 0), label, font=box_font)
+        lw, lh = lb[2] - lb[0], lb[3] - lb[1]
+        ty_offset = (h - lh) / 2 - (6 if sublabel else 0)
+        draw.text((x + (w - lw) / 2, y + ty_offset), label, fill=text_color, font=box_font)
 
-        text_x = x + (w - label_width) / 2
-        text_y = y + (h - label_height) / 2
-        draw.text((text_x, text_y), label, fill=text_color, font=box_font)
+        # Sublabel
+        if sublabel:
+            sb = draw.textbbox((0, 0), sublabel, font=sub_font)
+            sw = sb[2] - sb[0]
+            draw.text((x + (w - sw) / 2, y + ty_offset + lh + 4), sublabel, fill=muted_color, font=sub_font)
 
-    img.save(filepath)
+    # Footer
+    footer = "NEXUS Virtual Company"
+    fb = draw.textbbox((0, 0), footer, font=sub_font)
+    draw.text((width - (fb[2] - fb[0]) - 20, height - 25), footer, fill=(50, 50, 80), font=sub_font)
+
+    img.save(filepath, quality=95)
     return filepath
 
 

@@ -24,6 +24,7 @@ from src.agents.sdk_bridge import (
     run_planning_agent,
     run_sdk_agent,
 )
+from src.agents.task_result import TaskResult
 from src.orchestrator.state import CostSnapshot, NexusState, PRReview, WorkstreamTask
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 USE_CLAUDE_CODE = os.environ.get("USE_CLAUDE_CODE", "true").lower() in ("true", "1", "yes")
 
 
-async def _run_impl_agent(agent_key: str, agent_config: dict, prompt: str, project_path: str) -> dict:
+async def _run_impl_agent(agent_key: str, agent_config: dict, prompt: str, project_path: str) -> TaskResult:
     """Route implementation work through Claude Code CLI or Agent SDK."""
     if USE_CLAUDE_CODE and agent_config.get("spawns_sdk"):
         return await run_claude_code(agent_key, agent_config, prompt, project_path)
@@ -86,7 +87,7 @@ CRO timeline: {state.cro_timeline or 'Not yet defined'}
 Output a clear strategic brief that the engineering team can act on.""",
     )
     return {
-        "strategic_brief": result["output"],
+        "strategic_brief": result.output,
         "cost": _update_cost(state.cost, result),
     }
 
@@ -109,8 +110,8 @@ Output:
     )
 
     return {
-        "cpo_requirements": result["output"],
-        "cpo_acceptance_criteria": _extract_criteria(result["output"]),
+        "cpo_requirements": result.output,
+        "cpo_acceptance_criteria": _extract_criteria(result.output),
         "cost": _update_cost(state.cost, result),
     }
 
@@ -140,7 +141,7 @@ Output a budget allocation as key:value pairs.""",
     )
 
     return {
-        "cfo_budget_allocation": _parse_budget(result["output"]),
+        "cfo_budget_allocation": _parse_budget(result.output),
         "cfo_approved": True,
         "cost": _update_cost(state.cost, result),
     }
@@ -165,7 +166,7 @@ Output a timeline estimate and parallelization strategy.""",
     )
 
     return {
-        "cro_timeline": result["output"],
+        "cro_timeline": result.output,
         "cro_approved": True,
         "cost": _update_cost(state.cost, result),
     }
@@ -210,7 +211,7 @@ Output a complete technical design document.""",
     )
 
     return {
-        "technical_design": result["output"],
+        "technical_design": result.output,
         "current_phase": "technical_planning",
         "cost": _update_cost(state.cost, result),
     }
@@ -237,7 +238,7 @@ If approved, say APPROVED and explain why.
 If not, say NEEDS_REVISION and list specific changes needed.""",
     )
 
-    approved = "APPROVED" in result["output"].upper() and "NEEDS_REVISION" not in result["output"].upper()
+    approved = "APPROVED" in result.output.upper() and "NEEDS_REVISION" not in result.output.upper()
 
     return {
         "tech_plan_approved": approved,
@@ -274,9 +275,9 @@ If you cannot produce JSON, output a bullet list with one task per line.""",
         if isinstance(result, Exception):
             logger.error("EM %s failed during decomposition: %s", em_names[i], result)
             continue
-        parsed_tasks = _parse_tasks(result["output"], em_names[i])  # type: ignore[index]
+        parsed_tasks = _parse_tasks(result.output, em_names[i])
         tasks.extend(parsed_tasks)
-        total_cost = _update_cost(total_cost, result)  # type: ignore[arg-type]
+        total_cost = _update_cost(total_cost, result)
 
     parallel_groups = _identify_parallel_groups(tasks)
 
@@ -361,10 +362,11 @@ Implement this task completely. Write the code, create the files, run tests.""",
                         defect_ids.append(defect_id)
                         failed_tasks.append(task.id)
                         logger.error("Task %s failed 3 times, filing defect %s", task.id, defect_id)
-                elif isinstance(result, dict):
-                    task.status = "completed"
-                    task.result = result.get("output", "")[:500]
-                    all_results.append(result)
+                elif isinstance(result, TaskResult):
+                    task.status = "completed" if result.succeeded else "failed"
+                    task.result = result.output[:500]
+                    if result.succeeded:
+                        all_results.append(result)
 
     completed_ids = {t.id for t in state.workstreams if t.status == "completed"}
     for task in state.workstreams:
@@ -404,10 +406,10 @@ Run: eslint, ruff, or appropriate linter for each file type found.""",
         state.project_path,
     )
 
-    any_violations = result["output"].lower().count("type:any") + result["output"].lower().count("type: any")
+    any_violations = result.output.lower().count("type:any") + result.output.lower().count("type: any")
 
     return {
-        "lint_results": {"output": result["output"], "passed": "BLOCKING" not in result["output"]},
+        "lint_results": {"output": result.output, "passed": "BLOCKING" not in result.output},
         "any_type_violations": any_violations,
         "cost": _update_cost(state.cost, result),
     }
@@ -446,8 +448,8 @@ Run the tests and report results.""",
 
     return {
         "test_results": {
-            "frontend": fe_result["output"],
-            "backend": be_result["output"],
+            "frontend": fe_result.output,
+            "backend": be_result.output,
         },
         "cost": _update_cost_multi(state.cost, [fe_result, be_result]),
     }
@@ -472,7 +474,7 @@ Zero tolerance for CRITICAL or HIGH findings.""",
     )
 
     return {
-        "security_scan_results": {"output": result["output"]},
+        "security_scan_results": {"output": result.output},
         "cost": _update_cost(state.cost, result),
     }
 
@@ -497,7 +499,7 @@ Be specific about any issues found and recommend exact fixes.""",
     )
 
     return {
-        "visual_qa_results": {"output": result["output"]},
+        "visual_qa_results": {"output": result.output},
         "cost": _update_cost(state.cost, result),
     }
 
@@ -580,13 +582,13 @@ If rejected, respond with REJECTED and specific feedback on what to fix.""",
     results = await asyncio.gather(*coros, return_exceptions=True)
 
     for i, result in enumerate(results):
-        if isinstance(result, dict):
-            approved = "APPROVED" in result["output"].upper() and "REJECTED" not in result["output"].upper()
+        if isinstance(result, TaskResult):
+            approved = "APPROVED" in result.output.upper() and "REJECTED" not in result.output.upper()
             reviews.append(
                 PRReview(
                     reviewer=reviewers[i],
                     status="approved" if approved else "rejected",
-                    feedback=result["output"],
+                    feedback=result.output,
                 )
             )
 
@@ -596,7 +598,7 @@ If rejected, respond with REJECTED and specific feedback on what to fix.""",
         "pr_reviews": reviews,
         "pr_approved": all_approved,
         "pr_loop_count": state.pr_loop_count + 1,
-        "cost": _update_cost_multi(state.cost, [r for r in results if isinstance(r, dict)]),
+        "cost": _update_cost_multi(state.cost, [r for r in results if isinstance(r, TaskResult)]),
     }
 
 
@@ -656,7 +658,7 @@ This is a DEMO, not a request for review. Be confident and direct.""",
     )
 
     return {
-        "demo_summary": result["output"],
+        "demo_summary": result.output,
         "demo_metrics": {
             "Total Cost": f"${state.cost.total_cost_usd:.2f}",
             "Tests": "Passed" if state.test_results else "N/A",
@@ -844,19 +846,27 @@ def compile_nexus_dynamic(checkpointer=None):
 # ============================================
 
 
-def _update_cost(current: CostSnapshot, result: dict) -> CostSnapshot:
+def _update_cost(current: CostSnapshot, result: TaskResult | dict) -> CostSnapshot:
+    if isinstance(result, TaskResult):
+        cost = result.cost_usd
+        model = result.model or "unknown"
+        agent = result.agent or "unknown"
+    else:
+        cost = result.get("cost", 0)
+        model = result.get("model", "unknown")
+        agent = result.get("agent", "unknown")
     return CostSnapshot(
-        total_cost_usd=current.total_cost_usd + result.get("cost", 0),
-        by_model={**current.by_model, result.get("model", "unknown"): current.by_model.get(result.get("model", "unknown"), 0) + result.get("cost", 0)},
-        by_agent={**current.by_agent, result.get("agent", "unknown"): current.by_agent.get(result.get("agent", "unknown"), 0) + result.get("cost", 0)},
+        total_cost_usd=current.total_cost_usd + cost,
+        by_model={**current.by_model, model: current.by_model.get(model, 0) + cost},
+        by_agent={**current.by_agent, agent: current.by_agent.get(agent, 0) + cost},
         hourly_rate=cost_tracker.hourly_rate,
     )
 
 
-def _update_cost_multi(current: CostSnapshot, results: list[dict]) -> CostSnapshot:
+def _update_cost_multi(current: CostSnapshot, results: list[TaskResult | dict]) -> CostSnapshot:
     updated = current
     for r in results:
-        if isinstance(r, dict):
+        if isinstance(r, (dict, TaskResult)):
             updated = _update_cost(updated, r)
     return updated
 

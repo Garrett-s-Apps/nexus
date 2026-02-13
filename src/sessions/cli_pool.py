@@ -10,6 +10,7 @@ Idle sessions are cleaned up after a configurable timeout.
 
 import asyncio
 import logging
+import os
 import shutil
 import time
 
@@ -35,6 +36,8 @@ class CLISession:
             return False
 
         try:
+            # Strip CLAUDECODE env var so spawned CLI avoids nested-session block
+            clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
             # Uses create_subprocess_exec (not shell) — args passed as array, safe from injection
             self.process = await asyncio.create_subprocess_exec(
                 CLAUDE_CMD, "--dangerously-skip-permissions", "--model", "opus", "-p",
@@ -42,6 +45,7 @@ class CLISession:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self.project_path,
+                env=clean_env,
             )
             self.last_used = time.monotonic()
             logger.info("CLI session started for thread %s (pid=%s)", self.thread_ts, self.process.pid)

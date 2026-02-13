@@ -223,6 +223,14 @@ async def download_and_parse_file(url: str, filename: str, bot_token: str) -> st
                             content = "\n".join(page.get_text() for page in pdf_doc[:10])
                         except ImportError:
                             content = "(Install PyMuPDF for PDF reading)"
+                    elif ext in ("png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"):
+                        # Keep the temp file for the CLI session to read visually
+                        import shutil
+                        img_dir = os.path.join(tempfile.gettempdir(), "nexus_images")
+                        os.makedirs(img_dir, exist_ok=True)
+                        img_path = os.path.join(img_dir, filename)
+                        shutil.copy2(tmp_path, img_path)
+                        content = f"(Image saved to {img_path} — analyze this image)"
                     else:
                         content = f"(Unsupported file type: .{ext})"
 
@@ -297,7 +305,10 @@ async def start_slack_listener():
         if req.type != "events_api":
             return
         event = req.payload.get("event", {})
-        if event.get("type") != "message" or event.get("subtype") or event.get("user") == bot_user_id:
+        subtype = event.get("subtype", "")
+        # Allow file_share (images/attachments) through; block bot messages, edits, etc.
+        ignored_subtypes = {"bot_message", "message_changed", "message_deleted", "channel_join", "channel_leave"}
+        if event.get("type") != "message" or subtype in ignored_subtypes or event.get("user") == bot_user_id:
             return
 
         channel_id = event.get("channel", "")

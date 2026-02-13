@@ -278,13 +278,19 @@ def _is_garbage_response(response: str) -> bool:
     template placeholders instead of real answers.
     """
     r = response.strip().lower()
-    # Placeholder patterns like "Completed X%, currently on section Y"
+
+    # Short responses are more likely to be garbage — real answers are usually >50 chars
+    is_short = len(r) < 200
+
+    # Exact substring patterns that always indicate garbage
     garbage_patterns = [
         "e.g.,",
         "e.g.)",
+        "(e.g.",
+        "e.g.'",
         "completed x%",
         "currently on section y",
-        "not started yet",
+        "not started yet'",
         "provide current status",
         "replace this with",
         "[insert",
@@ -294,23 +300,43 @@ def _is_garbage_response(response: str) -> bool:
         "fill in the blank",
         "your response here",
         "write your answer",
-        "(e.g.",
+        "template instructions",
+        "placeholder text",
+        "example placeholders",
     ]
     for pattern in garbage_patterns:
         if pattern in r:
             return True
 
     # Detect bare instruction verbs followed by template-style content
+    # Covers both double and single quotes, parens with examples
     if re.match(
         r'^(provide|list|describe|explain|summarize|generate|create|write|include|add|state|give|offer)\s'
-        r'.{0,40}(e\.g\.|for example|such as|\(.*?\)|".*?")',
+        r".{0,60}(e\.g\.|for example|such as|\(.*?\)|\".*?\"|'.*?')",
         r,
     ):
         return True
 
-    # Detect responses that are entirely a single instruction sentence with no substance
-    # e.g. "Provide current status of document review (...)"
-    return bool(re.match(r'^(provide|list|describe|explain|summarize|state|give)\s.{10,100}\(.*?\)\s*$', r))
+    # Detect responses that are entirely a single instruction sentence with
+    # parenthetical or quoted examples — the hallmark of a leaked system prompt
+    if re.match(
+        r'^(provide|list|describe|explain|summarize|state|give|offer|respond|answer)\s.{10,150}(\(.*?\)|\'.*?\'|".*?")\s*$',
+        r,
+    ):
+        return True
+
+    # Short responses starting with an imperative verb are suspicious
+    if is_short and re.match(
+        r'^(provide|list|describe|explain|summarize|state|give|offer|respond with|answer with)\s',
+        r,
+    ):
+        return True
+
+    # Detect responses that quote placeholder values like 'X%', 'section Y'
+    return bool(
+        re.search(r"['\"]\w?%['\"]\s*[,.]", r)
+        or re.search(r"['\"]section \w['\"]", r)
+    )
 
 
 async def _fetch_thread_history(
@@ -352,16 +378,19 @@ _SYSTEM_PREAMBLE = (
     "You are NEXUS, an AI assistant built by Garrett Eaglin. "
     "You are responding in the #garrett-nexus Slack channel. "
     "Always give complete, substantive answers. Never output placeholder text, "
-    "template instructions, or examples like 'e.g.' — always give REAL answers "
-    "based on what you know or can find. If you don't know something, say so "
-    "directly instead of outputting a template."
+    "template instructions, or example patterns. "
+    "NEVER start your response with an imperative verb like 'Provide', 'List', "
+    "'Describe', 'Summarize', or 'State' followed by a template — that is a "
+    "system instruction, not an answer. "
+    "If you don't know something, say 'I don't have that information' directly."
 )
 
 _RETRY_REINFORCEMENT = (
     "\n\nCRITICAL: Your previous attempt produced a garbage or placeholder response. "
     "You MUST respond with a real, substantive answer this time. Do NOT output "
-    "template text, instructions, or example placeholders. Answer the user's "
-    "actual question directly."
+    "template text, instructions, or example placeholders. Do NOT start with "
+    "imperative verbs like 'Provide' or 'Describe' — those are instructions, "
+    "not answers. Answer the user's actual question directly."
 )
 
 

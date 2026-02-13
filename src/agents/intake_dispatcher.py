@@ -105,19 +105,10 @@ async def handle_mutate_org(params: dict) -> str:
     action_params = params.get("params", {})
 
     # Get project path for org chart updates
-    # Default to current project or NEXUS repo
     import os
-    project_path = os.getcwd()
-    if not os.path.exists(os.path.join(project_path, "ORG_CHART.md")):
-        # Try to find NEXUS repo
-        nexus_paths = [
-            "/Users/garretteaglin/Projects/nexus",
-            os.path.expanduser("~/Projects/nexus"),
-        ]
-        for path in nexus_paths:
-            if os.path.exists(path):
-                project_path = path
-                break
+    project_path = os.environ.get(
+        "NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus")
+    )
 
     if action == "hire":
         # Hire a new agent

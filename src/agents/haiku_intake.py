@@ -360,14 +360,20 @@ async def format_with_tool_result(
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
 
-    # Build the continuation conversation
+    # Build the continuation conversation with original user message for context
     messages: list = []
     if thread_history:
         for msg in thread_history[-10:]:
             messages.append({"role": msg["role"], "content": msg["content"]})
 
-    # Add the original user message (this should be in thread_history already,
-    # but we need to make sure the tool use response follows it)
+    # Ensure original user message is present so Haiku has context for formatting
+    has_recent_user_msg = thread_history and any(
+        msg.get("role") == "user" and msg.get("content") == original_result.response_text
+        for msg in (thread_history or [])[-3:]
+    )
+    if not has_recent_user_msg and (not messages or messages[-1]["role"] != "user"):
+        messages.append({"role": "user", "content": original_result.response_text or "query"})
+
     # The tool result needs to be formatted as a tool_result content block
     messages.append({
         "role": "assistant",

@@ -67,7 +67,7 @@ def _should_rotate() -> bool:
         with open(META_PATH) as f:
             meta = json.load(f)
         age = time.time() - meta.get("created_at", 0)
-        return age > ROTATION_INTERVAL_SECONDS
+        return bool(age > ROTATION_INTERVAL_SECONDS)
     except (json.JSONDecodeError, OSError):
         return True
 
@@ -75,10 +75,10 @@ def _should_rotate() -> bool:
 def get_private_key() -> rsa.RSAPrivateKey:
     """Load or generate the RSA private key, rotating if stale."""
     if _should_rotate() or not os.path.exists(PRIVATE_KEY_PATH):
-        return _generate_key_pair()
+        return _generate_key_pair()  # type: ignore[return-value, no-any-return]
 
     with open(PRIVATE_KEY_PATH, "rb") as f:
-        return serialization.load_pem_private_key(f.read(), password=None)
+        return serialization.load_pem_private_key(f.read(), password=None)  # type: ignore[return-value]
 
 
 def get_public_key() -> rsa.RSAPublicKey:
@@ -87,4 +87,4 @@ def get_public_key() -> rsa.RSAPublicKey:
         _generate_key_pair()
 
     with open(PUBLIC_KEY_PATH, "rb") as f:
-        return serialization.load_pem_public_key(f.read())
+        return serialization.load_pem_public_key(f.read())  # type: ignore[return-value]

@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 DB_PATH = os.path.expanduser("~/.nexus/registry.db")
 YAML_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "config", "agents.yaml")
@@ -158,7 +158,7 @@ class AgentRegistry:
         conn = sqlite3.connect(self.db_path)
         count = conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
         conn.close()
-        return count > 0
+        return bool(count > 0)
 
     def load_from_yaml(self):
         yaml_path = os.path.normpath(YAML_PATH)
@@ -308,7 +308,7 @@ class AgentRegistry:
         conn.commit()
         conn.close()
 
-        return self.get_agent(agent_id)
+        return self.get_agent(agent_id)  # type: ignore[return-value]
 
     def fire_agent(self, agent_id: str, reason: str = "") -> bool:
         conn = sqlite3.connect(self.db_path)
@@ -380,7 +380,7 @@ class AgentRegistry:
         return True
 
     def consolidate_agents(self, agent_ids: list[str], new_agent_id: str, new_name: str, new_description: str) -> Agent | None:
-        agents = [self.get_agent(aid) for aid in agent_ids if self.get_agent(aid)]
+        agents = [a for aid in agent_ids if (a := self.get_agent(aid)) is not None]
         if not agents:
             return None
 
@@ -440,7 +440,7 @@ class AgentRegistry:
 
     def get_org_summary(self) -> str:
         agents = self.get_active_agents()
-        layers = {}
+        layers: dict[str, list] = {}
         for a in agents:
             layers.setdefault(a.layer, []).append(a)
 

@@ -28,7 +28,7 @@ logger = logging.getLogger("nexus.engine")
 MAX_QA_CYCLES = 3
 
 
-async def notify_slack(message: str, thread_ts: str = None):
+async def notify_slack(message: str, thread_ts: str | None = None):
     try:
         from src.slack.listener import format_code_output, get_channel_id, get_slack_client, md_to_slack
         client = get_slack_client()
@@ -42,8 +42,8 @@ async def notify_slack(message: str, thread_ts: str = None):
             if '```' in message:
                 blocks = format_code_output(message)
                 if blocks:
-                    kwargs["blocks"] = blocks
-            await client.chat_postMessage(**kwargs)
+                    kwargs["blocks"] = blocks  # type: ignore[assignment]
+            await client.chat_postMessage(**kwargs)  # type: ignore[arg-type]
     except Exception as e:
         logger.error(f"Slack: {e}")
 
@@ -99,7 +99,7 @@ JSON: {{"intent":"...","summary":"...","urgency":"normal","target":"","response"
         cleaned = raw.strip()
         if "```" in cleaned:
             cleaned = cleaned.split("```json")[-1].split("```")[0].strip() if "```json" in cleaned else cleaned.split("```")[1].strip()
-        return json.loads(cleaned)
+        return json.loads(cleaned)  # type: ignore[no-any-return]
     except Exception:
         return {"intent": "chat", "summary": message[:80], "urgency": "normal",
                 "target": "", "response": "Could you rephrase?"}
@@ -120,7 +120,7 @@ class ReasoningEngine:
         self._thread_ts: dict[str, str] = {}
         self._plugin_review_results: dict[str, dict] = {}
 
-    async def _notify(self, message: str, did: str = None):
+    async def _notify(self, message: str, did: str | None = None):
         """Send a Slack notification in the directive's thread."""
         thread_ts = self._thread_ts.get(did) if did else None
         await notify_slack(message, thread_ts=thread_ts)

@@ -46,10 +46,10 @@ def _gather_internal_context(message: str) -> str:
     if any(kw in msg_lower for kw in cost_keywords):
         try:
             from src.agents.org_chart import MODEL_COSTS, ORG_CHART
-            model_counts = {}
+            model_counts: dict[str, int] = {}
             for cfg in ORG_CHART.values():
                 m = cfg["model"]
-                model_counts[m] = model_counts.get(m, 0) + 1
+                model_counts[str(m)] = model_counts.get(str(m), 0) + 1
             summary = "Model Distribution:\n"
             for model, count in sorted(model_counts.items()):
                 cost = MODEL_COSTS.get(model, {})
@@ -147,7 +147,7 @@ def _ask_gemini(prompt: str, system: str = "") -> str:
                 model="gemini-2.0-flash",
                 contents=full_prompt,
             )
-            return response.text
+            return response.text  # type: ignore[return-value]
         except Exception as e:
             print(f"[Documents] Gemini failed ({e}), falling back to Claude")
 
@@ -157,15 +157,15 @@ def _ask_gemini(prompt: str, system: str = "") -> str:
         raise ValueError("No AI API keys available (tried Gemini and Claude)")
 
     import anthropic
-    client = anthropic.Anthropic(api_key=anthropic_key)
+    claude_client = anthropic.Anthropic(api_key=anthropic_key)
     messages = [{"role": "user", "content": prompt}]
-    response = client.messages.create(
+    claude_response = claude_client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=4096,
         system=system or "You generate document content as requested.",
-        messages=messages,
+        messages=messages,  # type: ignore[arg-type]
     )
-    return response.content[0].text
+    return claude_response.content[0].text  # type: ignore[union-attr]
 
 
 def _parse_json(content: str) -> dict:
@@ -178,14 +178,14 @@ def _parse_json(content: str) -> dict:
     if content.endswith("```"):
         content = content.rsplit("```", 1)[0]
     content = content.strip()
-    return json.loads(content)
+    return json.loads(content)  # type: ignore[no-any-return]
 
 
 # ============================================
 # DOCX
 # ============================================
 
-def create_docx(title: str, request: str, output_dir: str = None) -> str:
+def create_docx(title: str, request: str, output_dir: str | None = None) -> str:
     """Generate a Word document based on the request."""
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -408,7 +408,7 @@ def create_docx(title: str, request: str, output_dir: str = None) -> str:
 # PPTX
 # ============================================
 
-def create_pptx(title: str, request: str, output_dir: str = None) -> str:
+def create_pptx(title: str, request: str, output_dir: str | None = None) -> str:
     """Generate a PowerPoint presentation based on the request."""
     from pptx import Presentation
     from pptx.dml.color import RGBColor
@@ -707,7 +707,7 @@ def create_pptx(title: str, request: str, output_dir: str = None) -> str:
 # PDF
 # ============================================
 
-def create_pdf(title: str, request: str, output_dir: str = None) -> str:
+def create_pdf(title: str, request: str, output_dir: str | None = None) -> str:
     """Generate a PDF document based on the request."""
     from reportlab.lib.colors import HexColor
     from reportlab.lib.enums import TA_CENTER
@@ -1054,10 +1054,10 @@ def _try_gemini_image_generation(description: str, output_path: str) -> bool:
                 ),
             )
 
-            for part in response.parts:
+            for part in response.parts:  # type: ignore[union-attr]
                 if part.inline_data is not None:
                     image = part.as_image()
-                    image.save(output_path)
+                    image.save(output_path)  # type: ignore[union-attr]
                     print(f"[Documents] Image generated with {model_name}")
                     return True
 
@@ -1070,7 +1070,7 @@ def _try_gemini_image_generation(description: str, output_path: str) -> bool:
     return False
 
 
-def create_image(description: str, output_dir: str = None) -> str:
+def create_image(description: str, output_dir: str | None = None) -> str:
     """Generate an image: tries Gemini native generation first, falls back to PIL."""
 
     output_dir = output_dir or os.path.expanduser("~/.nexus/documents/images")
@@ -1138,7 +1138,7 @@ def create_image(description: str, output_dir: str = None) -> str:
         sub_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
         label_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 11)
     except OSError:
-        title_font = box_font = sub_font = label_font = ImageFont.load_default()
+        title_font = box_font = sub_font = label_font = ImageFont.load_default()  # type: ignore[assignment]
 
     # Draw title with accent line
     title = data.get("title", "Diagram")

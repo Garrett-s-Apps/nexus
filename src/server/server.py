@@ -172,7 +172,7 @@ async def auth_gate_middleware(request: Request, call_next):
 # ---------------------------------------------------------------------------
 
 # Rate limiting for login attempts
-_login_attempts = {}  # {ip: [timestamp1, timestamp2, ...]}
+_login_attempts: dict[str, list[float]] = {}
 _MAX_LOGIN_ATTEMPTS = 5
 _RATE_LIMIT_WINDOW = 60  # seconds
 
@@ -440,6 +440,7 @@ async def get_thread(thread_ts: str):
 
     try:
         result = await client.conversations_replies(channel=channel, ts=thread_ts, limit=100)
+        raw_msgs: list[dict] = result.get("messages", [])  # type: ignore[assignment]
         messages = [
             {
                 "ts": msg.get("ts"),
@@ -447,7 +448,7 @@ async def get_thread(thread_ts: str):
                 "text": msg.get("text", ""),
                 "is_bot": msg.get("bot_id") is not None,
             }
-            for msg in result.get("messages", [])
+            for msg in raw_msgs
         ]
         return {"messages": messages, "thread_ts": thread_ts}
     except Exception as e:

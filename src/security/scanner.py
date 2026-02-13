@@ -14,7 +14,7 @@ import re
 import subprocess
 
 
-def _run(cmd: list[str], cwd: str = None) -> tuple[int, str, str]:
+def _run(cmd: list[str], cwd: str | None = None) -> tuple[int, str, str]:
     try:
         result = subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, timeout=60
@@ -188,7 +188,7 @@ def scan_sast(project_path: str) -> list[dict]:
                 if ext not in rule["extensions"]:
                     continue
 
-                for match in re.finditer(rule["pattern"], content):
+                for match in re.finditer(str(rule["pattern"]), content):
                     line_num = content[:match.start()].count("\n") + 1
                     findings.append({
                         "type": "sast",

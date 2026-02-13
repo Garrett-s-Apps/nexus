@@ -154,7 +154,7 @@ def format_code_output(output: str, agent_name: str = "") -> list[dict]:
                 code = code[:2900] + "\n... (truncated)"
             blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"```{code}```"},
+                "text": {"type": "mrkdwn", "text": f"```{code}```"},  # type: ignore[dict-item]
             })
         else:
             text = md_to_slack(part)
@@ -163,7 +163,7 @@ def format_code_output(output: str, agent_name: str = "") -> list[dict]:
             if text:
                 blocks.append({
                     "type": "section",
-                    "text": {"type": "mrkdwn", "text": text},
+                    "text": {"type": "mrkdwn", "text": text},  # type: ignore[dict-item]
                 })
 
     return blocks
@@ -238,7 +238,7 @@ async def download_and_parse_file(url: str, filename: str, bot_token: str) -> st
 
 async def upload_file_to_slack(web_client: AsyncWebClient, channel: str,
                                 filepath: str, title: str = "", comment: str = "",
-                                thread_ts: str = None):
+                                thread_ts: str | None = None):
     try:
         kwargs = dict(
             channel=channel, file=filepath,
@@ -246,7 +246,7 @@ async def upload_file_to_slack(web_client: AsyncWebClient, channel: str,
         )
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
-        await web_client.files_upload_v2(**kwargs)
+        await web_client.files_upload_v2(**kwargs)  # type: ignore[arg-type]
     except Exception as e:
         print(f"[Slack] File upload failed: {e}")
 
@@ -444,8 +444,10 @@ async def start_slack_listener():
                 response = await engine.handle_message(text, source="slack", thread_ts=thread_ts)
 
             memory.emit_event("slack", "response_sent", {
-                "text": response[:200], "thread_ts": thread_ts,
+                "text": (response or "")[:200], "thread_ts": thread_ts,
             })
+            if not response:
+                response = ""
             slack_text = md_to_slack(response)
 
             # Use Block Kit for responses containing code

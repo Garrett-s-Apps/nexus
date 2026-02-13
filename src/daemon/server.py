@@ -64,7 +64,7 @@ async def execute_directive_bg(session_id: str, directive: str, project_path: st
         from src.orchestrator.state import NexusState
         initial_state = NexusState(
             directive=directive,
-            source=source,
+            source=source,  # type: ignore[arg-type]
             session_id=session_id,
             project_path=project_path or os.path.expanduser("~/Projects"),
         )
@@ -258,7 +258,7 @@ async def talk_to_agent(req: TalkRequest):
             agent_key,
             agent_config,
             req.message,
-            sessions.get(req.session_id, {}).get("project_path", os.path.expanduser("~/Projects")),
+            sessions.get(req.session_id or "", {}).get("project_path", os.path.expanduser("~/Projects")),
         )
     else:
         result = await run_planning_agent(agent_key, agent_config, req.message)
@@ -316,15 +316,15 @@ async def run_command_internal(command: str, args: str, source: str) -> dict:
         if args and "org" in args:
             org_data = await get_org()
             org_data["category"] = "COMMAND"
-            return org_data
+            return dict(org_data)
         result = (await status()).model_dump()
         result["category"] = "COMMAND"
-        return result
+        return dict(result)
 
     elif command == "org":
         org_data = await get_org()
         org_data["category"] = "COMMAND"
-        return org_data
+        return dict(org_data)
 
     else:
         return {"category": "COMMAND", "error": f"Unknown command: {command}"}

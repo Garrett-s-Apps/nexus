@@ -167,7 +167,7 @@ async def interpret_ceo_input(message: str) -> dict:
         messages=[{"role": "user", "content": f"Garrett says: {message}"}],
     )
 
-    output = response.content[0].text
+    output = response.content[0].text  # type: ignore[union-attr]
     cost = 0.0
     if response.usage:
         from src.cost.tracker import cost_tracker
@@ -186,7 +186,7 @@ async def interpret_ceo_input(message: str) -> dict:
             parsed = json.loads(output[json_start:json_end])
             parsed["_raw"] = output
             parsed["_cost"] = cost
-            return parsed
+            return parsed  # type: ignore[no-any-return]
     except (json.JSONDecodeError, KeyError):
         pass
 
@@ -289,7 +289,7 @@ async def execute_org_change(intent: dict) -> str:
     return "\n".join(results) if results else "No changes made"
 
 
-async def execute_question(intent: dict, history: list[dict] = None) -> str:
+async def execute_question(intent: dict, history: list[dict] | None = None) -> str:
     """Route a CEO question to the appropriate agent via direct API for speed."""
     import os
 
@@ -340,17 +340,17 @@ FORMATTING RULES (this will be displayed in Slack):
 - No markdown links, just paste URLs directly
 
 Be specific, data-driven, and concise.""",
-        messages=messages,
+        messages=messages,  # type: ignore[arg-type]
     )
 
     if response.usage:
         from src.cost.tracker import cost_tracker
         cost_tracker.record("sonnet", "vp_engineering", response.usage.input_tokens, response.usage.output_tokens)
 
-    return response.content[0].text
+    return response.content[0].text  # type: ignore[union-attr]
 
 
-async def execute_conversation(message: str, intent: dict, history: list[dict] = None) -> str:
+async def execute_conversation(message: str, intent: dict, history: list[dict] | None = None) -> str:
     """Have a natural, casual conversation with Garrett. No formal org stuff."""
     import anthropic
 
@@ -397,14 +397,14 @@ Your personality:
 - You have FULL conversation history — reference previous messages naturally, don't repeat yourself
 
 His current vibe seems: {mood}""",
-        messages=messages,
+        messages=messages,  # type: ignore[arg-type]
     )
 
     if response.usage:
         from src.cost.tracker import cost_tracker
         cost_tracker.record("sonnet", "nexus_chat", response.usage.input_tokens, response.usage.output_tokens)
 
-    return response.content[0].text
+    return response.content[0].text  # type: ignore[union-attr]
 
 
 import os

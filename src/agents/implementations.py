@@ -28,14 +28,14 @@ def extract_json(text: str) -> dict | list | None:
         return None
     text = text.strip()
     try:
-        return json.loads(text)
+        return json.loads(text)  # type: ignore[no-any-return]
     except json.JSONDecodeError:
         pass
     for pattern in [r'```json\s*\n?(.*?)```', r'```\s*\n?(.*?)```']:
         match = re.search(pattern, text, re.DOTALL)
         if match:
             try:
-                return json.loads(match.group(1).strip())
+                return json.loads(match.group(1).strip())  # type: ignore[no-any-return]
             except json.JSONDecodeError:
                 continue
     for open_c, close_c in [('{', '}'), ('[', ']')]:
@@ -43,7 +43,7 @@ def extract_json(text: str) -> dict | list | None:
         last = text.rfind(close_c)
         if first != -1 and last > first:
             try:
-                return json.loads(text[first:last + 1])
+                return json.loads(text[first:last + 1])  # type: ignore[no-any-return]
             except json.JSONDecodeError:
                 continue
     return None
@@ -204,7 +204,7 @@ class VPEngineeringAgent(Agent):
 Our team: React/TS frontend, Python/FastAPI/Node backend, DevOps.
 Skill gap? JSON: {{"gap":true,"id":"short","name":"Male name","title":"Title","role":"desc","specialty":"area"}} or {{"gap":false}}""", max_tokens=300)
             data = extract_json(raw)
-            return data if data and data.get("gap") else None
+            return data if data and isinstance(data, dict) and data.get("gap") else None
         except Exception:
             return None
 
@@ -545,7 +545,7 @@ AGENT_CLASSES = {
 
 def create_agent(agent_id: str) -> Agent:
     cls = AGENT_CLASSES.get(agent_id, StubAgent)
-    return cls(agent_id)
+    return cls(agent_id)  # type: ignore[abstract]
 
 
 def create_all_agents() -> dict[str, Agent]:

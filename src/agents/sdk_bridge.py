@@ -247,7 +247,7 @@ async def run_gemini(
         google_api_key=api_key,
     )
 
-    messages = []
+    messages: list = []
     if system_prompt:
         messages.append(SystemMessage(content=system_prompt))
     messages.append(HumanMessage(content=task_prompt))
@@ -340,9 +340,9 @@ async def _run_o3_langchain(
     if not api_key:
         return {"output": "ERROR: No OpenAI API key found", "cost": 0.0}
 
-    llm = ChatOpenAI(model="o3", api_key=api_key)
+    llm = ChatOpenAI(model="o3", api_key=api_key)  # type: ignore[arg-type]
 
-    messages = []
+    messages: list = []
     if system_prompt:
         messages.append(SystemMessage(content=system_prompt))
     messages.append(HumanMessage(content=task_prompt))

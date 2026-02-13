@@ -65,9 +65,13 @@ class CLISession:
             self.last_used = time.monotonic()
 
             try:
-                self.process.stdin.write(message.encode())
-                await self.process.stdin.drain()
-                self.process.stdin.close()  # Signal EOF so -p mode starts processing
+                proc = self.process
+                if not proc or not proc.stdin or not proc.stdout:
+                    return "CLI session unavailable"
+
+                proc.stdin.write(message.encode())
+                await proc.stdin.drain()
+                proc.stdin.close()  # Signal EOF so -p mode starts processing
 
                 output_chunks = []
                 stderr_chunks = []
@@ -76,7 +80,7 @@ class CLISession:
                 while time.monotonic() < deadline:
                     try:
                         chunk = await asyncio.wait_for(
-                            self.process.stdout.read(4096),
+                            proc.stdout.read(4096),
                             timeout=min(2.0, deadline - time.monotonic()),
                         )
                         if not chunk:
@@ -84,7 +88,7 @@ class CLISession:
                         output_chunks.append(chunk.decode(errors="replace"))
 
                         await asyncio.sleep(0.3)
-                        if not self.process.stdout._buffer:
+                        if not proc.stdout._buffer:  # type: ignore[attr-defined]
                             break
                     except TimeoutError:
                         if output_chunks:
@@ -92,11 +96,12 @@ class CLISession:
 
                 # Capture stderr for diagnostics
                 try:
-                    stderr_data = await asyncio.wait_for(
-                        self.process.stderr.read(), timeout=1.0
-                    )
-                    if stderr_data:
-                        stderr_chunks.append(stderr_data.decode(errors="replace"))
+                    if proc.stderr:
+                        stderr_data = await asyncio.wait_for(
+                            proc.stderr.read(), timeout=1.0
+                        )
+                        if stderr_data:
+                            stderr_chunks.append(stderr_data.decode(errors="replace"))
                 except (TimeoutError, Exception):
                     pass
 

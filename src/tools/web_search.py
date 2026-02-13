@@ -32,7 +32,7 @@ async def search(query: str, num_results: int = 5) -> list[dict]:
 async def _google_search(query: str, api_key: str, cx: str, n: int) -> list[dict]:
     """Google Custom Search JSON API."""
     url = "https://www.googleapis.com/customsearch/v1"
-    params = {"key": api_key, "cx": cx, "q": query, "num": min(n, 10)}
+    params = {"key": api_key, "cx": cx, "q": query, "num": str(min(n, 10))}
 
     try:
         async with aiohttp.ClientSession() as session:

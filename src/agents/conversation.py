@@ -57,7 +57,7 @@ RULES:
 - When work completes, report exactly what was delivered and where."""
 
 
-async def converse(message: str, history: list[dict] = None) -> dict:
+async def converse(message: str, history: list[dict] | None = None) -> dict:
     """Main conversation entry point."""
     client = _get_client()
 
@@ -87,7 +87,7 @@ async def converse(message: str, history: list[dict] = None) -> dict:
 
     from src.cost.tracker import cost_tracker
 
-    answer = response.content[0].text
+    answer = response.content[0].text  # type: ignore[union-attr]
     cost = 0.0
     if response.usage:
         cost_tracker.record("sonnet", "nexus_converse", response.usage.input_tokens, response.usage.output_tokens)

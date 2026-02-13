@@ -10,7 +10,7 @@ import os
 import subprocess
 
 
-def _run(cmd: list[str], cwd: str = None) -> tuple[int, str, str]:
+def _run(cmd: list[str], cwd: str | None = None) -> tuple[int, str, str]:
     result = subprocess.run(
         cmd,
         cwd=cwd,
@@ -109,7 +109,7 @@ class GitOps:
             return sha if code == 0 else "committed"
         return None
 
-    def push(self, branch: str = None) -> bool:
+    def push(self, branch: str | None = None) -> bool:
         if branch is None:
             branch = self.current_branch()
         code, _, _ = self.run_git("push", "-u", "origin", branch)
@@ -123,7 +123,7 @@ class GitOps:
         self,
         title: str,
         body: str,
-        base: str = None,
+        base: str | None = None,
     ) -> dict | None:
         if base is None:
             base = self._get_main_branch()
@@ -243,8 +243,8 @@ _This PR was created by NEXUS autonomous engineering system._
 
     def deploy_to_github(
         self,
-        org: str = None,
-        repo_name: str = None,
+        org: str | None = None,
+        repo_name: str | None = None,
         description: str = "",
         private: bool = False,
     ) -> dict:

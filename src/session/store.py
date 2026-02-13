@@ -91,7 +91,7 @@ class SessionStore:
             "created_at": now,
         }
 
-    async def update_status(self, session_id: str, status: str, error: str = None):
+    async def update_status(self, session_id: str, status: str, error: str | None = None):
         await self.init()
         now = time.time()
         async with aiosqlite.connect(self.db_path) as db:
@@ -112,7 +112,7 @@ class SessionStore:
         session_id: str,
         role: str,
         content: str,
-        agent: str = None,
+        agent: str | None = None,
         cost: float = 0.0,
     ):
         await self.init()
@@ -144,9 +144,9 @@ class SessionStore:
         await self.init()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            row = await db.execute_fetchall(
+            row = list(await db.execute_fetchall(
                 "SELECT * FROM sessions WHERE id = ?", (session_id,)
-            )
+            ))
             if not row:
                 return None
             session = dict(row[0])
@@ -157,10 +157,10 @@ class SessionStore:
             )
             session["messages"] = [dict(m) for m in messages]
 
-            state_row = await db.execute_fetchall(
+            state_row = list(await db.execute_fetchall(
                 "SELECT state_json FROM session_state WHERE session_id = ?",
                 (session_id,),
-            )
+            ))
             if state_row:
                 session["state"] = json.loads(state_row[0]["state_json"])
 
@@ -189,10 +189,10 @@ class SessionStore:
     async def get_total_cost(self) -> float:
         await self.init()
         async with aiosqlite.connect(self.db_path) as db:
-            result = await db.execute_fetchall(
+            result = list(await db.execute_fetchall(
                 "SELECT COALESCE(SUM(total_cost), 0) FROM sessions"
-            )
-            return result[0][0]
+            ))
+            return float(result[0][0])
 
 
 # Singleton

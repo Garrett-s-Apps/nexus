@@ -38,7 +38,7 @@ class KPITracker:
         conn.commit()
         conn.close()
 
-    def record(self, category: str, metric: str, value: float, metadata: dict = None):
+    def record(self, category: str, metric: str, value: float, metadata: dict | None = None):
         conn = sqlite3.connect(self.db_path)
         conn.execute(
             "INSERT INTO kpi_snapshots (timestamp, category, metric, value, metadata) VALUES (?, ?, ?, ?, ?)",

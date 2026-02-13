@@ -2,12 +2,19 @@
 NEXUS Slack Notifier
 
 Sends notifications to the #garrett-nexus Slack channel.
+Tags @Garrett Eaglin on all substantive messages by default.
 """
+
+import logging
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 from src.config import get_key
+
+logger = logging.getLogger("nexus.slack.notifier")
+
+_owner_user_id: str | None = None
 
 
 def get_client():
@@ -21,13 +28,52 @@ def get_channel():
     return get_key("SLACK_CHANNEL") or "nexus"
 
 
-def notify(message, blocks=None, thread_ts=None):
+def _get_owner_user_id() -> str | None:
+    """Resolve Garrett's Slack user ID for @mentions."""
+    global _owner_user_id
+    if _owner_user_id is not None:
+        return _owner_user_id
+
+    # Check config first
+    configured = get_key("SLACK_OWNER_USER_ID")
+    if configured:
+        _owner_user_id = configured
+        return _owner_user_id
+
+    # Look up by name via Slack API
+    try:
+        client = get_client()
+        result = client.users_list()
+        for member in result.get("members", []):
+            profile = member.get("profile", {})
+            real_name = profile.get("real_name", "").lower()
+            if "garrett" in real_name and "eaglin" in real_name:
+                _owner_user_id = member["id"]
+                logger.info("Resolved owner Slack ID: %s", _owner_user_id)
+                return _owner_user_id
+    except SlackApiError:
+        pass
+
+    return None
+
+
+def notify(message, blocks=None, thread_ts=None, tag_owner=True):
+    """Send a Slack notification. Tags @Garrett by default.
+
+    Set tag_owner=False for processing/status messages that don't need a ping.
+    """
     client = get_client()
     channel = get_channel()
     try:
         client.conversations_join(channel=channel)
     except SlackApiError:
         pass
+
+    # Tag Garrett on substantive messages
+    owner_id = _get_owner_user_id() if tag_owner else None
+    if owner_id:
+        message = f"<@{owner_id}> {message}"
+
     try:
         kwargs = {"channel": channel, "text": message}
         if blocks:

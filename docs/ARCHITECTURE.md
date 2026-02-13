@@ -2704,36 +2704,39 @@ The original `ml.db` housed 6 tables with competing workloads: frequent task_out
 
 All 7 databases now use WAL journaling mode with `busy_timeout=5000` for concurrent read/write safety.
 
-### 30.2 CEO Interpreter Decomposition
+### 30.2 Unified Haiku LLM Intake
 
-The CEO interpreter was a monolithic LLM call that classified intent and routed actions in a single pass. Decomposed into three modules:
+The original three-module chain (regex IntentClassifier → Opus CEO Interpreter → ActionRouter) was replaced with a single Haiku tool-use call. Haiku classifies intent AND executes lightweight operations via Anthropic tool calls in one pass.
+
+**Files**: `src/agents/haiku_intake.py`, `src/agents/intake_dispatcher.py`
 
 ```
-Slack Message
+Slack / API Message
     │
     ▼
 ┌──────────────────────────┐
-│  Intent Classifier        │  Regex-based pre-classification
-│  (src/agents/             │  7 intent types: ORG_QUERY, ORG_MUTATION,
-│   intent_classifier.py)   │  BUILD, STATUS_QUERY, DOCUMENT,
-│                           │  CONVERSATION, UNKNOWN
-│                           │  Returns: IntentType + confidence (0.0-1.0)
+│  Haiku Intake             │  Single Haiku tool-use call
+│  (src/agents/             │  Model: claude-haiku-4-5-20251001
+│   haiku_intake.py)        │  9 tools: query_org, mutate_org, query_status,
+│                           │  query_cost, query_kpi, query_ml,
+│                           │  start_directive, generate_document,
+│                           │  talk_to_agent
+│                           │  Returns: IntakeResult (tool_called, tool_input,
+│                           │  response_text, tokens)
 └──────────┬───────────────┘
            │
            ▼
 ┌──────────────────────────┐
-│  CEO Interpreter          │  LLM call with pre-classified intent hint
-│  (src/agents/             │  Reduces prompt ambiguity, improves accuracy
-│   ceo_interpreter.py)     │  Falls through to full LLM if confidence < 0.6
-└──────────┬───────────────┘
-           │
-           ▼
-┌──────────────────────────┐
-│  Action Router            │  Maps classified intents to handler functions
-│  (src/agents/             │  Decoupled from interpretation logic
-│   action_router.py)       │
+│  Intake Dispatcher        │  Executes tool calls via existing NEXUS services
+│  (src/agents/             │  Query tools → direct execution + Haiku formatting
+│   intake_dispatcher.py)   │  start_directive → CLI pool handoff
+│                           │  mutate_org → registry CRUD + ORG_CHART.md update
 └──────────────────────────┘
 ```
+
+**Multi-turn tool use**: For query tools, raw data is sent back to Haiku via `format_with_tool_result()` for natural language formatting. Engineering work (`start_directive`) bypasses formatting and routes directly to the CLI pool with ML briefing + RAG context.
+
+**Deleted modules**: `intent_classifier.py`, `ceo_interpreter.py`, `action_router.py`
 
 ### 30.3 SSoT Service Layer
 

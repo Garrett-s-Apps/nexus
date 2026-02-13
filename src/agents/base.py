@@ -53,7 +53,11 @@ def get_openai_client():
 
 def llm_call(prompt: str, model: str = HAIKU, system: str = "",
              max_tokens: int = 4096) -> tuple[str, float]:
-    """Make an LLM call. Routes to Anthropic or OpenAI based on model."""
+    """Make an LLM call. Routes to Anthropic or OpenAI based on model.
+
+    DEPRECATED: This function still returns (text, cost) tuple for backward compatibility.
+    New code should use the Agent SDK bridge functions that return TaskResult.
+    """
     if model == O3:
         client = get_openai_client()
         messages = []

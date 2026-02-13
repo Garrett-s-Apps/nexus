@@ -14,9 +14,9 @@ NEXUS doesn't just execute tasks — it learns from every outcome, predicts cost
 You (CEO)
   └─ Slack / Neovim / CLI / API
        └─ NEXUS Server (localhost:4200)
-            ├─ CEO Interpreter (Opus)
-            │     ├─ Intent Classifier — regex pre-classification (7 intent types)
-            │     └─ Action Router — maps classified intents to handlers
+            ├─ Haiku LLM Intake (Haiku tool-use)
+            │     ├─ 9 tools — org, status, cost, KPI, ML, directives, docs, agents
+            │     └─ Intake Dispatcher — executes tools via existing services
             ├─ LangGraph Orchestrator — decomposes directives into tasks
             │     ├─ ML Agent Router — learned task→agent matching
             │     ├─ ML Intelligence Briefing — similar past work + cost estimate
@@ -34,7 +34,7 @@ You (CEO)
 ### Pipeline Flow
 
 ```
-Directive ──► CEO Interpreter ──► Decomposition ──► Task Assignment
+Directive ──► Haiku Intake ──► Decomposition ──► Task Assignment
                                                         │
                     ┌───────────────────────────────────┘
                     ▼
@@ -309,7 +309,7 @@ curl http://127.0.0.1:4200/ml/agent/be_engineer_1/stats
 | `/health` | GET | Liveness check |
 | `/health/detail` | GET | Per-subsystem diagnostics: databases, ML models, RAG, circuit breakers, scheduler |
 | `/status` | GET | Active sessions, cost, agent count |
-| `/message` | POST | Universal input — CEO interpreter routes everything |
+| `/message` | POST | Universal input — Haiku LLM intake routes everything |
 | `/talk` | POST | Direct conversation with specific agent |
 | `/org` | GET | Full org summary and reporting tree |
 | `/org/chart` | GET | Generated org chart |

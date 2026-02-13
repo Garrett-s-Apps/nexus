@@ -9,6 +9,7 @@ store its embedding + total cost for similarity search.
 """
 
 import logging
+import time
 
 from src.agents.registry import registry
 from src.ml.store import ml_store
@@ -17,6 +18,35 @@ logger = logging.getLogger("nexus.ml.feedback")
 
 _outcomes_since_train = 0
 RETRAIN_THRESHOLD = 10  # retrain after N new outcomes
+
+
+def record_intake_event(
+    message_text: str,
+    tool_called: str | None,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+    source: str = "slack",
+) -> None:
+    """Record Haiku intake classification for monitoring and optimization.
+
+    Tracks which tools the intake calls, token usage, and source distribution
+    for the self-learning feedback loop.
+    """
+    try:
+        ml_store.record_outcome(
+            directive_id="",
+            task_id=f"intake-{int(time.time())}",
+            agent_id="haiku_intake",
+            task_description=message_text[:200],
+            outcome=tool_called or "conversation",
+            specialty="intake",
+            duration_sec=0.0,
+            model="haiku",
+            cost_usd=0.0,
+            defect_count=0,
+        )
+    except Exception as e:
+        logger.debug("Intake event recording failed: %s", e)
 
 
 def record_task_outcome(

@@ -373,34 +373,38 @@ async def get_services():
 
 @app.get("/health")
 async def health():
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from starlette.responses import JSONResponse
 
-    from src.agents.registry import registry
-    from src.cost.tracker import cost_tracker
-    from src.ml.knowledge_store import knowledge_store
-    from src.ml.store import ml_store
-    from src.observability.background import scheduler
-
     checks: dict[str, dict] = {}
     overall = "healthy"
+    engine_running = False
 
-    # Database connectivity
-    for name, check_fn in [
-        ("ml_db", lambda: ml_store._conn is not None),
-        ("knowledge_db", lambda: knowledge_store._conn is not None),
-        ("memory_db", lambda: memory._conn is not None),
-        ("registry_db", lambda: registry._conn is not None),
-        ("cost_db", lambda: cost_tracker._conn is not None),
-    ]:
-        try:
-            checks[name] = {"status": "up" if check_fn() else "down"}
-            if not check_fn():
+    # Database connectivity — degrade gracefully, never return 503
+    try:
+        from src.agents.registry import registry
+        from src.cost.tracker import cost_tracker
+        from src.ml.knowledge_store import knowledge_store
+        from src.ml.store import ml_store
+
+        for name, check_fn in [
+            ("ml_db", lambda: ml_store._conn is not None),
+            ("knowledge_db", lambda: knowledge_store._conn is not None),
+            ("memory_db", lambda: memory._conn is not None),
+            ("registry_db", lambda: registry._conn is not None),
+            ("cost_db", lambda: cost_tracker._conn is not None),
+        ]:
+            try:
+                checks[name] = {"status": "up" if check_fn() else "down"}
+                if not check_fn():
+                    overall = "degraded"
+            except Exception as e:
+                checks[name] = {"status": "down", "error": str(e)}
                 overall = "degraded"
-        except Exception as e:
-            checks[name] = {"status": "down", "error": str(e)}
-            overall = "unhealthy"
+    except Exception as e:
+        checks["databases"] = {"status": "unknown", "error": str(e)}
+        overall = "degraded"
 
     # ML model staleness
     try:
@@ -418,7 +422,8 @@ async def health():
 
     # RAG index health
     try:
-        chunk_count_dict: dict = knowledge_store.count_chunks()
+        from src.ml.knowledge_store import knowledge_store as ks
+        chunk_count_dict: dict = ks.count_chunks()
         total_chunks = sum(chunk_count_dict.values())
         checks["rag_index"] = {
             "status": "up",
@@ -431,7 +436,8 @@ async def health():
 
     # Circuit breaker summary
     try:
-        agents = registry.get_active_agents()
+        from src.agents.registry import registry as reg
+        agents = reg.get_active_agents()
         circuit_summary = {"closed": 0, "open": 0, "half_open": 0}
         for agent in agents:
             state = agent.metadata.get("circuit_state", "closed")
@@ -446,6 +452,7 @@ async def health():
 
     # Background scheduler
     try:
+        from src.observability.background import scheduler
         sched_status = scheduler.status()
         running = scheduler._running
         checks["scheduler"] = {
@@ -455,10 +462,21 @@ async def health():
     except Exception as e:
         checks["scheduler"] = {"status": "unknown", "error": str(e)}
 
-    status_code = 200 if overall != "unhealthy" else 503
+    # Engine status
+    try:
+        from src.orchestrator.engine import engine as eng
+        engine_running = getattr(eng, "running", False)
+    except Exception:
+        engine_running = False
+
     return JSONResponse(
-        {"status": overall, "checks": checks, "timestamp": datetime.utcnow().isoformat()},
-        status_code=status_code,
+        {
+            "status": "ok" if overall != "unhealthy" else "degraded",
+            "engine_running": engine_running,
+            "checks": checks,
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+        status_code=200,
     )
 
 

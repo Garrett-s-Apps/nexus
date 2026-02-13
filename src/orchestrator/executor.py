@@ -18,17 +18,7 @@ import os
 
 import anthropic
 
-
-def _load_key(key_name: str) -> str | None:
-    try:
-        with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith(key_name + "="):
-                    return line.split("=", 1)[1]
-    except FileNotFoundError:
-        pass
-    return os.environ.get(key_name)
+from src.config import get_key as _load_key
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
@@ -176,8 +166,11 @@ Write the complete file contents now."""}],
             cost_tracker.record("sonnet", "implementation", impl_response.usage.input_tokens, impl_response.usage.output_tokens)
             total_cost += cost_tracker.calculate_cost("sonnet", impl_response.usage.input_tokens, impl_response.usage.output_tokens)
 
-        # Write the file
-        full_path = os.path.join(project_path, file_path)
+        # Write the file (canonicalize to block path traversal from LLM output)
+        full_path = os.path.realpath(os.path.join(project_path, file_path))
+        if not full_path.startswith(os.path.realpath(project_path) + os.sep):
+            _log("BUILD", f"BLOCKED path traversal attempt: {file_path}")
+            continue
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         with open(full_path, "w") as f:
             f.write(file_content)

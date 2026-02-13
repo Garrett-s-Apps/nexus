@@ -237,7 +237,7 @@ class Memory:
 
     def update_task(self, task_id, status=None, current_step=None, progress=None, error=None, cost=None):
         updates, values = ["updated_at=?"], [datetime.now(UTC).isoformat()]
-        _TASK_COLS = {"status", "completed_at", "current_step", "progress", "error", "cost"}
+        _TASK_COLS = {"status", "completed_at", "current_step", "progress", "error", "cost", "updated_at"}
         if status: updates.append("status=?"); values.append(status)
         if status == "complete": updates.append("completed_at=?"); values.append(datetime.now(UTC).isoformat())
         if current_step: updates.append("current_step=?"); values.append(current_step)

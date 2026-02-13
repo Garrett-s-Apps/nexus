@@ -9,7 +9,9 @@ during burst directive processing.
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger("nexus.background")
 
@@ -17,7 +19,7 @@ logger = logging.getLogger("nexus.background")
 @dataclass
 class _Job:
     name: str
-    coro_fn: object  # async callable
+    coro_fn: Callable[[], Any]
     interval_seconds: int
     run_immediately: bool = False
     last_run: float = 0.0

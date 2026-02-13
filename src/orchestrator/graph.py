@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Sequence
 
 import yaml  # type: ignore[import-untyped]
 from langgraph.checkpoint.memory import MemorySaver
@@ -272,12 +273,13 @@ If you cannot produce JSON, output a bullet list with one task per line.""",
     tasks = []
     total_cost = state.cost
     for i, result in enumerate(results):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             logger.error("EM %s failed during decomposition: %s", em_names[i], result)
             continue
-        parsed_tasks = _parse_tasks(result.output, em_names[i])
-        tasks.extend(parsed_tasks)
-        total_cost = _update_cost(total_cost, result)
+        if isinstance(result, TaskResult):
+            parsed_tasks = _parse_tasks(result.output, em_names[i])
+            tasks.extend(parsed_tasks)
+            total_cost = _update_cost(total_cost, result)
 
     parallel_groups = _identify_parallel_groups(tasks)
 
@@ -863,7 +865,7 @@ def _update_cost(current: CostSnapshot, result: TaskResult | dict) -> CostSnapsh
     )
 
 
-def _update_cost_multi(current: CostSnapshot, results: list[TaskResult | dict]) -> CostSnapshot:
+def _update_cost_multi(current: CostSnapshot, results: Sequence[TaskResult | dict]) -> CostSnapshot:
     updated = current
     for r in results:
         if isinstance(r, (dict, TaskResult)):

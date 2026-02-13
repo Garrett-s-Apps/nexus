@@ -54,12 +54,12 @@ class CLISession:
             logger.error("Failed to start CLI session: %s", e)
             return False
 
-    async def send(self, message: str, timeout: int = 120) -> str:
+    async def send(self, message: str, timeout: int = 300) -> str:
         """Send a message to the CLI process and collect the response.
 
         The CLI runs in pipe mode (-p), which reads stdin until EOF then responds.
         Each send() spawns a fresh process, writes the message, closes stdin to
-        signal EOF, then collects the output.
+        signal EOF, then waits for the process to finish and collects all output.
         """
         async with self._lock:
             # Always start a fresh process — pipe mode is one-shot
@@ -77,41 +77,23 @@ class CLISession:
                 await proc.stdin.drain()
                 proc.stdin.close()  # Signal EOF so -p mode starts processing
 
-                output_chunks = []
-                stderr_chunks = []
-                deadline = time.monotonic() + timeout
-
-                while time.monotonic() < deadline:
-                    try:
-                        chunk = await asyncio.wait_for(
-                            proc.stdout.read(4096),
-                            timeout=min(2.0, deadline - time.monotonic()),
-                        )
-                        if not chunk:
-                            break
-                        output_chunks.append(chunk.decode(errors="replace"))
-
-                        await asyncio.sleep(0.3)
-                        if not proc.stdout._buffer:  # type: ignore[attr-defined]
-                            break
-                    except TimeoutError:
-                        if output_chunks:
-                            break
-
-                # Capture stderr for diagnostics
+                # Wait for the process to finish and collect all output.
+                # communicate() reads stdout/stderr until EOF and waits for
+                # process exit — no premature truncation from buffer polling.
                 try:
-                    if proc.stderr:
-                        stderr_data = await asyncio.wait_for(
-                            proc.stderr.read(), timeout=1.0
-                        )
-                        if stderr_data:
-                            stderr_chunks.append(stderr_data.decode(errors="replace"))
-                except (TimeoutError, Exception):
-                    pass
+                    stdout_data, stderr_data = await asyncio.wait_for(
+                        proc.communicate(), timeout=timeout,
+                    )
+                except TimeoutError:
+                    logger.warning("CLI timed out after %ds for thread %s", timeout, self.thread_ts)
+                    proc.kill()
+                    await proc.wait()
+                    return "(CLI timed out — the request may be too complex)"
 
-                result = "".join(output_chunks).strip()
-                if not result and stderr_chunks:
-                    stderr_text = "".join(stderr_chunks).strip()
+                result = stdout_data.decode(errors="replace").strip() if stdout_data else ""
+                stderr_text = stderr_data.decode(errors="replace").strip() if stderr_data else ""
+
+                if not result and stderr_text:
                     logger.warning("CLI stderr for thread %s: %s", self.thread_ts, stderr_text[:500])
                     return f"CLI error: {stderr_text[:300]}"
 

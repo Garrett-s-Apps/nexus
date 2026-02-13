@@ -14,14 +14,18 @@ NEXUS doesn't just execute tasks — it learns from every outcome, predicts cost
 You (CEO)
   └─ Slack / Neovim / CLI / API
        └─ NEXUS Server (localhost:4200)
-            ├─ CEO Interpreter (Opus) — classifies intent into actions
+            ├─ CEO Interpreter (Opus)
+            │     ├─ Intent Classifier — regex pre-classification (7 intent types)
+            │     └─ Action Router — maps classified intents to handlers
             ├─ LangGraph Orchestrator — decomposes directives into tasks
             │     ├─ ML Agent Router — learned task→agent matching
             │     ├─ ML Intelligence Briefing — similar past work + cost estimate
             │     └─ Feedback Loop — records every outcome for retraining
             ├─ Agent SDK Bridge — executes code via Claude Code CLI
-            ├─ Agent Registry (SQLite) — dynamic org management
-            ├─ RAG Knowledge Base — semantic memory across sessions
+            ├─ Agent Registry (SQLite) — dynamic org + circuit event history
+            ├─ RAG Knowledge Base (knowledge.db) — semantic memory across sessions
+            ├─ SSoT Service Layer — typed views across all databases
+            ├─ BFF Response Formatters — Slack / CLI / API / Neovim output
             ├─ Plugin Review Pipeline — LSP, security, quality checks
             ├─ ML Prediction Engine — cost, quality, escalation forecasting
             └─ Multi-Model — Anthropic, Google, OpenAI
@@ -63,8 +67,10 @@ Directive ──► CEO Interpreter ──► Decomposition ──► Task Assig
 | `memory.db` | `~/.nexus/` | Directives, tasks, events, peer decisions |
 | `cost.db` | `~/.nexus/` | Per-API-call token usage and costs |
 | `kpi.db` | `~/.nexus/` | Productivity and quality metrics |
-| `registry.db` | `~/.nexus/` | Agent configurations and org structure |
-| `ml.db` | `~/.nexus/` | Task outcomes, embeddings, model artifacts, circuit events, RAG knowledge chunks |
+| `registry.db` | `~/.nexus/` | Agent configurations, org structure, circuit breaker events, escalation history |
+| `ml.db` | `~/.nexus/` | Task outcomes, directive embeddings, model artifacts |
+| `knowledge.db` | `~/.nexus/` | RAG knowledge chunks with domain-tag filtering (dedicated for cosine similarity scans) |
+| `sessions.db` | `~/.nexus/` | CLI session state, thread mapping, async message history |
 
 ---
 
@@ -168,11 +174,14 @@ User Message
 ### Retrieval Pipeline
 
 1. Encode query via sentence-transformers (`all-MiniLM-L6-v2`, 384-dim)
-2. Cosine similarity against all stored chunks (in-memory scan, up to 1000 chunks)
-3. Weight by chunk type importance (error resolutions score 1.3x vs conversations at 1.0x)
-4. Apply recency boost (up to 10% for chunks < 90 days old)
-5. Adaptive threshold: 0.35 normally, lowered to 0.25 when knowledge base has < 50 chunks
-6. Return top-8 results, truncated to fit within ~8000 character budget
+2. SQL pre-filter by `chunk_type`, `domain_tag`, and `max_age_days` on indexed columns (reduces candidate set)
+3. Cosine similarity against filtered chunks (in-memory scan)
+4. Weight by chunk type importance (error resolutions score 1.3x vs conversations at 1.0x)
+5. Apply recency boost (up to 10% for chunks < 90 days old)
+6. Adaptive threshold: 0.35 normally, lowered to 0.25 when knowledge base has < 50 chunks
+7. Return top-8 results, truncated to fit within ~8000 character budget
+
+Knowledge chunks are stored in a dedicated `knowledge.db` database, separated from `ml.db` to avoid competing workloads — RAG does bulk cosine similarity scans while ML handles frequent task_outcome inserts and model artifact serialization.
 
 ### Security
 
@@ -297,7 +306,8 @@ curl http://127.0.0.1:4200/ml/agent/be_engineer_1/stats
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/health` | GET | Health check |
+| `/health` | GET | Liveness check |
+| `/health/detail` | GET | Per-subsystem diagnostics: databases, ML models, RAG, circuit breakers, scheduler |
 | `/status` | GET | Active sessions, cost, agent count |
 | `/message` | POST | Universal input — CEO interpreter routes everything |
 | `/talk` | POST | Direct conversation with specific agent |
@@ -335,7 +345,7 @@ NEXUS starts on login, restarts on crash. Logs at `~/.nexus/logs/`.
 |----------|-----------|
 | **Orchestration** | LangGraph + Claude Agent SDK |
 | **Server** | FastAPI + Uvicorn |
-| **Persistence** | SQLite (5 databases — registry, memory, cost, KPIs, ML) |
+| **Persistence** | SQLite (7 databases — registry, memory, cost, KPIs, ML, knowledge, sessions) |
 | **Communication** | Slack Socket Mode |
 | **Models** | Claude Opus/Sonnet/Haiku, Gemini, OpenAI o3 |
 | **ML** | scikit-learn (routing, prediction), sentence-transformers (embeddings), numpy |

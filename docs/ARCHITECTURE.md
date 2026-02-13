@@ -1,6 +1,6 @@
 # NEXUS: Enterprise Multi-Agent Orchestration System
 
-## Architecture Specification v1.3
+## Architecture Specification v1.4
 
 ---
 
@@ -2230,7 +2230,7 @@ Garrett on phone:
 NEXUS learns from its own execution history. Every task outcome, cost event, circuit breaker trip, and escalation becomes training data that improves future decisions. The system is designed around three principles:
 
 1. **Cold-Start Graceful Degradation**: Every ML feature has a non-ML fallback. The system works identically on day one (keyword routing, no predictions) and progressively improves as data accumulates.
-2. **Separation of Concerns**: ML data lives in its own SQLite database (`~/.nexus/ml.db`), completely separate from core state (`memory.db`, `cost.db`, `kpi.db`). ML failures never affect core orchestration.
+2. **Separation of Concerns**: Data is split across purpose-specific databases — ML training data in `ml.db`, RAG knowledge in `knowledge.db`, circuit events in `registry.db`, completely separate from core state (`memory.db`, `cost.db`, `kpi.db`). Failures in one domain never corrupt another.
 3. **Automatic Retraining**: Models retrain themselves as new data arrives — no manual intervention required.
 
 ### 29.2 Architecture Overview
@@ -2280,20 +2280,35 @@ NEXUS learns from its own execution history. Every task outcome, cost event, cir
 │  │   duration+       │  │  outcome metadata)    │         │
 │  │   defects)        │  │                       │         │
 │  └──────────────────┘  └──────────────────────┘         │
+│  ┌──────────────────────────────────────────────┐       │
+│  │  model_artifacts                              │       │
+│  │  (serialized sklearn pipelines, versioned)    │       │
+│  └──────────────────────────────────────────────┘       │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│              Knowledge Store (knowledge_store.py)         │
+│              ~/.nexus/knowledge.db                        │
+│                                                          │
+│  ┌──────────────────────────────────────────────┐       │
+│  │  knowledge_chunks (RAG)                       │       │
+│  │  (chunk_type + content + 384-dim embedding    │       │
+│  │   + source_id + domain_tag + metadata,        │       │
+│  │   UNIQUE(source_id))                          │       │
+│  │  Indexes: chunk_type, source_id, domain_tag   │       │
+│  └──────────────────────────────────────────────┘       │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│              Agent Registry (registry.py)                 │
+│              ~/.nexus/registry.db                         │
+│                                                          │
 │  ┌──────────────────┐  ┌──────────────────────┐         │
 │  │  circuit_events   │  │  escalation_events   │         │
 │  │  (trip/recovery   │  │  (from_model →       │         │
 │  │   with timing)    │  │   to_model + reason)  │         │
 │  └──────────────────┘  └──────────────────────┘         │
-│  ┌──────────────────────────────────────────────┐       │
-│  │  model_artifacts                              │       │
-│  │  (serialized sklearn pipelines, versioned)    │       │
-│  └──────────────────────────────────────────────┘       │
-│  ┌──────────────────────────────────────────────┐       │
-│  │  knowledge_chunks (RAG)                       │       │
-│  │  (chunk_type + content + 384-dim embedding    │       │
-│  │   + source_id + metadata, UNIQUE(source_id))  │       │
-│  └──────────────────────────────────────────────┘       │
+│  (+ agents, org_changelog tables)                        │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -2302,16 +2317,17 @@ NEXUS learns from its own execution history. Every task outcome, cost event, cir
 **File**: `src/ml/store.py`
 **Database**: `~/.nexus/ml.db` (SQLite with WAL journaling)
 
-The ML store maintains five tables that capture every learning signal produced during NEXUS operations:
+The ML store maintains three tables focused on training data and model persistence:
 
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
 | `task_outcomes` | Links agent assignment to result quality | `agent_id`, `task_description`, `outcome`, `cost_usd`, `duration_sec`, `defect_count`, `model` |
 | `directive_embeddings` | Stores dense vector embeddings for semantic similarity search | `directive_id`, `directive_text`, `embedding` (BLOB), `total_cost`, `total_tasks` |
-| `circuit_events` | Persists circuit breaker trip/recovery events (previously in-memory only, lost on restart) | `agent_id`, `event_type` (trip/recovery), `failure_count`, `recovery_time_sec` |
-| `escalation_events` | Records model tier escalation events | `agent_id`, `from_model`, `to_model`, `reason`, `task_type` |
 | `model_artifacts` | Versioned serialized sklearn pipeline objects | `name`, `version`, `artifact` (BLOB), `metrics` (JSON), `training_samples` |
-| `knowledge_chunks` | RAG knowledge base for cross-session semantic memory | `chunk_type`, `source_id` (UNIQUE), `content`, `embedding` (BLOB), `metadata` (JSON), `created_at` |
+
+**Migrated tables** (TSA hardening — workload separation):
+- `circuit_events` and `escalation_events` → moved to `registry.db` (co-located with agent definitions for single-database agent health queries)
+- `knowledge_chunks` → moved to dedicated `knowledge.db` (bulk cosine similarity scans no longer compete with frequent task_outcome inserts)
 
 **Why separate from core state?** ML data is experimental and high-volume. Keeping it in its own database means:
 - ML failures (corrupt model, bad training data) never corrupt core orchestration state
@@ -2445,12 +2461,12 @@ Retraining is throttled to at most once per hour per model (`RETRAIN_INTERVAL = 
 
 **Before ML**: Circuit breaker state (`src/resilience/circuit_breaker.py`) was entirely in-memory. Agent reliability history was lost on every restart.
 
-**After ML**: The circuit breaker's `_on_success()` method now persists recovery events to `ml.db` when a circuit transitions from OPEN/HALF_OPEN back to CLOSED. This captures:
+**After ML + TSA hardening**: Circuit breaker events are now persisted to `registry.db` (via `src/agents/registry.py`) rather than `ml.db`. This co-locates circuit events with agent definitions, enabling single-database queries for agent health analysis. The circuit breaker's `_on_success()` method persists recovery events when a circuit transitions from OPEN/HALF_OPEN back to CLOSED. This captures:
 - Which agent recovered
 - How long recovery took (monotonic clock delta from last failure)
 - The model tier and task type involved
 
-This persistent reliability data feeds the escalation predictor, enabling it to identify agents that are prone to failures before assigning them to tasks.
+`registry.get_agent_reliability(agent_id)` provides a unified reliability view (success rate, circuit trip count, mean recovery time) used by the escalation predictor and the `/ml/agent/{id}/stats` endpoint.
 
 ### 29.10 ML API Endpoints
 
@@ -2534,7 +2550,7 @@ This three-tier loading strategy means models survive process restarts without r
 ### 29.14 RAG Knowledge Base — Cross-Session Semantic Memory
 
 **File**: `src/ml/rag.py`
-**Storage**: `knowledge_chunks` table in `~/.nexus/ml.db`
+**Storage**: `knowledge_chunks` table in `~/.nexus/knowledge.db` (dedicated database via `src/ml/knowledge_store.py`)
 
 #### Problem
 
@@ -2563,7 +2579,8 @@ New Slack message arrives
     │
     ├── encode(query[:1000]) ──► 384-dim embedding (sentence-transformers)
     │
-    ├── get_all_chunks(limit=1000) ──► load stored chunks from ml.db
+    ├── SQL pre-filter by chunk_type, domain_tag, max_age_days (indexed columns)
+    │     └── get_chunks_filtered() reduces candidate set before similarity scoring
     │
     ├── Filter: exclude chunks matching current thread source_id
     │
@@ -2614,9 +2631,9 @@ The `knowledge_chunks` table has a `UNIQUE(source_id)` constraint. Repeated inge
 #### Data Lifecycle
 
 - **Ingestion**: Real-time, as events occur (no batch loading)
-- **Pruning**: Every 5 minutes via CLI session pool cleanup loop (`prune_old_chunks(max_age_days=30)`)
+- **Pruning**: Every 5 minutes via background scheduler. Retention policy: `conversation`/`code_change` = 30 days, `task_outcome` = 90 days, `error_resolution` = kept indefinitely
 - **Preserved types**: `error_resolution` chunks are exempt from pruning (highest long-term value)
-- **Storage**: In-memory scan over all chunks — efficient for expected volume (hundreds to low thousands)
+- **Storage**: SQL pre-filtered scan over knowledge.db — domain_tag and chunk_type indexes reduce candidate set before cosine similarity
 
 #### Security: Prompt Injection Defense
 
@@ -2664,6 +2681,105 @@ rag_context = await asyncio.to_thread(build_rag_context, text, 8000, exclude)
 ```
 
 All ML/RAG calls are dispatched to the thread pool via `asyncio.to_thread()`, keeping the Slack event loop responsive during embedding computation.
+
+---
+
+## 30. TSA Architecture Hardening
+
+Implemented to align with AssetMark's Technical Standards Architecture (TSA) principles. Addresses database workload separation, observability, and layered architecture.
+
+### 30.1 Database Workload Separation
+
+The original `ml.db` housed 6 tables with competing workloads: frequent task_outcome inserts, bulk RAG cosine similarity scans, model artifact serialization, and circuit event logging. TSA hardening split these into purpose-specific databases:
+
+| Database | Tables | Workload Pattern | WAL Mode |
+|----------|--------|-------------------|----------|
+| `ml.db` | task_outcomes, directive_embeddings, model_artifacts | Frequent inserts + periodic bulk reads for training | Yes |
+| `knowledge.db` | knowledge_chunks | Bulk cosine similarity scans + periodic inserts | Yes |
+| `registry.db` | agents, org_changelog, circuit_events, escalation_events | Moderate reads/writes, agent health queries | Yes |
+| `memory.db` | directives, tasks, events, peers | High-frequency operational state | Yes |
+| `cost.db` | api_costs, budgets | Per-call cost tracking | Yes |
+| `kpi.db` | kpi_snapshots | Periodic metric inserts | Yes |
+| `sessions.db` | sessions, thread_map, async_messages | CLI session state management | Yes |
+
+All 7 databases now use WAL journaling mode with `busy_timeout=5000` for concurrent read/write safety.
+
+### 30.2 CEO Interpreter Decomposition
+
+The CEO interpreter was a monolithic LLM call that classified intent and routed actions in a single pass. Decomposed into three modules:
+
+```
+Slack Message
+    │
+    ▼
+┌──────────────────────────┐
+│  Intent Classifier        │  Regex-based pre-classification
+│  (src/agents/             │  7 intent types: ORG_QUERY, ORG_MUTATION,
+│   intent_classifier.py)   │  BUILD, STATUS_QUERY, DOCUMENT,
+│                           │  CONVERSATION, UNKNOWN
+│                           │  Returns: IntentType + confidence (0.0-1.0)
+└──────────┬───────────────┘
+           │
+           ▼
+┌──────────────────────────┐
+│  CEO Interpreter          │  LLM call with pre-classified intent hint
+│  (src/agents/             │  Reduces prompt ambiguity, improves accuracy
+│   ceo_interpreter.py)     │  Falls through to full LLM if confidence < 0.6
+└──────────┬───────────────┘
+           │
+           ▼
+┌──────────────────────────┐
+│  Action Router            │  Maps classified intents to handler functions
+│  (src/agents/             │  Decoupled from interpretation logic
+│   action_router.py)       │
+└──────────────────────────┘
+```
+
+### 30.3 SSoT Service Layer
+
+Typed dataclass views providing single-source-of-truth access across multiple SQLite databases. Eliminates scattered queries throughout the codebase.
+
+**File**: `src/services/`
+
+| Service | Dataclass | Databases Queried |
+|---------|-----------|-------------------|
+| `agent_service.py` | `AgentProfile` | registry.db + ml.db (composite agent view) |
+| `directive_service.py` | `DirectiveStatus` | memory.db (directive + task state) |
+| `outcome_service.py` | `OutcomeSummary` | ml.db (aggregated task outcomes) |
+| `knowledge_service.py` | `KnowledgeStatus` | knowledge.db (chunk counts + health) |
+
+Each service returns frozen dataclasses with typed fields — no raw dicts or SQL rows leak into consumers.
+
+### 30.4 BFF Response Formatters
+
+Backend-for-Frontend pattern providing client-specific output formatting. A single `ResponseFormatter` protocol with four implementations:
+
+**File**: `src/formatters/`
+
+| Formatter | Client | Style |
+|-----------|--------|-------|
+| `SlackFormatter` | Slack Socket Mode | Emoji-rich blocks, thread-friendly |
+| `CLIFormatter` | Terminal / Neovim | Plain text, compact |
+| `APIFormatter` | REST API consumers | Structured JSON |
+| `NeovimFormatter` | Editor integration | Editor-friendly compact output |
+
+The `formatter_registry.py` factory maps client type strings to formatter instances, decoupling presentation from business logic.
+
+### 30.5 Health Endpoint Enrichment
+
+**Endpoint**: `GET /health/detail`
+
+Provides per-subsystem diagnostics with three-tier status (`healthy` / `degraded` / `unhealthy`):
+
+| Subsystem | What's Checked |
+|-----------|----------------|
+| Databases | Connectivity for ml.db, knowledge.db, memory.db, registry.db, cost.db |
+| ML Models | Training data counts, model readiness from `get_learning_status()` |
+| RAG Index | Chunk counts via `knowledge_store.count_chunks()` |
+| Circuit Breakers | Aggregated agent states across all registered agents |
+| Background Scheduler | Periodic job status (retrain, prune, cleanup) |
+
+The basic `GET /health` endpoint remains a lightweight liveness check for load balancers.
 
 ---
 

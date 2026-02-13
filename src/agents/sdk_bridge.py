@@ -13,7 +13,6 @@ import logging
 import os
 import shutil
 import time
-from typing import Any
 
 from claude_agent_sdk import ClaudeAgentOptions, query
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -270,7 +269,7 @@ async def run_o3(
     task_prompt: str,
     system_prompt: str = "",
     timeout_seconds: int = 300,
-) -> dict[str, Any]:
+) -> TaskResult:
     """Route o3 calls through Codex CLI, with LangChain fallback."""
     codex_bin = shutil.which("codex")
     if not codex_bin:
@@ -306,10 +305,15 @@ async def run_o3(
         except TimeoutError:
             proc.kill()
             await proc.wait()
-            return {
-                "output": f"Codex CLI timed out after {timeout_seconds}s",
-                "cost": 0.0, "model": "codex:o3", "agent": "systems_consultant",
-            }
+            elapsed = time.time() - start_time
+            return TaskResult(
+                status="timeout",
+                output=f"Codex CLI timed out after {timeout_seconds}s",
+                error_type="timeout",
+                model="codex:o3",
+                agent="systems_consultant",
+                elapsed_seconds=elapsed,
+            )
 
         elapsed = time.time() - start_time
         output = stdout.decode("utf-8", errors="replace").strip()
@@ -321,11 +325,14 @@ async def run_o3(
         cost_tracker.record("codex:o3", "systems_consultant", 0, 0)
         logger.info("[o3] Codex CLI completed in %.1fs (%d chars)", elapsed, len(output))
 
-        return {
-            "output": output,
-            "cost": 0.0, "model": "codex:o3", "agent": "systems_consultant",
-            "mode": "codex_cli", "elapsed_seconds": elapsed,
-        }
+        return TaskResult(
+            status="success",
+            output=output,
+            model="codex:o3",
+            agent="systems_consultant",
+            elapsed_seconds=elapsed,
+            metadata={"mode": "codex_cli"},
+        )
 
     except Exception as e:
         logger.error("[o3] Codex CLI error: %s", e)
@@ -335,11 +342,16 @@ async def run_o3(
 async def _run_o3_langchain(
     task_prompt: str,
     system_prompt: str = "",
-) -> dict[str, Any]:
+) -> TaskResult:
     """Fallback: call o3 via LangChain if Codex CLI unavailable."""
     api_key = _load_key("OPENAI_API_KEY")
     if not api_key:
-        return {"output": "ERROR: No OpenAI API key found", "cost": 0.0}
+        return TaskResult(
+            status="unavailable",
+            output="ERROR: No OpenAI API key found",
+            error_type="api_error",
+            error_detail="missing OPENAI_API_KEY",
+        )
 
     llm = ChatOpenAI(model="o3", api_key=api_key)  # type: ignore[arg-type]
 
@@ -351,25 +363,34 @@ async def _run_o3_langchain(
     try:
         response = await llm.ainvoke(messages)
         cost = cost_tracker.record("o3", "systems_consultant", 2000, 1000)
-        return {
-            "output": response.content,
-            "cost": cost, "model": "o3", "agent": "systems_consultant",
-        }
+        return TaskResult(
+            status="success",
+            output=response.content,
+            cost_usd=cost if isinstance(cost, float) else 0.0,
+            model="o3",
+            agent="systems_consultant",
+        )
     except Exception as e:
-        return {"output": f"o3 error: {str(e)}", "cost": 0.0}
+        return TaskResult(
+            status="error",
+            output=f"o3 error: {str(e)}",
+            error_type="api_error",
+            error_detail=str(e),
+            model="o3",
+        )
 
 
-async def run_web_search(query: str, num_results: int = 5) -> dict[str, Any]:
+async def run_web_search(query: str, num_results: int = 5) -> TaskResult:
     """Web search capability available to all agents."""
     from src.tools.web_search import format_results_for_context, search
     results = await search(query, num_results)
-    return {
-        "output": format_results_for_context(results),
-        "results": results,
-        "cost": 0.0,
-        "model": "web_search",
-        "agent": "web_search",
-    }
+    return TaskResult(
+        status="success",
+        output=format_results_for_context(results),
+        model="web_search",
+        agent="web_search",
+        metadata={"results": results},
+    )
 
 
 async def run_planning_agent(

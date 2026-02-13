@@ -28,7 +28,7 @@ from src.documents.generator import (
     generate_document,
 )
 from src.memory.store import memory
-from src.sessions.cli_pool import cli_pool
+from src.sessions.cli_pool import CLISession, cli_pool
 
 
 async def classify_doc_request(text: str) -> dict | None:
@@ -223,6 +223,14 @@ async def download_and_parse_file(url: str, filename: str, bot_token: str) -> st
                             content = "\n".join(page.get_text() for page in pdf_doc[:10])
                         except ImportError:
                             content = "(Install PyMuPDF for PDF reading)"
+                    elif ext in ("png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"):
+                        # Save image and return path for CLI to read with Read tool
+                        import shutil
+                        img_dir = os.path.join(tempfile.gettempdir(), "nexus_images")
+                        os.makedirs(img_dir, exist_ok=True)
+                        img_path = os.path.join(img_dir, filename)
+                        shutil.copy2(tmp_path, img_path)
+                        content = f"\n[IMAGE ATTACHED: Use your Read tool to view the image at {img_path}]\n"
                     else:
                         content = f"(Unsupported file type: .{ext})"
 
@@ -263,6 +271,171 @@ def get_channel_id() -> str | None:
     return _channel_id
 
 
+def _is_garbage_response(response: str) -> bool:
+    """Detect responses that are leaked instructions or placeholder templates.
+
+    When CLI exits prematurely, it can emit raw system prompt fragments or
+    template placeholders instead of real answers.
+    """
+    r = response.strip().lower()
+
+    # Short responses are more likely to be garbage — real answers are usually >50 chars
+    is_short = len(r) < 200
+
+    # Exact substring patterns that always indicate garbage
+    garbage_patterns = [
+        "e.g.,",
+        "e.g.)",
+        "(e.g.",
+        "e.g.'",
+        "completed x%",
+        "currently on section y",
+        "not started yet'",
+        "provide current status",
+        "replace this with",
+        "[insert",
+        "[your ",
+        "[fill in",
+        "[placeholder",
+        "fill in the blank",
+        "your response here",
+        "write your answer",
+        "template instructions",
+        "placeholder text",
+        "example placeholders",
+    ]
+    for pattern in garbage_patterns:
+        if pattern in r:
+            return True
+
+    # Detect bare instruction verbs followed by template-style content
+    # Covers both double and single quotes, parens with examples
+    if re.match(
+        r'^(provide|list|describe|explain|summarize|generate|create|write|include|add|state|give|offer)\s'
+        r".{0,60}(e\.g\.|for example|such as|\(.*?\)|\".*?\"|'.*?')",
+        r,
+    ):
+        return True
+
+    # Detect responses that are entirely a single instruction sentence with
+    # parenthetical or quoted examples — the hallmark of a leaked system prompt
+    if re.match(
+        r'^(provide|list|describe|explain|summarize|state|give|offer|respond|answer)\s.{10,150}(\(.*?\)|\'.*?\'|".*?")\s*$',
+        r,
+    ):
+        return True
+
+    # Short responses starting with an imperative verb are suspicious
+    if is_short and re.match(
+        r'^(provide|list|describe|explain|summarize|state|give|offer|respond with|answer with)\s',
+        r,
+    ):
+        return True
+
+    # Detect responses that quote placeholder values like 'X%', 'section Y'
+    return bool(
+        re.search(r"['\"]\w?%['\"]\s*[,.]", r)
+        or re.search(r"['\"]section \w['\"]", r)
+    )
+
+
+async def _fetch_thread_history(
+    web_client: AsyncWebClient, channel: str, thread_ts: str, bot_user_id: str,
+    current_ts: str, limit: int = 10,
+) -> list[dict[str, str]]:
+    """Fetch recent thread messages to build conversational context for CLI.
+
+    Returns a list of {"role": "user"|"assistant", "text": "..."} dicts,
+    excluding the current message (identified by current_ts).
+    """
+    try:
+        result = await web_client.conversations_replies(
+            channel=channel, ts=thread_ts, limit=limit + 5,
+        )
+        messages: list[dict] = result.get("messages", [])
+        history: list[dict[str, str]] = []
+        for msg in messages:
+            msg_ts = msg.get("ts", "")
+            if msg_ts == current_ts:
+                continue
+            # Skip the thread parent if it's a file upload with no text
+            msg_text = msg.get("text", "").strip()
+            if not msg_text:
+                continue
+            # Skip processing indicators
+            if msg_text.startswith(":hourglass"):
+                continue
+            role = "assistant" if msg.get("user") == bot_user_id or msg.get("bot_id") else "user"
+            history.append({"role": role, "text": msg_text[:2000]})
+        # Return only the most recent `limit` messages
+        return history[-limit:]
+    except Exception as e:
+        print(f"[Slack] Thread history fetch failed (non-fatal): {e}")
+        return []
+
+
+_SYSTEM_PREAMBLE = (
+    "You are NEXUS, a 26-agent autonomous software engineering organization "
+    "built by Garrett Eaglin. You are responding in the #garrett-nexus Slack channel.\n\n"
+    "YOU ARE RUNNING IN THE NEXUS PROJECT DIRECTORY. You have full access to the codebase. "
+    "Key files you can read:\n"
+    "- docs/ARCHITECTURE.md — full architecture spec (v1.3, 29 sections)\n"
+    "- README.md — project overview, ML system, usage examples\n"
+    "- ORG_CHART.md — organizational structure\n"
+    "- config/agents.yaml — all agent definitions\n"
+    "- src/ — full Python source code\n"
+    "- src/ml/ — ML self-learning system (router, predictor, embeddings, feedback)\n"
+    "- src/orchestrator/ — LangGraph engine, task runner\n"
+    "- src/slack/ — Slack listener and notifier\n"
+    "- src/agents/ — agent base, SDK bridge, CEO interpreter\n\n"
+    "RULES:\n"
+    "1. When asked to create documents, READ the actual codebase first and include REAL data.\n"
+    "2. When asked to enrich or fetch from GitHub, use your tools to actually read the repo files.\n"
+    "3. Never output placeholder text, templates, or plans to do something — actually DO it.\n"
+    "4. Never output instruction-style text like 'Provide X' or 'List Y' — give the actual answer.\n"
+    "5. If asked about architecture, read docs/ARCHITECTURE.md and src/ to give real details.\n"
+    "6. If you don't know something, say so directly.\n"
+    "7. Always give complete, substantive answers grounded in the actual codebase."
+)
+
+_RETRY_REINFORCEMENT = (
+    "\n\nCRITICAL: Your previous attempt produced a garbage or placeholder response. "
+    "You MUST respond with a real, substantive answer this time. Do NOT output "
+    "template text, instructions, or example placeholders. Do NOT start with "
+    "imperative verbs like 'Provide' or 'Describe' — those are instructions, "
+    "not answers. Answer the user's actual question directly."
+)
+
+
+def _build_threaded_prompt(
+    history: list[dict[str, str]], current_message: str, *, is_retry: bool = False,
+) -> str:
+    """Build a prompt with thread history so CLI has conversational context."""
+    parts = [_SYSTEM_PREAMBLE, ""]
+
+    if history:
+        parts.append("You are continuing a Slack thread conversation. Here is the prior context:")
+        parts.append("")
+        for msg in history:
+            prefix = "User" if msg["role"] == "user" else "You (NEXUS)"
+            parts.append(f"{prefix}: {msg['text']}")
+        parts.append("")
+        parts.append(f"User's new message: {current_message}")
+    else:
+        parts.append(f"User's message: {current_message}")
+
+    parts.append("")
+    parts.append(
+        "Respond to the user's message using the thread context above if present. "
+        "Give a complete, substantive answer — do not just acknowledge the request."
+    )
+
+    if is_retry:
+        parts.append(_RETRY_REINFORCEMENT)
+
+    return "\n".join(parts)
+
+
 async def start_slack_listener():
     global _web_client, _channel_id
 
@@ -297,7 +470,10 @@ async def start_slack_listener():
         if req.type != "events_api":
             return
         event = req.payload.get("event", {})
-        if event.get("type") != "message" or event.get("subtype") or event.get("user") == bot_user_id:
+        subtype = event.get("subtype", "")
+        # Allow file_share (images/attachments) through; block bot messages, edits, etc.
+        ignored_subtypes = {"bot_message", "message_changed", "message_deleted", "channel_join", "channel_leave"}
+        if event.get("type") != "message" or subtype in ignored_subtypes or event.get("user") == bot_user_id:
             return
 
         channel_id = event.get("channel", "")
@@ -327,8 +503,6 @@ async def start_slack_listener():
         })
 
         try:
-            from src.orchestrator.engine import engine
-
             async def safe_react(name):
                 try:
                     await web_client.reactions_add(channel=channel_id, name=name, timestamp=event.get("ts"))
@@ -411,37 +585,65 @@ async def start_slack_listener():
                                 pass
                         return
                     except Exception as e:
-                        print(f"[Slack] Document generation failed, falling through to engine: {e}")
+                        print(f"[Slack] Document generation failed, falling through to CLI: {e}")
 
-            # All messages go to Claude Code (Opus) first. It decides
-            # whether to answer directly or dispatch to the engine/agents.
+            # All messages go to Claude Code (Opus). Retry once on failure
+            # instead of falling back to the basic engine.
             response = None
-            cli_failed = False
             project_path = os.environ.get("NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus"))
 
-            try:
-                await safe_react("robot_face")
-                session = await cli_pool.get_or_create(thread_ts, project_path)
-                if session.alive:
-                    memory.emit_event("slack", "cli_routed", {
-                        "thread_ts": thread_ts, "pid": session.process.pid if session.process else None,
-                    })
-                    response = await session.send(text)
-                else:
-                    cli_failed = True
-            except Exception as e:
-                cli_failed = True
-                print(f"[Slack] CLI session failed: {e}")
+            # Fetch thread history so follow-up messages have conversational context.
+            # Each CLI send() is a fresh one-shot process — without this, the CLI
+            # has zero knowledge of prior messages in the thread.
+            thread_history = await _fetch_thread_history(
+                web_client, channel_id, thread_ts, bot_user_id,
+                current_ts=event.get("ts", ""),
+            )
 
-            # Engine is a fallback ONLY when the CLI process itself failed.
-            # Normal conversational responses (even short ones) stay as-is.
-            cli_error = response and (response == "(No response from CLI)" or response.startswith("CLI error"))
-            if cli_failed or cli_error:
-                memory.emit_event("slack", "engine_fallback", {
-                    "reason": response[:200] if response else "cli unavailable",
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                is_retry = attempt > 0
+                cli_message = _build_threaded_prompt(thread_history, text, is_retry=is_retry)
+                try:
+                    await safe_react("robot_face")
+                    session = await cli_pool.get_or_create(thread_ts, project_path)
+                    if not session.alive:
+                        # Force a fresh session
+                        session = CLISession(thread_ts, project_path)
+                        if await session.start():
+                            cli_pool._sessions[thread_ts] = session
+
+                    if session.alive:
+                        memory.emit_event("slack", "cli_routed", {
+                            "thread_ts": thread_ts,
+                            "pid": session.process.pid if session.process else None,
+                            "attempt": attempt + 1,
+                        })
+                        response = await session.send(cli_message)
+
+                        # Guard: detect leaked system instructions or placeholder text
+                        if response and _is_garbage_response(response):
+                            print(f"[Slack] Garbage response detected (attempt {attempt + 1}), retrying: {response[:100]}")
+                            response = None
+
+                        # Check if CLI actually responded
+                        if response and response != "(No response from CLI)" and not response.startswith("CLI error"):
+                            break
+
+                    if attempt < max_attempts - 1:
+                        print(f"[Slack] CLI attempt {attempt + 1} failed, retrying...")
+                        await asyncio.sleep(1.5)
+                except Exception as e:
+                    print(f"[Slack] CLI attempt {attempt + 1} error: {e}")
+                    if attempt < max_attempts - 1:
+                        await asyncio.sleep(1.5)
+
+            if not response or response == "(No response from CLI)" or response.startswith("CLI error"):
+                memory.emit_event("slack", "cli_all_attempts_failed", {
+                    "reason": (response or "no response")[:200],
                     "thread_ts": thread_ts,
                 })
-                response = await engine.handle_message(text, source="slack", thread_ts=thread_ts)
+                response = "I had trouble processing that request. Could you try rephrasing or sending again?"
 
             memory.emit_event("slack", "response_sent", {
                 "text": (response or "")[:200], "thread_ts": thread_ts,

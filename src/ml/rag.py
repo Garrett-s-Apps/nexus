@@ -39,6 +39,25 @@ MAX_CONTEXT_TOKENS = 2000  # ~8000 chars, keeps prompt reasonable
 CHARS_PER_TOKEN = 4
 
 
+def _classify_domain(content: str, chunk_type: str) -> str:
+    """Classify chunk domain for pre-filtering.
+
+    Reduces cosine similarity search space by tagging chunks with domain categories.
+    """
+    content_lower = content.lower()
+    if any(kw in content_lower for kw in ["frontend", "react", "css", "ui", "component", "jsx", "tsx"]):
+        return "frontend"
+    if any(kw in content_lower for kw in ["backend", "api", "server", "database", "sql", "endpoint"]):
+        return "backend"
+    if any(kw in content_lower for kw in ["deploy", "docker", "ci", "pipeline", "infra", "kubernetes", "k8s"]):
+        return "devops"
+    if any(kw in content_lower for kw in ["security", "auth", "token", "vulnerability", "csrf", "xss", "injection"]):
+        return "security"
+    if any(kw in content_lower for kw in ["test", "pytest", "coverage", "assertion", "mock", "fixture"]):
+        return "testing"
+    return "general"
+
+
 def ingest(
     chunk_type: str,
     content: str,
@@ -59,6 +78,9 @@ def ingest(
         source_id = f"hash:{hashlib.md5(content[:500].encode(), usedforsecurity=False).hexdigest()[:12]}"
 
     try:
+        # Classify domain for pre-filtering
+        domain_tag = _classify_domain(content, chunk_type)
+
         # Truncate very long content before embedding
         embed_text = content[:2000]
         embedding = encode(embed_text)
@@ -68,8 +90,9 @@ def ingest(
             embedding=embedding_to_bytes(embedding),
             source_id=source_id,
             metadata=metadata,
+            domain_tag=domain_tag,
         )
-        logger.debug("Ingested %s chunk (%d chars) source=%s", chunk_type, len(content), source_id)
+        logger.debug("Ingested %s chunk (%d chars) source=%s domain=%s", chunk_type, len(content), source_id, domain_tag)
         return True
     except Exception as e:
         logger.warning("RAG ingest failed: %s", e)
@@ -149,22 +172,34 @@ def retrieve(
     top_k: int = 5,
     threshold: float = 0.35,
     chunk_types: list[str] | None = None,
+    domain_tag: str | None = None,
     exclude_source_ids: set[str] | None = None,
 ) -> list[dict]:
     """Retrieve the most relevant knowledge chunks for a query.
 
     Returns chunks sorted by weighted similarity score.
     Excludes chunks whose source_id matches exclude_source_ids (e.g. current thread).
+
+    Pre-filters by chunk_type and/or domain_tag to reduce cosine similarity candidates.
     """
     try:
+        start_time = time.time()
+
         query_embedding = encode(query[:1000])
-        all_chunks = knowledge_store.get_all_chunks(limit=1000)
+
+        # Use pre-filtering to reduce candidate set
+        chunk_type_filter = chunk_types[0] if chunk_types and len(chunk_types) == 1 else None
+        all_chunks = knowledge_store.get_chunks_filtered(
+            chunk_type=chunk_type_filter,
+            domain_tag=domain_tag,
+            limit=1000,
+        )
 
         if not all_chunks:
             return []
 
-        # Filter by type if specified
-        if chunk_types:
+        # Filter by multiple types if specified (client-side for now)
+        if chunk_types and len(chunk_types) > 1:
             all_chunks = [c for c in all_chunks if c["chunk_type"] in chunk_types]
 
         # Adaptive threshold — lower bar when data is sparse
@@ -200,6 +235,13 @@ def retrieve(
             })
 
         results.sort(key=lambda x: x["score"], reverse=True)
+
+        elapsed = time.time() - start_time
+        logger.info(
+            "RAG retrieval: %d candidates -> %d results in %.3fs (domain=%s, type=%s)",
+            len(all_chunks), len(results[:top_k]), elapsed, domain_tag or "all", chunk_type_filter or "all",
+        )
+
         return results[:top_k]
 
     except Exception as e:

@@ -103,12 +103,12 @@ class CircuitBreaker:
                 logger.info("Circuit '%s' recovered → CLOSED", self.name)
                 # ML: persist recovery event
                 try:
-                    from src.ml.feedback import record_circuit_event
+                    from src.agents.registry import registry
                     recovery_time = time.monotonic() - self._last_failure_time if self._last_failure_time else 0
-                    record_circuit_event(
+                    registry.record_circuit_event(
                         agent_id=self.name,
                         event_type="recovery",
-                        recovery_time_sec=recovery_time,
+                        reason=f"recovery_time_sec={recovery_time:.2f}",
                     )
                 except Exception:
                     pass

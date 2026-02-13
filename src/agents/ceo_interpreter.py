@@ -11,12 +11,16 @@ Uses the CEO agent (Opus) to interpret ambiguous input.
 """
 
 import json
+import logging
 import os
 
 import anthropic
 
+from src.agents.intent_classifier import IntentType, intent_classifier
 from src.agents.registry import registry
 from src.config import get_key as _load_key
+
+logger = logging.getLogger("nexus.ceo_interpreter")
 
 CEO_INTERPRETER_PROMPT = """You are the CEO's chief interpreter at NEXUS. Garrett (the human CEO) has
 sent a message. Your job is to classify it and extract structured intent.
@@ -97,52 +101,26 @@ Respond ONLY with valid JSON in this exact format:
 async def interpret_ceo_input(message: str) -> dict:
     """
     Interpret natural language from Garrett and return structured intent.
-    Uses a fast pre-filter for casual messages, then Haiku for classification.
+    Uses IntentClassifier for fast pre-classification, then Haiku for detailed classification.
     """
-    import re
+    # FAST PRE-CLASSIFICATION: Use IntentClassifier for pattern-based detection
+    pre_intent = intent_classifier.classify(message)
+    logger.info(
+        "Pre-classified intent: %s (confidence=%.2f)",
+        pre_intent.intent.value,
+        pre_intent.confidence,
+    )
 
-
-    # FAST PRE-FILTER: catch obviously casual messages without hitting the API
-    casual_patterns = [
-        r'^(hey|hi|hello|yo|sup|whats up|what\'s up|howdy|morning|afternoon|evening)\b',
-        r'^(how\'s it going|how are you|hows it going|how ya doing|how you doing)',
-        r'^(how\'s your day|hows your day|how was your)',
-        r'^(thanks|thank you|thx|ty|appreciate it|cheers)',
-        r'^(lol|lmao|haha|heh|nice|cool|dope|sick|wow|damn|yep|nope|yea|yeah|nah)',
-        r'^(good morning|good night|gn|gm|good evening)',
-        r'^(im tired|i\'m tired|im exhausted|i\'m exhausted|long day|rough day)',
-        r'^(what\'s good|whats good|what\'s new|whats new|what\'s happening)',
-        r'^(just checking in|checking in|just wanted to say)',
-        r'^(brb|gtg|gotta go|be right back|talk later|ttyl)',
-    ]
-
-    msg_lower = message.lower().strip()
-    for pattern in casual_patterns:
-        if re.match(pattern, msg_lower):
-            return {
-                "category": "CONVERSATION",
-                "sub_type": "chat",
-                "summary": message[:100],
-                "details": {"mood": "neutral", "message": message},
-                "_raw": "",
-                "_cost": 0,
-            }
-
-    # Also catch very short messages (< 6 words, no technical terms) as conversation
-    word_count = len(message.split())
-    technical_signals = ["build", "create", "deploy", "fix", "hire", "fire", "show",
-                         "kpi", "cost", "status", "org", "report", "scan", "agent",
-                         "pdf", "docx", "pptx", "presentation", "document", "slide"]
-    has_technical = any(t in msg_lower for t in technical_signals)
-
-    if word_count <= 5 and not has_technical:
+    # High-confidence CONVERSATION results can skip LLM classification (cost optimization)
+    if pre_intent.intent == IntentType.CONVERSATION and pre_intent.confidence >= 0.9:
         return {
             "category": "CONVERSATION",
             "sub_type": "chat",
             "summary": message[:100],
-            "details": {"mood": "neutral", "message": message},
+            "details": {"mood": pre_intent.extracted_entities.get("mood", "neutral"), "message": message},
             "_raw": "",
             "_cost": 0,
+            "_pre_classified": True,
         }
 
     # For real work messages: use Haiku for classification (faster + cheaper than Sonnet)

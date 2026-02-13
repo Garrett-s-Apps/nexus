@@ -153,6 +153,16 @@ class AgentRegistry:
                 ordered_by TEXT DEFAULT 'garrett'
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS circuit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                reason TEXT DEFAULT '',
+                timestamp TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_circuit_agent ON circuit_events(agent_id)")
         conn.commit()
         conn.close()
 
@@ -492,6 +502,44 @@ class AgentRegistry:
             "INSERT INTO org_changelog (timestamp, action, agent_id, details) VALUES (?, ?, ?, ?)",
             (time.time(), action, agent_id, details),
         )
+
+    # ============================================
+    # CIRCUIT BREAKER EVENTS
+    # ============================================
+
+    def record_circuit_event(self, agent_id: str, event_type: str, reason: str = ""):
+        """Record a circuit breaker event for reliability tracking."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "INSERT INTO circuit_events (agent_id, event_type, reason, timestamp) VALUES (?, ?, ?, ?)",
+            (agent_id, event_type, reason, time.time()),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_agent_reliability(self, agent_id: str, window_hours: int = 24) -> dict:
+        """Get agent reliability metrics from circuit breaker events."""
+        conn = sqlite3.connect(self.db_path)
+        cutoff = time.time() - (window_hours * 3600)
+
+        trips = conn.execute(
+            "SELECT COUNT(*) FROM circuit_events WHERE agent_id=? AND event_type='trip' AND timestamp >= ?",
+            (agent_id, cutoff),
+        ).fetchone()[0]
+
+        recoveries = conn.execute(
+            "SELECT COUNT(*) FROM circuit_events WHERE agent_id=? AND event_type='recovery' AND timestamp >= ?",
+            (agent_id, cutoff),
+        ).fetchone()[0]
+
+        conn.close()
+
+        return {
+            "agent_id": agent_id,
+            "circuit_trips": trips,
+            "recoveries": recoveries,
+            "window_hours": window_hours,
+        }
 
 
 # Singleton

@@ -105,12 +105,12 @@ def predict_escalation(agent_id: str, model_tier: str, task_description: str) ->
     model = _get_model("escalation_predictor", _train_escalation_model)
     if model is None:
         # Fall back to historical rate
-        stats = ml_store.get_agent_reliability(agent_id)
+        from src.agents.registry import registry
+        stats = registry.get_agent_reliability(agent_id)
         if stats["circuit_trips"] > 0:
             return {
                 "p_escalation": None,
                 "historical_trips": stats["circuit_trips"],
-                "avg_recovery_sec": stats["avg_recovery_sec"],
                 "suggestion": "monitor" if stats["circuit_trips"] < 3 else "pre_upgrade",
             }
         return {"p_escalation": None, "reason": "insufficient data"}

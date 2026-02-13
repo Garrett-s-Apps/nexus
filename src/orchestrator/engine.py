@@ -20,6 +20,9 @@ from src.agents.base import Agent, Decision, allm_call
 from src.agents.implementations import create_agent, create_all_agents, extract_json
 from src.agents.org_chart import HAIKU, ORG_CHART, SONNET
 from src.memory.store import memory
+from src.ml import feedback as ml_feedback
+from src.ml.router import predict_best_agent
+from src.ml.similarity import analyze_new_directive, format_briefing
 from src.resilience.circuit_breaker import CircuitOpenError, breaker_registry
 from src.resilience.escalation import escalation_chain
 
@@ -127,6 +130,15 @@ class ReasoningEngine:
 
     async def start(self):
         memory.emit_event("engine", "starting", {})
+
+        # Initialize ML learning store
+        try:
+            from src.ml.store import ml_store
+            ml_store.init()
+            logger.info("ML learning store initialized")
+        except Exception as e:
+            logger.warning("ML store init failed (non-fatal): %s", e)
+
         self.agents = create_all_agents()
         self._last_event_id = memory.get_latest_event_id()
         self.running = True
@@ -189,6 +201,15 @@ class ReasoningEngine:
         did = directive["id"]
         await self._notify("On it. Breaking down and starting immediately.", did)
 
+        # ML: analyze against historical directives
+        try:
+            analysis = analyze_new_directive(directive["text"])
+            if analysis["has_precedent"]:
+                briefing = format_briefing(analysis)
+                await self._notify(f"*ML Intelligence Briefing:*\n{briefing}", did)
+        except Exception as e:
+            logger.debug("ML briefing skipped: %s", e)
+
         count = await fast_decompose(directive["text"], did)
         if not count:
             await self._notify("Couldn't decompose. Can you be more specific?", did)
@@ -242,22 +263,32 @@ class ReasoningEngine:
 
     def _match(self, task, engineer_ids, now):
         text = (task.get("title","") + " " + task.get("description","")).lower()
+
+        # Filter to available engineers (not running, not on cooldown)
+        available = [
+            eid for eid in engineer_ids
+            if self.agents.get(eid)
+            and not self.agents[eid].is_running
+            and now - self._cooldowns.get(f"eng:{eid}", 0) >= self._cooldown_s
+        ]
+        if not available:
+            return None
+
+        # Try ML-based routing first
+        ml_pick = predict_best_agent(text, available)
+        if ml_pick:
+            return ml_pick
+
+        # Keyword fallback
         is_fe = any(w in text for w in ["frontend","ui","component","page","css","react","html"])
         is_be = any(w in text for w in ["backend","api","database","server","auth","endpoint","python"])
 
-        for eid in engineer_ids:
-            a = self.agents.get(eid)
-            if not a or a.is_running: continue
-            if now - self._cooldowns.get(f"eng:{eid}", 0) < self._cooldown_s: continue
+        for eid in available:
+            a = self.agents[eid]
             if is_fe and a.specialty == "frontend": return eid
             if is_be and a.specialty == "backend": return eid
 
-        for eid in engineer_ids:
-            a = self.agents.get(eid)
-            if not a or a.is_running: continue
-            if now - self._cooldowns.get(f"eng:{eid}", 0) < self._cooldown_s: continue
-            return eid
-        return None
+        return available[0]
 
     async def _check_build_done(self, did):
         board = memory.get_board_tasks(did)
@@ -431,6 +462,20 @@ class ReasoningEngine:
             completed_tasks = [t for t in board if t["status"] == "complete"] if board else []
             task_summary = "\n".join(f"  - {t['title']}" for t in completed_tasks[:10])
             project_path = os.environ.get("NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus"))
+
+            # ML: record directive completion for similarity search
+            try:
+                directive = memory.get_directive(did)
+                if directive:
+                    ml_feedback.record_directive_complete(
+                        directive_id=did,
+                        directive_text=directive["text"],
+                        total_tasks=len(completed_tasks),
+                        outcome="complete",
+                    )
+            except Exception as ml_err:
+                logger.debug("ML directive feedback failed: %s", ml_err)
+
             await self._notify(
                 f"*Project complete!* Code built, tested, reviewed, and plugin-verified.\n\n"
                 f"*Delivered {len(completed_tasks)} task(s):*\n{task_summary}\n\n"
@@ -448,11 +493,31 @@ class ReasoningEngine:
 
         breaker = breaker_registry.get(agent_id)
 
+        start_time = time.time()
         try:
             # Wrap execution in circuit breaker
             await breaker.call(agent.execute(decision, directive_id))
             # Success: reset escalation retry count
             escalation_chain.reset_retries(agent_id)
+
+            # ML: record successful task outcome
+            try:
+                task_id = getattr(decision, 'task_id', '') or ''
+                defects = memory.get_defects_for_task(task_id) if task_id else []
+                ml_feedback.record_task_outcome(
+                    directive_id=directive_id,
+                    task_id=task_id,
+                    agent_id=agent_id,
+                    task_description=getattr(decision, 'action', ''),
+                    outcome="complete",
+                    specialty=getattr(agent, 'specialty', ''),
+                    duration_sec=time.time() - start_time,
+                    defect_count=len(defects),
+                    qa_cycles=self._qa_cycles.get(directive_id, 0),
+                    model=ORG_CHART.get(agent_id, {}).get("model", ""),
+                )
+            except Exception as ml_err:
+                logger.debug("ML feedback recording failed: %s", ml_err)
 
         except CircuitOpenError as e:
             # Circuit is open, skip and try escalation
@@ -462,6 +527,15 @@ class ReasoningEngine:
                 "time_until_retry": e.time_until_retry,
                 "action": getattr(decision, 'action', ''),
             })
+
+            # ML: persist circuit breaker event
+            ml_feedback.record_circuit_event(
+                agent_id=agent_id,
+                event_type="trip",
+                failure_count=breaker.failure_count,
+                model=ORG_CHART.get(agent_id, {}).get("model", ""),
+                task_type=getattr(decision, 'action', '')[:100],
+            )
 
             # Attempt escalation to higher-tier agent
             agent_config = ORG_CHART.get(agent_id, {})
@@ -473,6 +547,14 @@ class ReasoningEngine:
                     agent_id,
                     f"Circuit open, escalating to {upgrade_model}",
                     tier=escalation_chain.TIER_MAP.get(upgrade_model, 2)
+                )
+                # ML: persist escalation event
+                ml_feedback.record_escalation(
+                    agent_id=agent_id,
+                    from_model=current_model,
+                    to_model=upgrade_model,
+                    reason=str(e)[:200],
+                    task_type=getattr(decision, 'action', '')[:100],
                 )
                 await self._notify(
                     f"⚠️ {agent.name} circuit open. Escalating to {upgrade_model} tier.",
@@ -505,6 +587,21 @@ class ReasoningEngine:
 
             if hasattr(decision, 'task_id') and decision.task_id:
                 memory.fail_board_task(decision.task_id, error=str(e)[:500])
+
+            # ML: record failed task outcome
+            try:
+                ml_feedback.record_task_outcome(
+                    directive_id=directive_id,
+                    task_id=getattr(decision, 'task_id', '') or '',
+                    agent_id=agent_id,
+                    task_description=getattr(decision, 'action', ''),
+                    outcome="failed",
+                    specialty=getattr(agent, 'specialty', ''),
+                    duration_sec=time.time() - start_time,
+                    model=ORG_CHART.get(agent_id, {}).get("model", ""),
+                )
+            except Exception as ml_err:
+                logger.debug("ML feedback recording failed: %s", ml_err)
 
     async def handle_message(self, message, source="slack", thread_ts=None):
         memory.add_message("user", message, source)

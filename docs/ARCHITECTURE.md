@@ -1,6 +1,6 @@
 # NEXUS: Enterprise Multi-Agent Orchestration System
 
-## Architecture Specification v1.0
+## Architecture Specification v1.3
 
 ---
 
@@ -2220,6 +2220,298 @@ Garrett on phone:
 - [ ] Secure tunnel for remote access
 - [ ] Happy Coder mobile integration
 - [ ] Neovim Lua plugin (optional, if Garrett adopts Neovim)
+
+---
+
+## 29. Machine Learning Self-Learning System
+
+### 29.1 Design Philosophy
+
+NEXUS learns from its own execution history. Every task outcome, cost event, circuit breaker trip, and escalation becomes training data that improves future decisions. The system is designed around three principles:
+
+1. **Cold-Start Graceful Degradation**: Every ML feature has a non-ML fallback. The system works identically on day one (keyword routing, no predictions) and progressively improves as data accumulates.
+2. **Separation of Concerns**: ML data lives in its own SQLite database (`~/.nexus/ml.db`), completely separate from core state (`memory.db`, `cost.db`, `kpi.db`). ML failures never affect core orchestration.
+3. **Automatic Retraining**: Models retrain themselves as new data arrives — no manual intervention required.
+
+### 29.2 Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Engine Pipeline                        │
+│                                                          │
+│  _kickoff() ──► ML Intelligence Briefing                 │
+│      │              (similarity search + cost estimate)   │
+│      ▼                                                   │
+│  _match()  ──► ML Agent Router                           │
+│      │              (TF-IDF + RandomForest)               │
+│      │         Falls back to keyword matching if <20      │
+│      │         training samples                          │
+│      ▼                                                   │
+│  _safe_run() ──► Records outcome on completion/failure   │
+│      │                                                   │
+│      ▼                                                   │
+│  _check_plugin_review_done() ──► Stores directive        │
+│                                   embedding on complete   │
+└────────────┬────────────────────────────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────────────────────────┐
+│                  Feedback Loop (feedback.py)              │
+│                                                          │
+│  record_task_outcome()  ──► task_outcomes table           │
+│  record_directive_complete() ──► directive_embeddings     │
+│  record_circuit_event() ──► circuit_events table         │
+│  record_escalation()    ──► escalation_events table      │
+│                                                          │
+│  After every 10 new outcomes: _trigger_retrain()         │
+│      ├── Router retrain (router.py)                      │
+│      └── Predictor retrain (predictor.py)                │
+└────────────┬────────────────────────────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────────────────────────┐
+│                   ML Store (store.py)                     │
+│                   ~/.nexus/ml.db                          │
+│                                                          │
+│  ┌──────────────────┐  ┌──────────────────────┐         │
+│  │  task_outcomes    │  │ directive_embeddings  │         │
+│  │  (agent+task+     │  │ (384-dim vectors +   │         │
+│  │   result+cost+    │  │  cost/duration/       │         │
+│  │   duration+       │  │  outcome metadata)    │         │
+│  │   defects)        │  │                       │         │
+│  └──────────────────┘  └──────────────────────┘         │
+│  ┌──────────────────┐  ┌──────────────────────┐         │
+│  │  circuit_events   │  │  escalation_events   │         │
+│  │  (trip/recovery   │  │  (from_model →       │         │
+│  │   with timing)    │  │   to_model + reason)  │         │
+│  └──────────────────┘  └──────────────────────┘         │
+│  ┌──────────────────────────────────────────────┐       │
+│  │  model_artifacts                              │       │
+│  │  (serialized sklearn pipelines, versioned)    │       │
+│  └──────────────────────────────────────────────┘       │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 29.3 ML Store — Data Layer
+
+**File**: `src/ml/store.py`
+**Database**: `~/.nexus/ml.db` (SQLite with WAL journaling)
+
+The ML store maintains five tables that capture every learning signal produced during NEXUS operations:
+
+| Table | Purpose | Key Columns |
+|-------|---------|-------------|
+| `task_outcomes` | Links agent assignment to result quality | `agent_id`, `task_description`, `outcome`, `cost_usd`, `duration_sec`, `defect_count`, `model` |
+| `directive_embeddings` | Stores dense vector embeddings for semantic similarity search | `directive_id`, `directive_text`, `embedding` (BLOB), `total_cost`, `total_tasks` |
+| `circuit_events` | Persists circuit breaker trip/recovery events (previously in-memory only, lost on restart) | `agent_id`, `event_type` (trip/recovery), `failure_count`, `recovery_time_sec` |
+| `escalation_events` | Records model tier escalation events | `agent_id`, `from_model`, `to_model`, `reason`, `task_type` |
+| `model_artifacts` | Versioned serialized sklearn pipeline objects | `name`, `version`, `artifact` (BLOB), `metrics` (JSON), `training_samples` |
+
+**Why separate from core state?** ML data is experimental and high-volume. Keeping it in its own database means:
+- ML failures (corrupt model, bad training data) never corrupt core orchestration state
+- The ML database can be deleted and rebuilt from scratch without losing any operational data
+- Different retention policies — core state is permanent, ML data can be pruned
+
+The store uses a singleton pattern (`ml_store = MLStore()`) initialized at engine startup via `ml_store.init()`.
+
+### 29.4 Agent Router — Learned Task Assignment
+
+**File**: `src/ml/router.py`
+**Model**: TF-IDF (500 features, unigrams + bigrams) → RandomForestClassifier (100 trees, balanced class weights)
+**Minimum Training Samples**: 20 successful task outcomes
+**Retrain Interval**: 3600 seconds (1 hour max frequency)
+
+**Problem**: The original `_match()` in `engine.py` used keyword lists to route tasks to agents (e.g., "frontend" → `fe_engineer_1`, "API" → `be_engineer_1`). This was brittle, missed synonyms, and couldn't learn from outcomes.
+
+**Solution**: Train a text classifier on historical task descriptions paired with the agent that successfully completed them. Only successful outcomes are used for training — the model learns "what works," not "what was tried."
+
+**How it works**:
+1. `predict_best_agent(task_description, available_agents)` is called by `engine._match()`
+2. The TF-IDF vectorizer converts the task description into a 500-dimensional feature vector
+3. The RandomForest classifier outputs per-class probabilities (one class per agent)
+4. Only agents currently available (not running, not in cooldown) are considered
+5. The agent with the highest predicted success probability is returned
+
+**Cold-start behavior**: When fewer than 20 training samples exist, `predict_best_agent()` returns `None`. The engine falls back to keyword matching in `_match()`. As agents complete tasks, outcomes accumulate automatically. After 20 successful completions, the ML router activates.
+
+**Cross-validation**: When 50+ samples exist, 5-fold cross-validation scores are computed and stored with the model artifact for monitoring accuracy.
+
+### 29.5 Prediction Models
+
+**File**: `src/ml/predictor.py`
+**Minimum Training Samples**: 15
+**Retrain Interval**: 3600 seconds
+
+Three prediction models provide intelligence before and during task execution:
+
+#### 29.5.1 Cost Predictor
+
+**Model**: TF-IDF (300 features) → RandomForestRegressor (50 trees, max depth 8)
+**Input**: Directive text
+**Output**: Predicted total cost with confidence interval
+
+Aggregates per-directive costs from `task_outcomes` and trains a regression model. Uses per-tree predictions to compute a standard deviation, giving a confidence interval: `[predicted - 2s, predicted + 2s]`.
+
+**Why RandomForest for cost?** Per-tree predictions provide natural uncertainty estimates without requiring a separate calibration step. A GradientBoosting regressor would give a single point estimate with no confidence information.
+
+#### 29.5.2 Quality Predictor
+
+**Model**: TF-IDF (300 features) → GradientBoostingClassifier (50 trees, max depth 5)
+**Input**: `[agent_id] task_description` (agent identity encoded in text features)
+**Output**: P(first-pass approval), P(defects > 0), suggested action
+
+Labels are derived from `defect_count`: zero defects = "clean", any defects = "defective". The model predicts the probability of clean output for a given agent + task combination.
+
+**Suggested actions based on P(success)**:
+- `>= 0.5` → `proceed` — assign normally
+- `0.3 - 0.5` → `consider_upgrade` — consider using a higher model tier
+- `< 0.3` → `assign_reviewer` — pre-assign a reviewer before execution begins
+
+#### 29.5.3 Escalation Predictor
+
+**Model**: TF-IDF (200 features) → GradientBoostingClassifier (30 trees, max depth 4)
+**Input**: `[agent_id:model_tier] task_description`
+**Output**: P(escalation needed), suggested preemptive action
+
+Training labels combine escalation history with task outcomes: a task is labeled "escalated" if its agent has escalation events AND the task did not complete successfully. Requires at least 2 classes (both "escalated" and "normal") to train.
+
+**Fallback**: When the model isn't ready, falls back to historical reliability stats from `circuit_events` — if an agent has tripped circuit breakers before, that information is surfaced even without a trained model.
+
+### 29.6 Embedding Engine — Semantic Similarity
+
+**File**: `src/ml/embeddings.py`
+**Primary Model**: sentence-transformers `all-MiniLM-L6-v2` (384-dimensional dense embeddings)
+
+Converts directive text into dense vector representations for "we did something similar before" retrieval.
+
+**Three-tier fallback strategy**:
+
+| Tier | Method | Quality | Speed | When Used |
+|------|--------|---------|-------|-----------|
+| 1 | sentence-transformers | High semantic similarity | ~50ms | `sentence-transformers` installed |
+| 2 | TF-IDF | Keyword-level similarity | ~5ms | Only `scikit-learn` available |
+| 3 | Hash-based pseudo-embedding | Deterministic but low quality | <1ms | Neither library available |
+
+**Why this fallback chain?** NEXUS must work in environments where ML dependencies may not be installed (CI, minimal Docker images, first-time setup before `pip install`). The hash fallback ensures the embedding API never raises — callers always get a 384-dim float32 vector.
+
+**Storage**: Embeddings are serialized and stored as BLOBs in the `directive_embeddings` table. Cosine similarity search runs in-memory over all stored embeddings (efficient for the expected volume of hundreds to low thousands of directives).
+
+### 29.7 Directive Similarity Search
+
+**File**: `src/ml/similarity.py`
+
+When a new directive arrives at `_kickoff()`, the similarity engine:
+
+1. Encodes the directive text into a 384-dim embedding
+2. Compares against all stored directive embeddings via cosine similarity
+3. Returns the top-K matches above a threshold (default: 0.3)
+4. Augments matches with historical metadata: total cost, task count, duration, outcome
+
+This enables the **ML Intelligence Briefing** — logged at directive kickoff with:
+- **Prior art**: "3 similar directives found, most recent cost $2.45 across 8 tasks"
+- **Cost estimate**: Predicted cost with confidence interval from the cost predictor
+- **Risk assessment**: Based on historical failure rates of involved agents and predicted escalation probability
+- **Agent recommendations**: Which agents have the best track record on similar work
+
+### 29.8 Feedback Loop — Closing the Learning Gap
+
+**File**: `src/ml/feedback.py`
+
+The feedback module is the bridge between execution and learning. It is called at four integration points in the engine:
+
+| Integration Point | What's Recorded | Why |
+|-------------------|----------------|-----|
+| `_safe_run()` success | Task outcome + cost + duration + defect count | Agent-task pairing effectiveness |
+| `_safe_run()` failure | Failed task outcome | Negative signal for routing |
+| `_safe_run()` circuit open | Circuit event + escalation event | Reliability modeling |
+| `_check_plugin_review_done()` | Directive embedding + total metrics | Similarity search corpus |
+
+**Auto-retraining**: After every 10 new task outcomes (`RETRAIN_THRESHOLD`), `_trigger_retrain()` fires automatically, retraining:
+- The agent router (router.py)
+- All three prediction models (predictor.py)
+
+Retraining is throttled to at most once per hour per model (`RETRAIN_INTERVAL = 3600`). This prevents thrashing during burst execution while ensuring models stay current.
+
+### 29.9 Circuit Breaker Persistence
+
+**Before ML**: Circuit breaker state (`src/resilience/circuit_breaker.py`) was entirely in-memory. Agent reliability history was lost on every restart.
+
+**After ML**: The circuit breaker's `_on_success()` method now persists recovery events to `ml.db` when a circuit transitions from OPEN/HALF_OPEN back to CLOSED. This captures:
+- Which agent recovered
+- How long recovery took (monotonic clock delta from last failure)
+- The model tier and task type involved
+
+This persistent reliability data feeds the escalation predictor, enabling it to identify agents that are prone to failures before assigning them to tasks.
+
+### 29.10 ML API Endpoints
+
+Four REST endpoints expose ML capabilities via the NEXUS server (`src/server/server.py`):
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/ml/status` | GET | Learning system status: model readiness, training data counts, retrain state |
+| `/ml/train` | POST | Force retrain all models (router + 3 predictors) |
+| `/ml/similar` | POST | Find similar past directives for given text (body: `{"text": "...", "top_k": 5}`) |
+| `/ml/agent/{agent_id}/stats` | GET | ML-derived performance stats: success rate, avg cost, avg defects |
+
+### 29.11 Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `numpy` | >= 1.26.0 | Array operations, per-tree prediction aggregation |
+| `scikit-learn` | >= 1.5.0 | TF-IDF vectorization, RandomForest, GradientBoosting, Pipeline |
+| `sentence-transformers` | >= 3.0.0 | Dense semantic embeddings (all-MiniLM-L6-v2) |
+
+All three are optional at runtime — the system degrades gracefully without them. `scikit-learn` is required for any ML routing or prediction. `sentence-transformers` is required only for high-quality semantic similarity; TF-IDF provides a reasonable fallback.
+
+### 29.12 Data Flow Summary
+
+```
+Directive arrives
+    │
+    ├── encode(text) ──► 384-dim embedding
+    │       │
+    │       └── find_similar() ──► "3 similar directives, avg cost $2.45"
+    │
+    ├── predict_cost(text) ──► "$3.12 +/- $0.80"
+    │
+    └── decompose into tasks
+            │
+            ├── _match(task) ──► predict_best_agent(text, available)
+            │       │                   │
+            │       │                   ├── ML pick (if >= 20 samples)
+            │       │                   └── keyword fallback
+            │       │
+            │       └── Assign to agent
+            │
+            └── _safe_run(agent, task)
+                    │
+                    ├── Success ──► record_task_outcome(outcome="complete")
+                    │
+                    ├── Failure ──► record_task_outcome(outcome="failed")
+                    │
+                    └── Circuit Open ──► record_circuit_event()
+                                         record_escalation()
+
+    After 10 outcomes: retrain all models
+
+    Directive complete ──► record_directive_complete()
+                              └── store embedding for future similarity
+```
+
+### 29.13 Model Versioning and Persistence
+
+Trained models are serialized and stored in the `model_artifacts` table with:
+- **Auto-incrementing version**: Each retrain bumps the version counter
+- **Metrics snapshot**: Training sample count, cross-validation accuracy (for router), stored as JSON
+- **Timestamp**: When the model was last updated
+
+On engine startup, the system attempts to load persisted models before training new ones:
+1. Check in-memory cache (fastest)
+2. Load from `ml.db` model_artifacts table (survives restarts)
+3. Train fresh from outcome data (cold start)
+
+This three-tier loading strategy means models survive process restarts without retraining, while still being able to rebuild from raw data if the artifacts table is cleared.
 
 ---
 

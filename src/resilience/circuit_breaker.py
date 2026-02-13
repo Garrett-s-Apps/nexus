@@ -96,10 +96,22 @@ class CircuitBreaker:
 
     async def _on_success(self):
         async with self._lock:
+            was_recovering = self._state in (CircuitState.HALF_OPEN, CircuitState.OPEN)
             self._failure_count = 0
             self._success_count += 1
-            if self._state in (CircuitState.HALF_OPEN, CircuitState.OPEN):
+            if was_recovering:
                 logger.info("Circuit '%s' recovered → CLOSED", self.name)
+                # ML: persist recovery event
+                try:
+                    from src.ml.feedback import record_circuit_event
+                    recovery_time = time.monotonic() - self._last_failure_time if self._last_failure_time else 0
+                    record_circuit_event(
+                        agent_id=self.name,
+                        event_type="recovery",
+                        recovery_time_sec=recovery_time,
+                    )
+                except Exception:
+                    pass
             self._state = CircuitState.CLOSED
 
     async def _on_failure(self, error: Exception):

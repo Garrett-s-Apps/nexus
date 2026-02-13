@@ -20,63 +20,16 @@ from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
+from src.agents.haiku_intake import format_with_tool_result, run_haiku_intake
+from src.agents.intake_dispatcher import dispatch
+from src.agents.registry import registry
 from src.config import get_key
-from src.documents.generator import (
-    _gather_internal_context,
-    _gather_web_context,
-    _needs_web_enrichment,
-    generate_document,
-)
+from src.documents.generator import generate_document
 from src.memory.store import memory
 from src.ml.rag import build_rag_context, ingest_conversation
 from src.ml.similarity import analyze_new_directive
 from src.observability.logging import thread_ts_var
 from src.sessions.cli_pool import CLISession, cli_pool
-
-
-async def classify_doc_request(text: str) -> dict | None:
-    """Use Haiku to determine the best response format for a message.
-
-    Returns:
-        {"format": "pdf"|"docx"|"pptx"|"image"} — generate a file
-        {"format": "text"} — respond with formatted text (enriched with internal data)
-        None — not a data/document request, route normally
-    """
-    try:
-        from src.agents.base import allm_call
-        from src.agents.org_chart import HAIKU
-        prompt = f"""Determine the best response format for this message.
-Message: "{text}"
-
-Respond with JSON: {{"doc": true, "format": "pdf"|"docx"|"pptx"|"image"|"text", "title": "short title"}}
-Or if the message is an ACTION COMMAND or general chat: {{"doc": false}}
-
-CRITICAL: If the message is an ACTION (hire, fire, deploy, build, fix, ship, run, test, etc.),
-respond with {{"doc": false}}. Actions are NOT document requests.
-
-Rules for choosing format:
-- {{"doc": false}} for actions: hire someone, fire someone, deploy, build, fix bugs, run tests, etc.
-- If the user explicitly says a format (pdf, word, slides, image, etc.), use THAT format
-- "text" for quick lookups like "show me X", "what's our X", "list the X", "who reports to X" — answer inline
-- "image" for visual diagrams, flowcharts, architecture diagrams — when the user wants a VISUAL representation
-- "pdf" for formal reports, summaries, one-pagers, or anything they'd want to download/share
-- "docx" for longer documents, specs, proposals, letters
-- "pptx" for presentations, decks, pitches
-- When in doubt between "text" and a file: prefer "text" for quick info, prefer a file for formal/shareable deliverables
-- "show me the org chart" = "text" (quick view). "send me a PDF of the org chart" = "pdf" (formal deliverable)
-- "hire a SF team" = {{"doc": false}} (action, not a document!)"""
-
-        raw, _ = await allm_call(prompt, HAIKU, max_tokens=200)
-        cleaned = raw.strip()
-        if "```" in cleaned:
-            cleaned = cleaned.split("```json")[-1].split("```")[0].strip() if "```json" in cleaned else cleaned.split("```")[1].strip()
-        import json
-        result = json.loads(cleaned)
-        if result.get("doc"):
-            return {"format": result.get("format", "text"), "title": result.get("title", "")}
-    except Exception as e:
-        print(f"[Slack] Doc classification failed (non-fatal): {e}")
-    return None
 
 
 def md_to_slack(text: str) -> str:
@@ -609,160 +562,134 @@ async def start_slack_listener():
             except Exception:
                 pass
 
-            # LLM-based: detect if the message is asking for a document or data
-            doc_info = await classify_doc_request(text)
-            if doc_info:
-                memory.emit_event("slack", "doc_classified", {
-                    "format": doc_info["format"], "title": doc_info.get("title", ""),
-                    "thread_ts": thread_ts,
-                })
-                if doc_info["format"] == "text":
-                    # Enrich with internal + web data, let engine respond with formatted text
-                    internal_context = await _gather_internal_context(text)
-                    web_context = ""
-                    search_query = _needs_web_enrichment(text, bool(internal_context))
-                    if search_query:
-                        web_context = await _gather_web_context(search_query)
-                    context_parts = []
-                    if internal_context:
-                        context_parts.append(internal_context)
-                    if web_context:
-                        context_parts.append(web_context)
-                    if context_parts:
-                        text = (
-                            f"{text}\n\n"
-                            f"Use the following real data to answer. "
-                            f"Prefer internal data over web results. "
-                            f"Format your response for Slack readability.\n\n"
-                            + "\n".join(context_parts)
-                        )
-                    # Fall through to engine/CLI below
-                else:
-                    try:
-                        if thinking_msg:
-                            await web_client.chat_update(
-                                channel=channel_id, ts=thinking_msg,
-                                text=f":page_facing_up: Generating {doc_info['format'].upper()}...")
-                        memory.emit_event("slack", "doc_generating", {
-                            "format": doc_info["format"], "thread_ts": thread_ts,
-                        })
-                        result = await generate_document(text, doc_info)
-                        if "error" in result:
-                            memory.emit_event("slack", "doc_failed", {
-                                "error": result["error"][:200], "thread_ts": thread_ts,
-                            })
-                            await web_client.chat_postMessage(
-                                channel=channel_id,
-                                text=f":warning: Document generation failed: {result['error']}",
-                                thread_ts=thread_ts)
-                        else:
-                            memory.emit_event("slack", "doc_complete", {
-                                "format": result["format"],
-                                "title": result.get("title", "Document"),
-                                "thread_ts": thread_ts,
-                            })
-                            await upload_file_to_slack(
-                                web_client, channel_id,
-                                result["filepath"],
-                                title=result.get("title", "Document"),
-                                comment=f"Generated {result['format'].upper()}: *{result.get('title', 'Document')}*",
-                                thread_ts=thread_ts)
-                            # Ingest doc generation into RAG
-                            try:
-                                ingest_conversation(
-                                    thread_ts, text,
-                                    f"Generated {result['format']}: {result.get('title', 'Document')}",
-                                )
-                            except Exception:
-                                pass
-                        if thinking_msg:
-                            try:
-                                await web_client.chat_delete(channel=channel_id, ts=thinking_msg)
-                            except Exception:
-                                pass
-                        return
-                    except Exception as e:
-                        print(f"[Slack] Document generation failed, falling through to CLI: {e}")
+            # Get org context for Haiku intake
+            org_summary = registry.get_org_summary()
+            active = memory.get_active_directive()
+            status_brief = f"Active directive: {active['text'][:100]}" if active else "Idle — no active directives"
 
-            # All messages go to Claude Code (Opus). Retry once on failure
-            # instead of falling back to the basic engine.
-            response = None
-            project_path = os.environ.get("NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus"))
-
-            # Fetch thread history so follow-up messages have conversational context.
-            # Each CLI send() is a fresh one-shot process — without this, the CLI
-            # has zero knowledge of prior messages in the thread.
+            # Fetch thread history BEFORE intake so Haiku has conversation context
             thread_history = await _fetch_thread_history(
                 web_client, channel_id, thread_ts, bot_user_id,
                 current_ts=event.get("ts", ""),
             )
 
-            # Build ML intelligence briefing + RAG context off the event loop
-            # (embedding computation is CPU-bound — keep asyncio responsive)
-            ml_briefing = await asyncio.to_thread(_build_ml_briefing, text)
-            rag_context = await asyncio.to_thread(
-                build_rag_context, text, 8000, {f"thread:{thread_ts}"},
+            # Run Haiku intake to classify intent and route appropriately
+            intake_result = await run_haiku_intake(
+                message=text,
+                thread_history=thread_history,
+                org_summary=org_summary,
+                system_status_brief=status_brief,
             )
 
-            max_attempts = 3
-            for attempt in range(max_attempts):
-                is_retry = attempt > 0
-                cli_message = _build_threaded_prompt(
-                    thread_history, text, is_retry=is_retry,
-                    ml_briefing=ml_briefing, rag_context=rag_context,
+            response = None
+            project_path = os.environ.get("NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus"))
+
+            # Handle based on tool called
+            if intake_result.tool_called is None:
+                # Pure conversation — Haiku already generated the response
+                response = intake_result.response_text
+
+            elif intake_result.tool_called == "start_directive":
+                # Engineering work — use the existing CLI flow
+                directive_text = intake_result.tool_input.get("directive_text", text) if intake_result.tool_input else text
+
+                # Build ML intelligence briefing + RAG context
+                ml_briefing = await asyncio.to_thread(_build_ml_briefing, directive_text)
+                rag_context = await asyncio.to_thread(
+                    build_rag_context, directive_text, 8000, {f"thread:{thread_ts}"},
                 )
-                try:
-                    await safe_react("robot_face")
-                    session = await cli_pool.get_or_create(thread_ts, project_path)
-                    if not session.alive:
-                        # Force a fresh session
-                        session = CLISession(thread_ts, project_path)
-                        if await session.start():
-                            cli_pool._sessions[thread_ts] = session
 
-                    if session.alive:
-                        memory.emit_event("slack", "cli_routed", {
-                            "thread_ts": thread_ts,
-                            "pid": session.process.pid if session.process else None,
-                            "attempt": attempt + 1,
-                        })
-                        cli_result = await session.send(cli_message)
-                        response = cli_result.output if cli_result.succeeded else None
+                # Send to CLI pool (existing retry logic)
+                max_attempts = 3
+                for attempt in range(max_attempts):
+                    is_retry = attempt > 0
+                    cli_message = _build_threaded_prompt(
+                        thread_history, directive_text, is_retry=is_retry,
+                        ml_briefing=ml_briefing, rag_context=rag_context,
+                    )
+                    try:
+                        await safe_react("robot_face")
+                        session = await cli_pool.get_or_create(thread_ts, project_path)
+                        if not session.alive:
+                            session = CLISession(thread_ts, project_path)
+                            if await session.start():
+                                cli_pool._sessions[thread_ts] = session
+                        if session.alive:
+                            memory.emit_event("slack", "cli_routed", {
+                                "thread_ts": thread_ts,
+                                "pid": session.process.pid if session.process else None,
+                                "attempt": attempt + 1,
+                            })
+                            cli_result = await session.send(cli_message)
+                            response = cli_result.output if cli_result.succeeded else None
+                            if response and _is_garbage_response(response):
+                                response = None
+                            if response and response != "(No response from CLI)" and not response.startswith("CLI error"):
+                                if attempt > 0:
+                                    try:
+                                        from src.ml.rag import ingest_error_resolution
+                                        ingest_error_resolution(
+                                            f"CLI failed on attempts 1-{attempt} for: {text[:200]}",
+                                            f"Succeeded on attempt {attempt + 1}",
+                                            source_id=f"retry:{thread_ts}",
+                                        )
+                                    except Exception:
+                                        pass
+                                break
+                        if attempt < max_attempts - 1:
+                            await asyncio.sleep(1.5)
+                    except Exception as e:
+                        print(f"[Slack] CLI attempt {attempt + 1} error: {e}")
+                        if attempt < max_attempts - 1:
+                            await asyncio.sleep(1.5)
 
-                        # Guard: detect leaked system instructions or placeholder text
-                        if response and _is_garbage_response(response):
-                            print(f"[Slack] Garbage response detected (attempt {attempt + 1}), retrying: {response[:100]}")
-                            response = None
+                if not response or response == "(No response from CLI)" or response.startswith("CLI error"):
+                    response = "I had trouble processing that request. Could you try rephrasing?"
 
-                        # Check if CLI actually responded
-                        if response and response != "(No response from CLI)" and not response.startswith("CLI error"):
-                            # Record error resolution if we recovered from a failed attempt
-                            if attempt > 0:
-                                try:
-                                    from src.ml.rag import ingest_error_resolution
-                                    ingest_error_resolution(
-                                        f"CLI failed on attempts 1-{attempt} for: {text[:200]}",
-                                        f"Succeeded on attempt {attempt + 1}",
-                                        source_id=f"retry:{thread_ts}",
-                                    )
-                                except Exception:
-                                    pass
-                            break
+            elif intake_result.tool_called == "generate_document":
+                # Document generation — use existing generate_document flow
+                tool_input = intake_result.tool_input or {}
+                doc_type = tool_input.get("document_type", "pdf")
+                doc_desc = tool_input.get("description", text)
 
-                    if attempt < max_attempts - 1:
-                        print(f"[Slack] CLI attempt {attempt + 1} failed, retrying...")
-                        await asyncio.sleep(1.5)
-                except Exception as e:
-                    print(f"[Slack] CLI attempt {attempt + 1} error: {e}")
-                    if attempt < max_attempts - 1:
-                        await asyncio.sleep(1.5)
+                if thinking_msg:
+                    await web_client.chat_update(
+                        channel=channel_id, ts=thinking_msg,
+                        text=f":page_facing_up: Generating {doc_type.upper()}...")
 
-            if not response or response == "(No response from CLI)" or response.startswith("CLI error"):
-                memory.emit_event("slack", "cli_all_attempts_failed", {
-                    "reason": (response or "no response")[:200],
-                    "thread_ts": thread_ts,
-                })
-                response = "I had trouble processing that request. Could you try rephrasing or sending again?"
+                doc_info = {"format": doc_type, "title": doc_desc[:100]}
+                result = await generate_document(doc_desc, doc_info)
+                if "error" in result:
+                    response = f":warning: Document generation failed: {result['error']}"
+                else:
+                    await upload_file_to_slack(
+                        web_client, channel_id, result["filepath"],
+                        title=result.get("title", "Document"),
+                        comment=f"Generated {result['format'].upper()}: *{result.get('title', 'Document')}*",
+                        thread_ts=thread_ts)
+                    try:
+                        ingest_conversation(thread_ts, text, f"Generated {result['format']}: {result.get('title', 'Document')}")
+                    except Exception:
+                        pass
+                    if thinking_msg:
+                        try:
+                            await web_client.chat_delete(channel=channel_id, ts=thinking_msg)
+                        except Exception:
+                            pass
+                    memory.mark_message_processed(dedup_key, slack_ts, channel_id)
+                    return  # Document uploaded, no text response needed
+
+            elif intake_result.tool_called in ("mutate_org", "talk_to_agent"):
+                # Org change or agent communication — dispatch handles it
+                response = await dispatch(intake_result)
+
+            else:
+                # All other query tools (query_org, query_status, query_cost, query_kpi, query_ml)
+                # Dispatch executes the query and returns formatted data
+                raw_data = await dispatch(intake_result)
+
+                # Send tool result back to Haiku for natural language formatting
+                response = await format_with_tool_result(intake_result, raw_data, thread_history)
 
             memory.emit_event("slack", "response_sent", {
                 "text": (response or "")[:200], "thread_ts": thread_ts,

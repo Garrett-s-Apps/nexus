@@ -15,7 +15,8 @@ from fastapi import BackgroundTasks, FastAPI, Request
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
-from src.agents.ceo_interpreter import execute_org_change, execute_question, interpret_ceo_input
+from src.agents.haiku_intake import run_haiku_intake
+from src.agents.intake_dispatcher import dispatch
 from src.agents.org_chart_generator import generate_org_chart, update_org_chart_in_repo
 from src.agents.registry import registry
 from src.agents.sdk_bridge import cost_tracker, run_planning_agent, run_sdk_agent
@@ -176,46 +177,90 @@ async def status():
 async def handle_message(req: MessageRequest, background_tasks: BackgroundTasks):
     session_id = req.session_id or str(uuid.uuid4())
 
-    intent = await interpret_ceo_input(req.message)
-    category = intent.get("category", "DIRECTIVE")
-    summary = intent.get("summary", req.message[:100])
+    # Get org context for Haiku intake
+    org_summary = registry.get_org_summary()
 
-    if category == "ORG_CHANGE":
-        result_text = await execute_org_change(intent)
+    # Run Haiku intake
+    intake_result = await run_haiku_intake(
+        message=req.message,
+        org_summary=org_summary,
+        system_status_brief=f"Source: {req.source}",
+    )
 
+    tool = intake_result.tool_called
+
+    # Record intake event for ML feedback
+    try:
+        from src.ml.feedback import record_intake_event
+        record_intake_event(
+            message_text=req.message,
+            tool_called=tool,
+            tokens_in=intake_result.tokens_in,
+            tokens_out=intake_result.tokens_out,
+            source=req.source,
+        )
+    except Exception:
+        pass
+
+    if tool is None:
+        # Pure conversation
+        return {
+            "session_id": session_id,
+            "category": "CONVERSATION",
+            "response": intake_result.response_text,
+        }
+
+    if tool == "mutate_org":
+        result_text = await dispatch(intake_result)
+        summary = intake_result.tool_input.get("action", "org change") if intake_result.tool_input else "org change"
         if req.source == "slack":
             notify(f"*Org Change:* {summary}\n\n{result_text}")
-
         return {
             "session_id": session_id,
             "category": "ORG_CHANGE",
             "summary": summary,
             "result": result_text,
             "org_summary": registry.get_org_summary(),
-            "cost": intent.get("_cost", 0),
         }
 
-    elif category == "QUESTION":
-        answer = await execute_question(intent)
-
-        if req.source == "slack":
-            notify(f"*Q:* {summary}\n\n{answer[:2000]}")
-
+    if tool in ("query_org", "query_status", "query_cost", "query_kpi", "query_ml"):
+        result_text = await dispatch(intake_result)
         return {
             "session_id": session_id,
-            "category": "QUESTION",
-            "summary": summary,
-            "answer": answer,
-            "cost": intent.get("_cost", 0),
+            "category": "QUERY",
+            "tool": tool,
+            "result": result_text,
         }
 
-    elif category == "COMMAND":
-        command = intent.get("details", {}).get("command", "status")
-        return await run_command_internal(command, intent.get("details", {}).get("args", ""), req.source)
+    if tool == "talk_to_agent":
+        result_text = await dispatch(intake_result)
+        agent_id = intake_result.tool_input.get("agent_id", "") if intake_result.tool_input else ""
+        return {
+            "session_id": session_id,
+            "category": "AGENT_TALK",
+            "agent": agent_id,
+            "response": result_text,
+        }
 
-    else:
+    if tool == "generate_document":
+        # Handle document generation
+        tool_input = intake_result.tool_input or {}
+        doc_type = tool_input.get("document_type", "pdf")
+        doc_desc = tool_input.get("description", req.message)
+        from src.documents.generator import generate_document
+        result = await generate_document(doc_desc, {"format": doc_type, "title": doc_desc[:100]})
+        return {
+            "session_id": session_id,
+            "category": "DOCUMENT",
+            "result": result,
+        }
+
+    if tool == "start_directive":
+        # Engineering work — hand off to orchestrator
+        directive_text = intake_result.tool_input.get("directive_text", req.message) if intake_result.tool_input else req.message
+
         sessions[session_id] = {
-            "directive": req.message,
+            "directive": directive_text,
             "source": req.source,
             "project_path": req.project_path,
             "status": "running",
@@ -224,17 +269,24 @@ async def handle_message(req: MessageRequest, background_tasks: BackgroundTasks)
         }
 
         task = asyncio.create_task(
-            execute_directive_bg(session_id, req.message, req.project_path, req.source)
+            execute_directive_bg(session_id, directive_text, req.project_path, req.source)
         )
         active_runs[session_id] = task
 
         return {
             "session_id": session_id,
             "category": "DIRECTIVE",
-            "summary": summary,
+            "summary": directive_text[:100],
             "status": "started",
             "message": f"Directive received. The org is working on it. Session: {session_id}",
         }
+
+    # Fallback
+    return {
+        "session_id": session_id,
+        "category": "UNKNOWN",
+        "response": intake_result.response_text or "I didn't understand that request.",
+    }
 
 
 @app.post("/talk")

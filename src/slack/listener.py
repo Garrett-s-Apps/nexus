@@ -271,6 +271,129 @@ def get_channel_id() -> str | None:
     return _channel_id
 
 
+def _is_garbage_response(response: str) -> bool:
+    """Detect responses that are leaked instructions or placeholder templates.
+
+    When CLI exits prematurely, it can emit raw system prompt fragments or
+    template placeholders instead of real answers.
+    """
+    r = response.strip().lower()
+    # Placeholder patterns like "Completed X%, currently on section Y"
+    garbage_patterns = [
+        "e.g.,",
+        "e.g.)",
+        "completed x%",
+        "currently on section y",
+        "not started yet",
+        "provide current status",
+        "replace this with",
+        "[insert",
+        "[your ",
+        "[fill in",
+        "[placeholder",
+        "fill in the blank",
+        "your response here",
+        "write your answer",
+        "(e.g.",
+    ]
+    for pattern in garbage_patterns:
+        if pattern in r:
+            return True
+
+    # Detect bare instruction verbs followed by template-style content
+    if re.match(
+        r'^(provide|list|describe|explain|summarize|generate|create|write|include|add|state|give|offer)\s'
+        r'.{0,40}(e\.g\.|for example|such as|\(.*?\)|".*?")',
+        r,
+    ):
+        return True
+
+    # Detect responses that are entirely a single instruction sentence with no substance
+    # e.g. "Provide current status of document review (...)"
+    return bool(re.match(r'^(provide|list|describe|explain|summarize|state|give)\s.{10,100}\(.*?\)\s*$', r))
+
+
+async def _fetch_thread_history(
+    web_client: AsyncWebClient, channel: str, thread_ts: str, bot_user_id: str,
+    current_ts: str, limit: int = 10,
+) -> list[dict[str, str]]:
+    """Fetch recent thread messages to build conversational context for CLI.
+
+    Returns a list of {"role": "user"|"assistant", "text": "..."} dicts,
+    excluding the current message (identified by current_ts).
+    """
+    try:
+        result = await web_client.conversations_replies(
+            channel=channel, ts=thread_ts, limit=limit + 5,
+        )
+        messages: list[dict] = result.get("messages", [])
+        history: list[dict[str, str]] = []
+        for msg in messages:
+            msg_ts = msg.get("ts", "")
+            if msg_ts == current_ts:
+                continue
+            # Skip the thread parent if it's a file upload with no text
+            msg_text = msg.get("text", "").strip()
+            if not msg_text:
+                continue
+            # Skip processing indicators
+            if msg_text.startswith(":hourglass"):
+                continue
+            role = "assistant" if msg.get("user") == bot_user_id or msg.get("bot_id") else "user"
+            history.append({"role": role, "text": msg_text[:2000]})
+        # Return only the most recent `limit` messages
+        return history[-limit:]
+    except Exception as e:
+        print(f"[Slack] Thread history fetch failed (non-fatal): {e}")
+        return []
+
+
+_SYSTEM_PREAMBLE = (
+    "You are NEXUS, an AI assistant built by Garrett Eaglin. "
+    "You are responding in the #garrett-nexus Slack channel. "
+    "Always give complete, substantive answers. Never output placeholder text, "
+    "template instructions, or examples like 'e.g.' — always give REAL answers "
+    "based on what you know or can find. If you don't know something, say so "
+    "directly instead of outputting a template."
+)
+
+_RETRY_REINFORCEMENT = (
+    "\n\nCRITICAL: Your previous attempt produced a garbage or placeholder response. "
+    "You MUST respond with a real, substantive answer this time. Do NOT output "
+    "template text, instructions, or example placeholders. Answer the user's "
+    "actual question directly."
+)
+
+
+def _build_threaded_prompt(
+    history: list[dict[str, str]], current_message: str, *, is_retry: bool = False,
+) -> str:
+    """Build a prompt with thread history so CLI has conversational context."""
+    parts = [_SYSTEM_PREAMBLE, ""]
+
+    if history:
+        parts.append("You are continuing a Slack thread conversation. Here is the prior context:")
+        parts.append("")
+        for msg in history:
+            prefix = "User" if msg["role"] == "user" else "You (NEXUS)"
+            parts.append(f"{prefix}: {msg['text']}")
+        parts.append("")
+        parts.append(f"User's new message: {current_message}")
+    else:
+        parts.append(f"User's message: {current_message}")
+
+    parts.append("")
+    parts.append(
+        "Respond to the user's message using the thread context above if present. "
+        "Give a complete, substantive answer — do not just acknowledge the request."
+    )
+
+    if is_retry:
+        parts.append(_RETRY_REINFORCEMENT)
+
+    return "\n".join(parts)
+
+
 async def start_slack_listener():
     global _web_client, _channel_id
 
@@ -427,8 +550,18 @@ async def start_slack_listener():
             response = None
             project_path = os.environ.get("NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus"))
 
-            max_attempts = 2
+            # Fetch thread history so follow-up messages have conversational context.
+            # Each CLI send() is a fresh one-shot process — without this, the CLI
+            # has zero knowledge of prior messages in the thread.
+            thread_history = await _fetch_thread_history(
+                web_client, channel_id, thread_ts, bot_user_id,
+                current_ts=event.get("ts", ""),
+            )
+
+            max_attempts = 3
             for attempt in range(max_attempts):
+                is_retry = attempt > 0
+                cli_message = _build_threaded_prompt(thread_history, text, is_retry=is_retry)
                 try:
                     await safe_react("robot_face")
                     session = await cli_pool.get_or_create(thread_ts, project_path)
@@ -444,7 +577,12 @@ async def start_slack_listener():
                             "pid": session.process.pid if session.process else None,
                             "attempt": attempt + 1,
                         })
-                        response = await session.send(text)
+                        response = await session.send(cli_message)
+
+                        # Guard: detect leaked system instructions or placeholder text
+                        if response and _is_garbage_response(response):
+                            print(f"[Slack] Garbage response detected (attempt {attempt + 1}), retrying: {response[:100]}")
+                            response = None
 
                         # Check if CLI actually responded
                         if response and response != "(No response from CLI)" and not response.startswith("CLI error"):
@@ -452,11 +590,11 @@ async def start_slack_listener():
 
                     if attempt < max_attempts - 1:
                         print(f"[Slack] CLI attempt {attempt + 1} failed, retrying...")
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(1.5)
                 except Exception as e:
                     print(f"[Slack] CLI attempt {attempt + 1} error: {e}")
                     if attempt < max_attempts - 1:
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(1.5)
 
             if not response or response == "(No response from CLI)" or response.startswith("CLI error"):
                 memory.emit_event("slack", "cli_all_attempts_failed", {

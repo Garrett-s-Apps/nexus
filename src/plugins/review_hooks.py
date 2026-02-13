@@ -251,16 +251,16 @@ async def run_plugin_review_suite(
         return_exceptions=True,
     )
 
-    parsed_results = []
+    parsed_results: list[ReviewResult] = []
     total_critical = 0
 
     for r in results:
-        if isinstance(r, Exception):
+        if isinstance(r, BaseException):
             logger.error(f"Plugin review failed: {r}")
             parsed_results.append(ReviewResult(
                 review_type="unknown", passed=True, error=str(r),
             ))
-        else:
+        elif isinstance(r, ReviewResult):
             parsed_results.append(r)
             total_critical += r.critical_count
 

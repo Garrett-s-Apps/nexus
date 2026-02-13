@@ -72,6 +72,8 @@ class CostTracker:
 
     def _init_db(self):
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS cost_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -23,6 +23,7 @@ from src.memory.store import memory
 from src.ml import feedback as ml_feedback
 from src.ml.router import predict_best_agent
 from src.ml.similarity import analyze_new_directive, format_briefing
+from src.observability.logging import agent_id_var, directive_id_var, task_id_var
 from src.resilience.circuit_breaker import CircuitOpenError, breaker_registry
 from src.resilience.escalation import escalation_chain
 
@@ -131,13 +132,20 @@ class ReasoningEngine:
     async def start(self):
         memory.emit_event("engine", "starting", {})
 
-        # Initialize ML learning store
+        # Initialize ML learning store and knowledge store
         try:
             from src.ml.store import ml_store
             ml_store.init()
             logger.info("ML learning store initialized")
         except Exception as e:
             logger.warning("ML store init failed (non-fatal): %s", e)
+
+        try:
+            from src.ml.knowledge_store import knowledge_store
+            knowledge_store.init()
+            logger.info("Knowledge store initialized")
+        except Exception as e:
+            logger.warning("Knowledge store init failed (non-fatal): %s", e)
 
         self.agents = create_all_agents()
         self._last_event_id = memory.get_latest_event_id()
@@ -173,6 +181,7 @@ class ReasoningEngine:
 
         did = directive["id"]
         status = directive["status"]
+        directive_id_var.set(did)
 
         if status == "received":
             await self._kickoff(directive)
@@ -491,6 +500,10 @@ class ReasoningEngine:
         if not agent:
             return
 
+        task_id = getattr(decision, 'task_id', '') or ''
+        agent_id_var.set(agent_id)
+        task_id_var.set(task_id)
+
         breaker = breaker_registry.get(agent_id)
 
         start_time = time.time()
@@ -502,7 +515,6 @@ class ReasoningEngine:
 
             # ML: record successful task outcome
             try:
-                task_id = getattr(decision, 'task_id', '') or ''
                 defects = memory.get_defects_for_task(task_id) if task_id else []
                 ml_feedback.record_task_outcome(
                     directive_id=directive_id,

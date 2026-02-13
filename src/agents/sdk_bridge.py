@@ -20,6 +20,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
+from src.agents.task_result import TaskResult
+
 logger = logging.getLogger("nexus.sdk_bridge")
 
 
@@ -77,7 +79,7 @@ async def run_claude_code(
     task_prompt: str,
     project_path: str,
     timeout_seconds: int = 600,
-) -> dict[str, Any]:
+) -> TaskResult:
     """
     Spawn a Claude Code CLI session in --dangerously-skip-permissions mode.
     Uses the Max subscription so API cost is $0. The CLI handles all tool
@@ -133,12 +135,11 @@ async def run_claude_code(
             await proc.wait()
             elapsed = time.time() - start_time
             logger.error(f"[{agent_name}] Claude Code CLI timed out after {elapsed:.0f}s")
-            return {
-                "output": f"Claude Code CLI timed out after {timeout_seconds}s",
-                "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
-                "model": f"claude-code:{model_id}", "agent": agent_name,
-                "mode": "claude_code_cli", "elapsed_seconds": elapsed,
-            }
+            return TaskResult(
+                status="timeout", output=f"Claude Code CLI timed out after {timeout_seconds}s",
+                error_type="timeout", model=f"claude-code:{model_id}", agent=agent_name,
+                elapsed_seconds=elapsed,
+            )
 
         elapsed = time.time() - start_time
         output = stdout.decode("utf-8", errors="replace").strip()
@@ -156,24 +157,22 @@ async def run_claude_code(
 
         logger.info(f"[{agent_name}] Claude Code CLI completed in {elapsed:.1f}s ({len(output)} chars)")
 
-        return {
-            "output": output,
-            "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
-            "model": f"claude-code:{model_id}", "agent": agent_name,
-            "mode": "claude_code_cli", "elapsed_seconds": elapsed,
-        }
+        return TaskResult(
+            status="success", output=output,
+            model=f"claude-code:{model_id}", agent=agent_name,
+            elapsed_seconds=elapsed,
+        )
 
     except FileNotFoundError:
         logger.warning(f"[{agent_name}] Claude CLI binary not executable, falling back to SDK")
         return await run_sdk_agent(agent_name, agent_config, task_prompt, project_path)
     except Exception as e:
         logger.error(f"[{agent_name}] Claude Code CLI error: {e}")
-        return {
-            "output": f"Claude Code CLI error: {str(e)}",
-            "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
-            "model": f"claude-code:{model_key}", "agent": agent_name,
-            "mode": "claude_code_cli",
-        }
+        return TaskResult(
+            status="error", output=f"Claude Code CLI error: {str(e)}",
+            error_type="api_error", error_detail=str(e),
+            model=f"claude-code:{model_key}", agent=agent_name,
+        )
 
 
 async def run_sdk_agent(
@@ -181,7 +180,7 @@ async def run_sdk_agent(
     agent_config: dict,
     task_prompt: str,
     project_path: str,
-) -> dict[str, Any]:
+) -> TaskResult:
     """
     Spawn a Claude Agent SDK session for an agent that needs filesystem access.
     Returns the agent's output and cost information.
@@ -222,25 +221,25 @@ async def run_sdk_agent(
             notify(f"🏦 {alert}")
     cost = cost_tracker.calculate_cost(model, tokens_in, tokens_out)
 
-    return {
-        "output": "\n".join(output_parts),
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "cost": cost,
-        "model": model,
-        "agent": agent_name,
-    }
+    return TaskResult(
+        status="success", output="\n".join(output_parts),
+        tokens_in=tokens_in, tokens_out=tokens_out,
+        cost_usd=cost, model=model, agent=agent_name,
+    )
 
 
 async def run_gemini(
     task_prompt: str,
     system_prompt: str = "",
     images: list[str] | None = None,
-) -> dict[str, Any]:
+) -> TaskResult:
     """Call Gemini for visual QA and multimodal tasks."""
     api_key = _load_key("GOOGLE_AI_API_KEY")
     if not api_key:
-        return {"output": "ERROR: No Google AI API key found", "cost": 0.0}
+        return TaskResult(
+            status="unavailable", output="ERROR: No Google AI API key found",
+            error_type="api_error", error_detail="missing GOOGLE_AI_API_KEY",
+        )
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
@@ -255,14 +254,16 @@ async def run_gemini(
     try:
         response = await llm.ainvoke(messages)
         cost = cost_tracker.record("gemini", "ux_consultant", 1000, 500)
-        return {
-            "output": response.content,
-            "cost": cost,
-            "model": "gemini",
-            "agent": "ux_consultant",
-        }
+        return TaskResult(
+            status="success", output=response.content,
+            cost_usd=cost if isinstance(cost, float) else 0.0,
+            model="gemini", agent="ux_consultant",
+        )
     except Exception as e:
-        return {"output": f"Gemini error: {str(e)}", "cost": 0.0}
+        return TaskResult(
+            status="error", output=f"Gemini error: {str(e)}",
+            error_type="api_error", error_detail=str(e), model="gemini",
+        )
 
 
 async def run_o3(
@@ -376,7 +377,7 @@ async def run_planning_agent(
     agent_config: dict,
     task_prompt: str,
     context: str = "",
-) -> dict[str, Any]:
+) -> TaskResult:
     """
     Run a planning-only agent (no filesystem access needed).
     Uses the Agent SDK but with read-only tools.
@@ -418,11 +419,8 @@ async def run_planning_agent(
             notify(f"🏦 {alert}")
     cost = cost_tracker.calculate_cost(model, tokens_in, tokens_out)
 
-    return {
-        "output": "\n".join(output_parts),
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "cost": cost,
-        "model": model,
-        "agent": agent_name,
-    }
+    return TaskResult(
+        status="success", output="\n".join(output_parts),
+        tokens_in=tokens_in, tokens_out=tokens_out,
+        cost_usd=cost, model=model, agent=agent_name,
+    )

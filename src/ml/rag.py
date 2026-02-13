@@ -22,7 +22,7 @@ from src.ml.embeddings import (
     embedding_to_bytes,
     encode,
 )
-from src.ml.store import ml_store
+from src.ml.knowledge_store import knowledge_store
 
 logger = logging.getLogger("nexus.ml.rag")
 
@@ -62,7 +62,7 @@ def ingest(
         # Truncate very long content before embedding
         embed_text = content[:2000]
         embedding = encode(embed_text)
-        ml_store.store_chunk(
+        knowledge_store.store_chunk(
             chunk_type=chunk_type,
             content=content[:4000],  # Store more than we embed
             embedding=embedding_to_bytes(embedding),
@@ -158,7 +158,7 @@ def retrieve(
     """
     try:
         query_embedding = encode(query[:1000])
-        all_chunks = ml_store.get_all_chunks(limit=1000)
+        all_chunks = knowledge_store.get_all_chunks(limit=1000)
 
         if not all_chunks:
             return []
@@ -248,7 +248,7 @@ def build_rag_context(
 def rag_status() -> dict:
     """Get RAG system status."""
     try:
-        counts = ml_store.count_chunks()
+        counts = knowledge_store.count_chunks()
         total = sum(counts.values())
         return {
             "total_chunks": total,

@@ -30,6 +30,7 @@ from src.documents.generator import (
 from src.memory.store import memory
 from src.ml.rag import build_rag_context, ingest_conversation
 from src.ml.similarity import analyze_new_directive
+from src.observability.logging import thread_ts_var
 from src.sessions.cli_pool import CLISession, cli_pool
 
 
@@ -572,10 +573,19 @@ async def start_slack_listener():
         if not text:
             return
 
+        # Idempotency: skip duplicate messages (Slack Socket Mode at-least-once delivery)
+        slack_ts = event.get("ts", "")
+        client_msg_id = event.get("client_msg_id", "")
+        dedup_key = f"{channel_id}:{slack_ts}:{client_msg_id or ''}"
+        if memory.is_message_processed(dedup_key):
+            print(f"[Slack] Duplicate message detected, skipping: {dedup_key}")
+            return
+
         print(f"[Slack] Received: {text[:100]}")
 
         thinking_msg = None
         thread_ts = event.get("thread_ts") or event.get("ts")
+        thread_ts_var.set(thread_ts or "")
         memory.emit_event("slack", "message_received", {
             "text": text[:200], "thread_ts": thread_ts,
             "user": event.get("user", ""), "has_files": bool(files),
@@ -716,7 +726,8 @@ async def start_slack_listener():
                             "pid": session.process.pid if session.process else None,
                             "attempt": attempt + 1,
                         })
-                        response = await session.send(cli_message)
+                        cli_result = await session.send(cli_message)
+                        response = cli_result.output if cli_result.succeeded else None
 
                         # Guard: detect leaked system instructions or placeholder text
                         if response and _is_garbage_response(response):
@@ -797,6 +808,9 @@ async def start_slack_listener():
                 except Exception:
                     pass  # RAG ingestion is best-effort
 
+            # Mark message as processed for idempotency
+            memory.mark_message_processed(dedup_key, slack_ts, channel_id)
+
             print(f"[Slack] Responded in thread {thread_ts}: {slack_text[:100]}...")
 
         except Exception as e:
@@ -822,9 +836,6 @@ async def start_slack_listener():
     print("[Slack] Connecting...")
     await socket_client.connect()
     cli_pool.start_cleanup_loop()
-    # Warm up the embedding model in a background thread so the first
-    # user message doesn't pay the cold-start penalty (~1-3s model load)
-    asyncio.ensure_future(asyncio.to_thread(lambda: __import__("src.ml.embeddings", fromlist=["encode"]).encode("warmup")))
     print("[Slack] Connected and listening. CLI session pool active.")
 
     while True:

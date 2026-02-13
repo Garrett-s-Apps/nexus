@@ -13,6 +13,7 @@ MEMORY_DB_PATH = os.path.join(NEXUS_DIR, "memory.db")
 COST_DB_PATH = os.path.join(NEXUS_DIR, "cost.db")
 KPI_DB_PATH = os.path.join(NEXUS_DIR, "kpi.db")
 SESSIONS_DB_PATH = os.path.join(NEXUS_DIR, "sessions.db")
+KNOWLEDGE_DB_PATH = os.path.join(NEXUS_DIR, "knowledge.db")
 
 SLACK_CHANNEL_NAME = "garrett-nexus"
 

@@ -11,7 +11,7 @@ All agents are male personas.
 """
 
 OPUS = "claude-opus-4-6"
-SONNET = "claude-sonnet-4-20250514"
+SONNET = "claude-sonnet-4-5-20250929"
 HAIKU = "claude-haiku-4-5-20251001"
 O3 = "o3"
 

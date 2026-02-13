@@ -298,7 +298,7 @@ async def execute_question(intent: dict, history: list[dict] | None = None) -> s
     messages.append({"role": "user", "content": question})
 
     response = await client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-opus-4-6",
         max_tokens=2048,
         system=f"""You are the VP of Engineering at NEXUS, an autonomous software engineering organization.
 The CEO (Garrett) is asking a question. Provide a thorough, direct answer.
@@ -321,7 +321,7 @@ Be specific, data-driven, and concise.""",
 
     if response.usage:
         from src.cost.tracker import cost_tracker
-        cost_tracker.record("sonnet", "vp_engineering", response.usage.input_tokens, response.usage.output_tokens)
+        cost_tracker.record("opus", "vp_engineering", response.usage.input_tokens, response.usage.output_tokens)
 
     return str(response.content[0].text)  # type: ignore[union-attr]
 
@@ -342,7 +342,7 @@ async def execute_conversation(message: str, intent: dict, history: list[dict] |
     messages.append({"role": "user", "content": message})
 
     response = await client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-5-20250929",
         max_tokens=512,
         system=f"""You are NEXUS — Garrett's AI engineering org. But right now he's not giving you a work task,
 he's just chatting. Be a good conversationalist.

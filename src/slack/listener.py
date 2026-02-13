@@ -28,7 +28,7 @@ from src.documents.generator import (
     generate_document,
 )
 from src.memory.store import memory
-from src.sessions.cli_pool import cli_pool
+from src.sessions.cli_pool import CLISession, cli_pool
 
 
 async def classify_doc_request(text: str) -> dict | None:
@@ -224,13 +224,13 @@ async def download_and_parse_file(url: str, filename: str, bot_token: str) -> st
                         except ImportError:
                             content = "(Install PyMuPDF for PDF reading)"
                     elif ext in ("png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"):
-                        # Keep the temp file for the CLI session to read visually
+                        # Save image and return path for CLI to read with Read tool
                         import shutil
                         img_dir = os.path.join(tempfile.gettempdir(), "nexus_images")
                         os.makedirs(img_dir, exist_ok=True)
                         img_path = os.path.join(img_dir, filename)
                         shutil.copy2(tmp_path, img_path)
-                        content = f"(Image saved to {img_path} — analyze this image)"
+                        content = f"\n[IMAGE ATTACHED: Use your Read tool to view the image at {img_path}]\n"
                     else:
                         content = f"(Unsupported file type: .{ext})"
 
@@ -338,8 +338,6 @@ async def start_slack_listener():
         })
 
         try:
-            from src.orchestrator.engine import engine
-
             async def safe_react(name):
                 try:
                     await web_client.reactions_add(channel=channel_id, name=name, timestamp=event.get("ts"))
@@ -422,37 +420,50 @@ async def start_slack_listener():
                                 pass
                         return
                     except Exception as e:
-                        print(f"[Slack] Document generation failed, falling through to engine: {e}")
+                        print(f"[Slack] Document generation failed, falling through to CLI: {e}")
 
-            # All messages go to Claude Code (Opus) first. It decides
-            # whether to answer directly or dispatch to the engine/agents.
+            # All messages go to Claude Code (Opus). Retry once on failure
+            # instead of falling back to the basic engine.
             response = None
-            cli_failed = False
             project_path = os.environ.get("NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus"))
 
-            try:
-                await safe_react("robot_face")
-                session = await cli_pool.get_or_create(thread_ts, project_path)
-                if session.alive:
-                    memory.emit_event("slack", "cli_routed", {
-                        "thread_ts": thread_ts, "pid": session.process.pid if session.process else None,
-                    })
-                    response = await session.send(text)
-                else:
-                    cli_failed = True
-            except Exception as e:
-                cli_failed = True
-                print(f"[Slack] CLI session failed: {e}")
+            max_attempts = 2
+            for attempt in range(max_attempts):
+                try:
+                    await safe_react("robot_face")
+                    session = await cli_pool.get_or_create(thread_ts, project_path)
+                    if not session.alive:
+                        # Force a fresh session
+                        session = CLISession(thread_ts, project_path)
+                        if await session.start():
+                            cli_pool._sessions[thread_ts] = session
 
-            # Engine is a fallback ONLY when the CLI process itself failed.
-            # Normal conversational responses (even short ones) stay as-is.
-            cli_error = response and (response == "(No response from CLI)" or response.startswith("CLI error"))
-            if cli_failed or cli_error:
-                memory.emit_event("slack", "engine_fallback", {
-                    "reason": response[:200] if response else "cli unavailable",
+                    if session.alive:
+                        memory.emit_event("slack", "cli_routed", {
+                            "thread_ts": thread_ts,
+                            "pid": session.process.pid if session.process else None,
+                            "attempt": attempt + 1,
+                        })
+                        response = await session.send(text)
+
+                        # Check if CLI actually responded
+                        if response and response != "(No response from CLI)" and not response.startswith("CLI error"):
+                            break
+
+                    if attempt < max_attempts - 1:
+                        print(f"[Slack] CLI attempt {attempt + 1} failed, retrying...")
+                        await asyncio.sleep(1)
+                except Exception as e:
+                    print(f"[Slack] CLI attempt {attempt + 1} error: {e}")
+                    if attempt < max_attempts - 1:
+                        await asyncio.sleep(1)
+
+            if not response or response == "(No response from CLI)" or response.startswith("CLI error"):
+                memory.emit_event("slack", "cli_all_attempts_failed", {
+                    "reason": (response or "no response")[:200],
                     "thread_ts": thread_ts,
                 })
-                response = await engine.handle_message(text, source="slack", thread_ts=thread_ts)
+                response = "I had trouble processing that request. Could you try rephrasing or sending again?"
 
             memory.emit_event("slack", "response_sent", {
                 "text": (response or "")[:200], "thread_ts": thread_ts,

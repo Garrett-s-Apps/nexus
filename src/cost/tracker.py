@@ -12,6 +12,7 @@ Extends the basic cost tracker with:
 import os
 import sqlite3
 import time
+from typing import Any
 
 from src.config import COST_DB_PATH
 
@@ -135,7 +136,7 @@ class CostTracker:
 
     def _enforce_budget(self, latest_cost: float, agent: str) -> dict:
         """CFO budget enforcement. Returns actions to take."""
-        actions = {"alerts": [], "downgrade": False, "kill_session": False}
+        actions: dict[str, Any] = {"alerts": [], "downgrade": False, "kill_session": False}
 
         hourly = self.hourly_rate
 
@@ -218,7 +219,7 @@ class CostTracker:
             (month_start,),
         ).fetchone()[0]
         conn.close()
-        return result
+        return float(result)
 
     def get_daily_breakdown(self, days: int = 7) -> list[dict]:
         """Cost breakdown by day for the last N days."""

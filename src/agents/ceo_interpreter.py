@@ -13,7 +13,6 @@ Uses the CEO agent (Opus) to interpret ambiguous input.
 import json
 
 from src.agents.registry import registry
-from src.agents.sdk_bridge import run_planning_agent
 
 CEO_INTERPRETER_PROMPT = """You are the CEO's chief interpreter at NEXUS. Garrett (the human CEO) has
 sent a message. Your job is to classify it and extract structured intent.
@@ -96,9 +95,10 @@ async def interpret_ceo_input(message: str) -> dict:
     Interpret natural language from Garrett and return structured intent.
     Uses a fast pre-filter for casual messages, then Haiku for classification.
     """
-    import anthropic
     import os
     import re
+
+    import anthropic
 
     # FAST PRE-FILTER: catch obviously casual messages without hitting the API
     casual_patterns = [
@@ -167,11 +167,11 @@ async def interpret_ceo_input(message: str) -> dict:
         messages=[{"role": "user", "content": f"Garrett says: {message}"}],
     )
 
-    output = response.content[0].text
+    output = response.content[0].text  # type: ignore[union-attr]
     cost = 0.0
     if response.usage:
         from src.cost.tracker import cost_tracker
-        cost_result = cost_tracker.record(
+        cost_tracker.record(
             "haiku", "ceo_interpreter",
             response.usage.input_tokens, response.usage.output_tokens
         )
@@ -186,7 +186,7 @@ async def interpret_ceo_input(message: str) -> dict:
             parsed = json.loads(output[json_start:json_end])
             parsed["_raw"] = output
             parsed["_cost"] = cost
-            return parsed
+            return parsed  # type: ignore[no-any-return]
     except (json.JSONDecodeError, KeyError):
         pass
 
@@ -289,10 +289,11 @@ async def execute_org_change(intent: dict) -> str:
     return "\n".join(results) if results else "No changes made"
 
 
-async def execute_question(intent: dict, history: list[dict] = None) -> str:
+async def execute_question(intent: dict, history: list[dict] | None = None) -> str:
     """Route a CEO question to the appropriate agent via direct API for speed."""
-    import anthropic
     import os
+
+    import anthropic
 
     details = intent.get("details", {})
     question = details.get("question", intent.get("summary", ""))
@@ -339,17 +340,17 @@ FORMATTING RULES (this will be displayed in Slack):
 - No markdown links, just paste URLs directly
 
 Be specific, data-driven, and concise.""",
-        messages=messages,
+        messages=messages,  # type: ignore[arg-type]
     )
 
     if response.usage:
         from src.cost.tracker import cost_tracker
         cost_tracker.record("sonnet", "vp_engineering", response.usage.input_tokens, response.usage.output_tokens)
 
-    return response.content[0].text
+    return str(response.content[0].text)  # type: ignore[union-attr]
 
 
-async def execute_conversation(message: str, intent: dict, history: list[dict] = None) -> str:
+async def execute_conversation(message: str, intent: dict, history: list[dict] | None = None) -> str:
     """Have a natural, casual conversation with Garrett. No formal org stuff."""
     import anthropic
 
@@ -396,14 +397,14 @@ Your personality:
 - You have FULL conversation history — reference previous messages naturally, don't repeat yourself
 
 His current vibe seems: {mood}""",
-        messages=messages,
+        messages=messages,  # type: ignore[arg-type]
     )
 
     if response.usage:
         from src.cost.tracker import cost_tracker
         cost_tracker.record("sonnet", "nexus_chat", response.usage.input_tokens, response.usage.output_tokens)
 
-    return response.content[0].text
+    return str(response.content[0].text)  # type: ignore[union-attr]
 
 
 import os

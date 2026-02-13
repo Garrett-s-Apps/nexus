@@ -13,11 +13,10 @@ Flow:
 Total: ~30-60 seconds for a small feature vs 10+ minutes through full graph.
 """
 
-import os
 import json
-import asyncio
+import os
+
 import anthropic
-from typing import Any
 
 
 def _load_key(key_name: str) -> str | None:
@@ -86,7 +85,7 @@ Create a build plan as JSON:
 Only return the JSON."""}],
     )
 
-    plan_text = plan_response.content[0].text.strip()
+    plan_text = plan_response.content[0].text.strip()  # type: ignore[union-attr]
     if plan_response.usage:
         from src.cost.tracker import cost_tracker
         cost_tracker.record("sonnet", "vp_engineering", plan_response.usage.input_tokens, plan_response.usage.output_tokens)
@@ -100,7 +99,7 @@ Only return the JSON."""}],
             plan_text = plan_text.rsplit("```", 1)[0]
         plan = json.loads(plan_text.strip())
     except json.JSONDecodeError:
-        _log("PLAN", f"Failed to parse plan JSON, using raw text")
+        _log("PLAN", "Failed to parse plan JSON, using raw text")
         return {
             "status": "error",
             "error": f"VP Engineering produced invalid plan: {plan_text[:500]}",
@@ -124,7 +123,7 @@ Only return the JSON."""}],
     file_map = {f["path"]: f for f in plan.get("files", [])}
 
     # Context of already-written files (grows as we write)
-    written_context = {}
+    written_context: dict[str, str] = {}
 
     for file_path in build_order:
         file_info = file_map.get(file_path, {"path": file_path, "purpose": "", "language": ""})
@@ -166,7 +165,7 @@ Tech stack: {plan.get('tech_stack', '')}
 Write the complete file contents now."""}],
         )
 
-        file_content = impl_response.content[0].text
+        file_content = impl_response.content[0].text  # type: ignore[union-attr]
         # Strip markdown fences if the model wrapped it
         if file_content.startswith("```"):
             file_content = file_content.split("\n", 1)[1]
@@ -212,12 +211,12 @@ Report:
 4. Overall verdict: SHIP IT or NEEDS FIXES"""}],
     )
 
-    qa_result = qa_response.content[0].text
+    qa_result = qa_response.content[0].text  # type: ignore[union-attr]
     if qa_response.usage:
         cost_tracker.record("haiku", "qa_lead", qa_response.usage.input_tokens, qa_response.usage.output_tokens)
         total_cost += cost_tracker.calculate_cost("haiku", qa_response.usage.input_tokens, qa_response.usage.output_tokens)
 
-    _log("QA", f"Review complete")
+    _log("QA", "Review complete")
 
     ship_it = "SHIP IT" in qa_result.upper()
 

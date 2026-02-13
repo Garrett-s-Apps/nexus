@@ -210,7 +210,7 @@ Only return JSON."""}],
 
             plan = json.loads(text.strip())
             plan["_cost"] = cost
-            return plan
+            return plan  # type: ignore[no-any-return]
         except Exception as e:
             print(f"[TaskRunner] Plan attempt {attempt + 1} failed: {e}")
             if attempt < retries - 1:

@@ -21,33 +21,14 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
 from src.config import get_key
-from src.memory.store import memory
 from src.documents.generator import (
     _gather_internal_context,
     _gather_web_context,
     _needs_web_enrichment,
     generate_document,
 )
+from src.memory.store import memory
 from src.sessions.cli_pool import cli_pool
-from src.tools.web_search import format_results_for_context, needs_web_search
-from src.tools.web_search import search as web_search
-
-
-def _is_action_command(text: str) -> bool:
-    """Detect messages that are direct CEO action commands.
-
-    Only matches imperative commands (verb at the start of the message).
-    Conversational messages like "can you build..." route to CLI sessions.
-    """
-    msg_lower = text.lower().strip()
-    # Direct commands: verb must be at the START of the message
-    direct_verbs = [
-        "hire", "fire", "reassign", "promote", "demote", "restructure",
-        "deploy", "ship", "launch", "shut down",
-        "create a project", "spin up", "stand up",
-        "consolidate", "merge team", "split team",
-    ]
-    return any(msg_lower.startswith(verb) for verb in direct_verbs)
 
 
 async def classify_doc_request(text: str) -> dict | None:
@@ -58,10 +39,6 @@ async def classify_doc_request(text: str) -> dict | None:
         {"format": "text"} — respond with formatted text (enriched with internal data)
         None — not a data/document request, route normally
     """
-    # Action commands always go to the engine — never generate docs for these
-    if _is_action_command(text):
-        return None
-
     try:
         from src.agents.base import allm_call
         from src.agents.org_chart import HAIKU
@@ -177,7 +154,7 @@ def format_code_output(output: str, agent_name: str = "") -> list[dict]:
                 code = code[:2900] + "\n... (truncated)"
             blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"```{code}```"},
+                "text": {"type": "mrkdwn", "text": f"```{code}```"},  # type: ignore[dict-item]
             })
         else:
             text = md_to_slack(part)
@@ -186,7 +163,7 @@ def format_code_output(output: str, agent_name: str = "") -> list[dict]:
             if text:
                 blocks.append({
                     "type": "section",
-                    "text": {"type": "mrkdwn", "text": text},
+                    "text": {"type": "mrkdwn", "text": text},  # type: ignore[dict-item]
                 })
 
     return blocks
@@ -261,7 +238,7 @@ async def download_and_parse_file(url: str, filename: str, bot_token: str) -> st
 
 async def upload_file_to_slack(web_client: AsyncWebClient, channel: str,
                                 filepath: str, title: str = "", comment: str = "",
-                                thread_ts: str = None):
+                                thread_ts: str | None = None):
     try:
         kwargs = dict(
             channel=channel, file=filepath,
@@ -269,7 +246,7 @@ async def upload_file_to_slack(web_client: AsyncWebClient, channel: str,
         )
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
-        await web_client.files_upload_v2(**kwargs)
+        await web_client.files_upload_v2(**kwargs)  # type: ignore[arg-type]
     except Exception as e:
         print(f"[Slack] File upload failed: {e}")
 
@@ -352,22 +329,11 @@ async def start_slack_listener():
         try:
             from src.orchestrator.engine import engine
 
-            is_threaded_reply = event.get("thread_ts") is not None
-
             async def safe_react(name):
                 try:
                     await web_client.reactions_add(channel=channel_id, name=name, timestamp=event.get("ts"))
                 except Exception:
                     pass  # reactions:write scope may not be granted
-
-            if needs_web_search(text):
-                await safe_react("mag")
-                try:
-                    search_results = await web_search(text, num_results=5)
-                    web_context = format_results_for_context(search_results)
-                    text = f"{text}\n\n---\n{web_context}"
-                except Exception as e:
-                    print(f"[Slack] Web search failed (non-fatal): {e}")
 
             # Send a "working on it" indicator so the user knows we received it
             try:
@@ -447,51 +413,41 @@ async def start_slack_listener():
                     except Exception as e:
                         print(f"[Slack] Document generation failed, falling through to engine: {e}")
 
-            # Action commands (hire, fire, deploy, etc.) go directly to the
-            # engine which has the actual handlers (_h_hire, _h_fire, etc.).
-            # Other messages route through CLI sessions for conversational context.
+            # All messages go to Claude Code (Opus) first. It decides
+            # whether to answer directly or dispatch to the engine/agents.
             response = None
+            cli_failed = False
             project_path = os.environ.get("NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus"))
 
-            if _is_action_command(text):
-                memory.emit_event("slack", "action_routed", {
-                    "text": text[:200], "thread_ts": thread_ts, "target": "engine",
-                })
-                response = await engine.handle_message(text, source="slack", thread_ts=thread_ts)
-            else:
-                if is_threaded_reply:
-                    session = cli_pool._sessions.get(thread_ts)
-                    if session and session.alive:
-                        try:
-                            memory.emit_event("slack", "cli_reuse", {
-                                "thread_ts": thread_ts, "pid": session.process.pid if session.process else None,
-                            })
-                            response = await session.send(text)
-                        except Exception as e:
-                            print(f"[Slack] CLI session error, falling back to engine: {e}")
+            try:
+                await safe_react("robot_face")
+                session = await cli_pool.get_or_create(thread_ts, project_path)
+                if session.alive:
+                    memory.emit_event("slack", "cli_routed", {
+                        "thread_ts": thread_ts, "pid": session.process.pid if session.process else None,
+                    })
+                    response = await session.send(text)
+                else:
+                    cli_failed = True
+            except Exception as e:
+                cli_failed = True
+                print(f"[Slack] CLI session failed: {e}")
 
-                if response is None:
-                    try:
-                        await safe_react("robot_face")
-                        session = await cli_pool.get_or_create(thread_ts, project_path)
-                        if session.alive:
-                            memory.emit_event("slack", "cli_spawned", {
-                                "thread_ts": thread_ts, "pid": session.process.pid if session.process else None,
-                            })
-                            response = await session.send(text)
-                    except Exception as e:
-                        print(f"[Slack] CLI session spawn failed, using engine: {e}")
-
-            if not response or response == "(No response from CLI)" or response.startswith("CLI"):
-                memory.emit_event("slack", "cli_fallback", {
-                    "reason": response[:200] if response else "no response",
+            # Engine is a fallback ONLY when the CLI process itself failed.
+            # Normal conversational responses (even short ones) stay as-is.
+            cli_error = response and (response == "(No response from CLI)" or response.startswith("CLI error"))
+            if cli_failed or cli_error:
+                memory.emit_event("slack", "engine_fallback", {
+                    "reason": response[:200] if response else "cli unavailable",
                     "thread_ts": thread_ts,
                 })
                 response = await engine.handle_message(text, source="slack", thread_ts=thread_ts)
 
             memory.emit_event("slack", "response_sent", {
-                "text": response[:200], "thread_ts": thread_ts,
+                "text": (response or "")[:200], "thread_ts": thread_ts,
             })
+            if not response:
+                response = ""
             slack_text = md_to_slack(response)
 
             # Use Block Kit for responses containing code

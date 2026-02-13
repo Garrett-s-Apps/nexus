@@ -92,7 +92,7 @@ async def allm_call(prompt: str, model: str = HAIKU, system: str = "",
 # ---------------------------------------------------------------------------
 class Decision:
     def __init__(self, act: bool, task_id: str = "", reason: str = "",
-                 action: str = "", context: dict = None):
+                 action: str = "", context: dict | None = None):
         self.act = act
         self.task_id = task_id
         self.reason = reason
@@ -100,11 +100,11 @@ class Decision:
         self.context = context or {}
 
     @classmethod
-    def idle(cls, reason="nothing to do"):
+    def idle(cls, reason: str = "nothing to do") -> "Decision":
         return cls(act=False, reason=reason)
 
     @classmethod
-    def from_json(cls, raw: str):
+    def from_json(cls, raw: str) -> "Decision":
         try:
             cleaned = raw.strip()
             if cleaned.startswith("```"):
@@ -134,12 +134,12 @@ class Agent(ABC):
         self.name = config["name"]
         self.title = config["title"]
         self.role = config["role"]
-        self.model = config["model"]
+        self.model: str = config["model"]  # type: ignore[assignment]
         self.reports_to = config["reports_to"]
-        self.direct_reports = config["direct_reports"]
+        self.direct_reports: list[str] = config["direct_reports"]  # type: ignore[assignment]
         self.org = config["org"]
         self.produces = config.get("produces", [])
-        self.specialty = config.get("specialty", "")
+        self.specialty: str = config.get("specialty", "")  # type: ignore[assignment]
 
         self._total_cost = 0.0
         self._last_context_id = 0
@@ -281,7 +281,7 @@ Respond ONLY with JSON:
             logger.info(f"[{self.name}] Interruption: {interruption['content'][:100]}")
             memory.emit_event(self.agent_id, "interruption_detected", {
                 "agent": self.name, "content": interruption["content"][:200]})
-        return interruption
+        return interruption  # type: ignore[no-any-return]
 
     def update_last_context_id(self, directive_id: str):
         latest = memory.get_latest_context(directive_id)
@@ -308,7 +308,7 @@ Respond ONLY with JSON:
             if cleaned.endswith("```"):
                 cleaned = cleaned[:-3]
             cleaned = cleaned.strip()
-        return json.loads(cleaned)
+        return json.loads(cleaned)  # type: ignore[no-any-return]
 
     # --- Hiring & Firing ---
 

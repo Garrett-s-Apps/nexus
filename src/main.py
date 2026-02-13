@@ -16,7 +16,9 @@ from src.server.server import app
 
 
 def main():
-    host = os.environ.get("NEXUS_HOST", "0.0.0.0")
+    # Binds to all interfaces for container/Docker deployment.
+    # In production, place behind a reverse proxy with TLS termination.
+    host = os.environ.get("NEXUS_HOST", "0.0.0.0")  # noqa: S104
     port = int(os.environ.get("NEXUS_PORT", "4200"))
     local = f"http://localhost:{port}"
     print(f"""

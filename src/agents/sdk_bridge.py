@@ -39,6 +39,37 @@ CLI_MODEL_MAP = {
 
 
 from src.cost.tracker import cost_tracker
+from src.plugins.prompt_fragments import get_prompt_fragment
+
+# Agent name patterns mapped to plugin roles
+_ROLE_PATTERNS = {
+    "engineer": ("fe_engineer", "be_engineer", "eng_lead", "sf_developer"),
+    "reviewer": ("reviewer", "code_review", "fe_reviewer", "be_reviewer"),
+    "qa": ("qa_lead", "fe_tester", "be_tester", "unit_test"),
+    "security": ("security", "ciso"),
+}
+
+
+def _get_plugin_fragment(agent_name: str, agent_config: dict) -> str:
+    """Classify agent role and return the appropriate plugin prompt fragment."""
+    name_lower = agent_name.lower()
+    org = agent_config.get("org", "")
+
+    # Check org-level classification first
+    if org == "security":
+        return get_prompt_fragment("security")
+
+    # Check name patterns
+    for role, patterns in _ROLE_PATTERNS.items():
+        if any(p in name_lower for p in patterns):
+            return get_prompt_fragment(role)
+
+    # Implementation-layer agents default to engineer instructions
+    if agent_config.get("layer") == "implementation":
+        return get_prompt_fragment("engineer")
+
+    return ""
+
 
 async def run_claude_code(
     agent_name: str,
@@ -63,9 +94,14 @@ async def run_claude_code(
     model_id = CLI_MODEL_MAP.get(model_key, CLI_MODEL_MAP["sonnet"])
     system_prompt = agent_config.get("system_prompt", "")
 
+    # Inject plugin instructions based on agent role
+    plugin_fragment = _get_plugin_fragment(agent_name, agent_config)
+
     full_prompt = task_prompt
     if system_prompt:
-        full_prompt = f"{system_prompt}\n\n---\n\nTASK:\n{task_prompt}"
+        full_prompt = f"{system_prompt}\n{plugin_fragment}\n\n---\n\nTASK:\n{task_prompt}"
+    elif plugin_fragment:
+        full_prompt = f"{plugin_fragment}\n\n---\n\nTASK:\n{task_prompt}"
 
     cmd = [
         claude_bin,
@@ -211,7 +247,7 @@ async def run_gemini(
         google_api_key=api_key,
     )
 
-    messages = []
+    messages: list = []
     if system_prompt:
         messages.append(SystemMessage(content=system_prompt))
     messages.append(HumanMessage(content=task_prompt))
@@ -304,9 +340,9 @@ async def _run_o3_langchain(
     if not api_key:
         return {"output": "ERROR: No OpenAI API key found", "cost": 0.0}
 
-    llm = ChatOpenAI(model="o3", api_key=api_key)
+    llm = ChatOpenAI(model="o3", api_key=api_key)  # type: ignore[arg-type]
 
-    messages = []
+    messages: list = []
     if system_prompt:
         messages.append(SystemMessage(content=system_prompt))
     messages.append(HumanMessage(content=task_prompt))

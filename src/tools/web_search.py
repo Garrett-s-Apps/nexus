@@ -7,28 +7,12 @@ DuckDuckGo via the ddgs package (free, no API key needed).
 
 import asyncio
 import logging
-import re
 
 import aiohttp
 
 from src.config import get_key
 
 logger = logging.getLogger("nexus.web_search")
-
-# Heuristics to detect when a message needs web search
-_WEB_INDICATORS = re.compile(
-    r"""(?ix)
-    \b(search\s+(the\s+)?web|google|look\s+up|find\s+(out|me)|
-    what\s+is|who\s+is|when\s+did|latest|current|today|
-    how\s+to|news\s+about|price\s+of|weather\s+in|
-    what\s+are\s+the|can\s+you\s+find)\b
-    """,
-)
-
-
-def needs_web_search(text: str) -> bool:
-    """Detect if a message likely requires web search to answer well."""
-    return bool(_WEB_INDICATORS.search(text))
 
 
 async def search(query: str, num_results: int = 5) -> list[dict]:
@@ -48,7 +32,7 @@ async def search(query: str, num_results: int = 5) -> list[dict]:
 async def _google_search(query: str, api_key: str, cx: str, n: int) -> list[dict]:
     """Google Custom Search JSON API."""
     url = "https://www.googleapis.com/customsearch/v1"
-    params = {"key": api_key, "cx": cx, "q": query, "num": min(n, 10)}
+    params = {"key": api_key, "cx": cx, "q": query, "num": str(min(n, 10))}
 
     try:
         async with aiohttp.ClientSession() as session:

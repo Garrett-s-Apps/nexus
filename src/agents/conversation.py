@@ -39,22 +39,13 @@ HOW YOU WORK:
 
 3. *Project planning* — When Garrett describes something to build, discuss it.
    Do NOT immediately execute. Ask questions, suggest approaches, refine scope.
-   When solid, tell him it's ready and he can say "go".
-   Tag: [PENDING_PROJECT: name="Name" description="Desc" path="~/Projects/x"]
+   Stay in conversation until the plan is solid and Garrett explicitly says go.
 
 4. *Execution* — ONLY on explicit "go", "ship it", "build it", "execute", etc.
-   Tag: [EXECUTE_PROJECT: name="Name"]
+   Then and only then, dispatch work to the engineering team.
 
-5. *Org changes* — "hire", "fire", "reassign" etc.
-   Tag: [ORG_CHANGE: action="hire" details="json"]
-
-6. *Commands* — "kpis", "cost", "org chart", "security scan"
-   Tag: [COMMAND: name="kpi" args=""]
-
-7. *Learning* — Personal details, preferences, goals.
-   Tag: [REMEMBER: key="name" value="detail"]
-
-Tags are stripped before display. Include them inline when appropriate.
+5. *Org changes* — Discuss hiring, firing, restructuring before acting.
+   Confirm the plan with Garrett before making changes.
 
 RULES:
 - Default to conversation. Most messages are just talking.
@@ -62,10 +53,11 @@ RULES:
 - SHORT in chat, longer for technical discussion.
 - No markdown headers. *bold* for emphasis. Plain text. Slack format.
 - You have persistent memory — reference past conversations naturally.
-- Have actual opinions. Don't just agree with everything."""
+- Have actual opinions. Don't just agree with everything.
+- When work completes, report exactly what was delivered and where."""
 
 
-async def converse(message: str, history: list[dict] = None) -> dict:
+async def converse(message: str, history: list[dict] | None = None) -> dict:
     """Main conversation entry point."""
     client = _get_client()
 
@@ -93,34 +85,23 @@ async def converse(message: str, history: list[dict] = None) -> dict:
         messages=messages,
     )
 
-    answer = response.content[0].text
+    from src.cost.tracker import cost_tracker
+
+    answer = response.content[0].text  # type: ignore[union-attr]
     cost = 0.0
     if response.usage:
-        from src.cost.tracker import cost_tracker
         cost_tracker.record("sonnet", "nexus_converse", response.usage.input_tokens, response.usage.output_tokens)
         cost = cost_tracker.calculate_cost("sonnet", response.usage.input_tokens, response.usage.output_tokens)
 
-    actions = _parse_actions(answer)
-    clean_answer = _strip_tags(answer)
-
     # Persist to DB
     memory.add_message("user", message, category="conversation")
-    memory.add_message("assistant", clean_answer, category="conversation", cost=cost)
-
-    # Handle actions
-    for action in actions:
-        if action["type"] == "pending_project":
-            pid = action["name"].lower().replace(" ", "_")[:30]
-            memory.create_project(pid, action["name"], description=action.get("description", ""), path=action.get("path", "~/Projects"))
-            memory.add_project_note(pid, f"Initial idea: {action.get('description', '')}", "creation")
-        elif action["type"] == "remember":
-            memory.set_context(action["key"], action["value"])
+    memory.add_message("assistant", answer, category="conversation", cost=cost)
 
     # Auto-summarize if needed
     if memory.get_unsummarized_count() > 50:
         asyncio.create_task(_auto_summarize(client))
 
-    return {"answer": clean_answer, "actions": actions, "cost": cost}
+    return {"answer": answer, "actions": [], "cost": cost}
 
 
 def _fix_alternation(messages):
@@ -133,29 +114,6 @@ def _fix_alternation(messages):
         else:
             fixed.append(msg)
     return fixed
-
-
-def _parse_actions(text):
-    import re
-    actions = []
-    for m in re.finditer(r'\[PENDING_PROJECT:\s*name="([^"]+)"\s*description="([^"]+)"(?:\s*path="([^"]+)")?\]', text):
-        actions.append({"type": "pending_project", "name": m.group(1), "description": m.group(2), "path": m.group(3) or "~/Projects"})
-    for m in re.finditer(r'\[EXECUTE_PROJECT:\s*name="([^"]+)"\]', text):
-        actions.append({"type": "execute", "name": m.group(1)})
-    for m in re.finditer(r'\[ORG_CHANGE:\s*action="([^"]+)"\s*details="([^"]+)"\]', text):
-        actions.append({"type": "org_change", "action": m.group(1), "details": m.group(2)})
-    for m in re.finditer(r'\[COMMAND:\s*name="([^"]+)"(?:\s*args="([^"]*)")?\]', text):
-        actions.append({"type": "command", "name": m.group(1), "args": m.group(2) or ""})
-    for m in re.finditer(r'\[REMEMBER:\s*key="([^"]+)"\s*value="([^"]+)"\]', text):
-        actions.append({"type": "remember", "key": m.group(1), "value": m.group(2)})
-    return actions
-
-
-def _strip_tags(text):
-    import re
-    for tag in ["PENDING_PROJECT", "EXECUTE_PROJECT", "ORG_CHANGE", "COMMAND", "REMEMBER"]:
-        text = re.sub(rf'\[{tag}:[^\]]+\]', '', text)
-    return text.strip()
 
 
 async def _auto_summarize(client):

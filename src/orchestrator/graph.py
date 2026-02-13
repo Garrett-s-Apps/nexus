@@ -12,7 +12,7 @@ import logging
 import os
 import uuid
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
@@ -54,7 +54,7 @@ def _load_agent_configs() -> dict:
     config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "agents.yaml")
     config_path = os.path.normpath(config_path)
     with open(config_path) as f:
-        return yaml.safe_load(f)["agents"]
+        return yaml.safe_load(f)["agents"]  # type: ignore[no-any-return]
 
 
 AGENTS = _load_agent_configs()
@@ -274,9 +274,9 @@ If you cannot produce JSON, output a bullet list with one task per line.""",
         if isinstance(result, Exception):
             logger.error("EM %s failed during decomposition: %s", em_names[i], result)
             continue
-        parsed_tasks = _parse_tasks(result["output"], em_names[i])
+        parsed_tasks = _parse_tasks(result["output"], em_names[i])  # type: ignore[index]
         tasks.extend(parsed_tasks)
-        total_cost = _update_cost(total_cost, result)
+        total_cost = _update_cost(total_cost, result)  # type: ignore[arg-type]
 
     parallel_groups = _identify_parallel_groups(tasks)
 

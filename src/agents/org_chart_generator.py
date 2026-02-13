@@ -19,18 +19,18 @@ def generate_org_chart(output_path: str | None = None) -> str:
         return "# NEXUS Organization Chart\n\nNo agents currently active."
 
     agent_map = {a.id: a for a in agents}
-    layers = {}
+    layers: dict[str, list] = {}
     for a in agents:
         layers.setdefault(a.layer, []).append(a)
 
     reporting_tree = registry.get_reporting_tree("ceo")
 
-    model_counts = {}
+    model_counts: dict[str, int] = {}
     for a in agents:
         key = f"{a.provider}/{a.model}"
         model_counts[key] = model_counts.get(key, 0) + 1
 
-    layer_counts = {}
+    layer_counts: dict[str, int] = {}
     for a in agents:
         layer_counts[a.layer] = layer_counts.get(a.layer, 0) + 1
 

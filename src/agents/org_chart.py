@@ -261,9 +261,9 @@ ORG_CHART = {
 # Derived lookups
 ALL_AGENT_IDS = list(ORG_CHART.keys())
 
-ORGS = {}
+ORGS: dict[str, list[str]] = {}
 for _aid, _cfg in ORG_CHART.items():
-    ORGS.setdefault(_cfg["org"], []).append(_aid)
+    ORGS.setdefault(str(_cfg["org"]), []).append(_aid)
 
 LEADERSHIP = [aid for aid, cfg in ORG_CHART.items() if cfg["direct_reports"]]
 ICS = [aid for aid, cfg in ORG_CHART.items() if not cfg["direct_reports"]]
@@ -300,7 +300,7 @@ def get_org_summary() -> str:
         lines.append(f"--- {org_name.upper()} ---")
         for aid in members:
             cfg = ORG_CHART[aid]
-            model_short = {OPUS: "Opus", SONNET: "Sonnet", HAIKU: "Haiku", O3: "o3"}.get(cfg["model"], "?")
+            model_short = {OPUS: "Opus", SONNET: "Sonnet", HAIKU: "Haiku", O3: "o3"}.get(str(cfg["model"]), "?")
             indent = "  " if cfg["direct_reports"] else "    "
             reports = f" (manages {len(cfg['direct_reports'])})" if cfg["direct_reports"] else ""
             lines.append(f"{indent}{cfg['name']:12s} {cfg['title']:30s} [{model_short}]{reports}")

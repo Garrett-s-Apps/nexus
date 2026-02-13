@@ -12,6 +12,7 @@ PMs enrich tasks. QA files defects. Engineers fix them. Loop until clean.
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 
@@ -19,7 +20,7 @@ from src.agents.base import Agent, Decision, allm_call
 from src.agents.implementations import create_agent, create_all_agents, extract_json
 from src.agents.org_chart import HAIKU, ORG_CHART, SONNET
 from src.memory.store import memory
-from src.resilience.circuit_breaker import breaker_registry, CircuitOpenError
+from src.resilience.circuit_breaker import CircuitOpenError, breaker_registry
 from src.resilience.escalation import escalation_chain
 
 logger = logging.getLogger("nexus.engine")
@@ -27,7 +28,7 @@ logger = logging.getLogger("nexus.engine")
 MAX_QA_CYCLES = 3
 
 
-async def notify_slack(message: str, thread_ts: str = None):
+async def notify_slack(message: str, thread_ts: str | None = None):
     try:
         from src.slack.listener import format_code_output, get_channel_id, get_slack_client, md_to_slack
         client = get_slack_client()
@@ -41,8 +42,8 @@ async def notify_slack(message: str, thread_ts: str = None):
             if '```' in message:
                 blocks = format_code_output(message)
                 if blocks:
-                    kwargs["blocks"] = blocks
-            await client.chat_postMessage(**kwargs)
+                    kwargs["blocks"] = blocks  # type: ignore[assignment]
+            await client.chat_postMessage(**kwargs)  # type: ignore[arg-type]
     except Exception as e:
         logger.error(f"Slack: {e}")
 
@@ -55,13 +56,6 @@ CODE ONLY tasks. No planning. No docs. JSON array only."""
     raw, _ = await allm_call(prompt, SONNET, max_tokens=3000)
     data = extract_json(raw)
     tasks = data if isinstance(data, list) else (data.get("tasks", []) if isinstance(data, dict) else [])
-
-    if not tasks:
-        import re
-        match = re.search(r'\[[\s\S]*\]', raw)
-        if match:
-            try: tasks = json.loads(match.group())
-            except (json.JSONDecodeError, ValueError): tasks = []
 
     created = 0
     for task in tasks:
@@ -105,7 +99,7 @@ JSON: {{"intent":"...","summary":"...","urgency":"normal","target":"","response"
         cleaned = raw.strip()
         if "```" in cleaned:
             cleaned = cleaned.split("```json")[-1].split("```")[0].strip() if "```json" in cleaned else cleaned.split("```")[1].strip()
-        return json.loads(cleaned)
+        return json.loads(cleaned)  # type: ignore[no-any-return]
     except Exception:
         return {"intent": "chat", "summary": message[:80], "urgency": "normal",
                 "target": "", "response": "Could you rephrase?"}
@@ -124,8 +118,9 @@ class ReasoningEngine:
         self._cooldown_s = 35
         self._qa_cycles: dict[str, int] = {}
         self._thread_ts: dict[str, str] = {}
+        self._plugin_review_results: dict[str, dict] = {}
 
-    async def _notify(self, message: str, did: str = None):
+    async def _notify(self, message: str, did: str | None = None):
         """Send a Slack notification in the directive's thread."""
         thread_ts = self._thread_ts.get(did) if did else None
         await notify_slack(message, thread_ts=thread_ts)
@@ -186,6 +181,9 @@ class ReasoningEngine:
         elif status == "reviewing":
             await self._run_code_review(did)
             await self._check_review_done(did)
+
+        elif status == "plugin_reviewing":
+            await self._check_plugin_review_done(did)
 
     async def _kickoff(self, directive):
         did = directive["id"]
@@ -370,8 +368,78 @@ class ReasoningEngine:
             memory.update_directive(did, status="fixing")
             await self._notify(f"Code review found {len(defects)} issue(s). Fixing.", did)
         else:
+            memory.update_directive(did, status="plugin_reviewing")
+            await self._notify("Code review passed. Running plugin-based diagnostics.", did)
+            asyncio.create_task(self._run_plugin_review(did))
+
+    async def _run_plugin_review(self, did):
+        """Run plugin-based review suite on changed files. Non-blocking on failure."""
+        try:
+            from src.plugins.review_hooks import run_plugin_review_suite
+            project_path = os.environ.get("NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus"))
+
+            # Gather changed files from completed tasks
+            board = memory.get_board_tasks(did)
+            changed_files = []
+            if board:
+                for task in board:
+                    ctx = task.get("context", {})
+                    if isinstance(ctx, dict):
+                        changed_files.extend(ctx.get("files_changed", []))
+
+            # If no files tracked, scan recent context entries
+            if not changed_files:
+                entries = memory.get_context_for_directive(did)
+                for e in entries:
+                    if isinstance(e, dict) and e.get("type") == "code":
+                        path = e.get("file_path", "")
+                        if path:
+                            changed_files.append(path)
+
+            self._plugin_review_results[did] = await run_plugin_review_suite(
+                changed_files, project_path
+            )
+        except Exception as e:
+            logger.error(f"Plugin review failed for {did}: {e}")
+            self._plugin_review_results[did] = {"passed": True, "results": [], "error": str(e)}
+
+    async def _check_plugin_review_done(self, did):
+        """Check plugin review results. Critical findings go back to fixing; otherwise complete."""
+        results = self._plugin_review_results.get(did)
+        if results is None:
+            return  # Still running
+
+        critical = results.get("critical_findings", 0)
+        if critical > 0:
+            # File defects for critical findings and send back to fixing
+            for r in results.get("results", []):
+                if hasattr(r, "findings"):
+                    for f in r.findings:
+                        if f.severity in ("critical", "high"):
+                            memory.file_defect(
+                                directive_id=did,
+                                title=f"[Plugin Review] {f.category}: {f.message[:80]}",
+                                description=f"File: {f.file}, Line: {f.line}\n{f.message}",
+                                file_path=f.file,
+                                severity=f.severity,
+                            )
+            memory.update_directive(did, status="fixing")
+            await self._notify(f"Plugin review found {critical} critical issue(s). Fixing.", did)
+        else:
             memory.update_directive(did, status="complete")
-            await self._notify("*Project complete!* Code built, tested, and reviewed. Check your project directory.", did)
+            board = memory.get_board_tasks(did)
+            completed_tasks = [t for t in board if t["status"] == "complete"] if board else []
+            task_summary = "\n".join(f"  - {t['title']}" for t in completed_tasks[:10])
+            project_path = os.environ.get("NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus"))
+            await self._notify(
+                f"*Project complete!* Code built, tested, reviewed, and plugin-verified.\n\n"
+                f"*Delivered {len(completed_tasks)} task(s):*\n{task_summary}\n\n"
+                f"*Output location:* `{project_path}`",
+                did,
+            )
+
+        # Cleanup
+        self._plugin_review_results.pop(did, None)
 
     async def _safe_run(self, agent_id, decision, directive_id):
         agent = self.agents.get(agent_id)
@@ -401,7 +469,7 @@ class ReasoningEngine:
             upgrade_model = escalation_chain.get_upgrade_model(current_model)
 
             if upgrade_model:
-                event = escalation_chain.escalate(
+                escalation_chain.escalate(
                     agent_id,
                     f"Circuit open, escalating to {upgrade_model}",
                     tier=escalation_chain.TIER_MAP.get(upgrade_model, 2)

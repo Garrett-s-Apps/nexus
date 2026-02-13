@@ -41,7 +41,7 @@ def sign_response(data: dict | list | str) -> str:
     }
 
     private_key = get_private_key()
-    return pyjwt.encode(payload, private_key, algorithm=ALGORITHM)
+    return str(pyjwt.encode(payload, private_key, algorithm=ALGORITHM))
 
 
 def verify_token(token: str, data: dict | list | str) -> bool:
@@ -53,7 +53,7 @@ def verify_token(token: str, data: dict | list | str) -> bool:
         body = json.dumps(data, sort_keys=True, default=str)
         expected_hash = hashlib.sha256(body.encode()).hexdigest()
 
-        return decoded.get("data_hash") == expected_hash
+        return bool(decoded.get("data_hash") == expected_hash)
     except pyjwt.ExpiredSignatureError:
         logger.warning("JWT expired")
         return False

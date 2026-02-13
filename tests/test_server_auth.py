@@ -141,10 +141,10 @@ async def test_protected_route_without_session(client):
 
 
 @pytest.mark.asyncio
-async def test_public_route_without_session(client):
-    """GET /state is public and returns data without auth."""
+async def test_protected_route_requires_auth(client):
+    """GET /state requires authentication (not public)."""
     response = await client.get("/state")
-    assert response.status_code == 200
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio

@@ -52,11 +52,13 @@ def _get_passphrase() -> str:
 
 
 def _persist_key(key: str):
-    """Append the generated key to the env file."""
+    """Append the generated key to the env file with restricted permissions."""
     from src.config import KEYS_PATH
     try:
-        with open(KEYS_PATH, "a") as f:
+        fd = os.open(KEYS_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as f:
             f.write(f"\nNEXUS_DASHBOARD_KEY={key}\n")
+        os.chmod(KEYS_PATH, 0o600)
     except OSError as e:
         logger.warning("Could not persist dashboard key: %s", e)
 

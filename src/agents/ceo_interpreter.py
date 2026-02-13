@@ -347,7 +347,7 @@ Be specific, data-driven, and concise.""",
         from src.cost.tracker import cost_tracker
         cost_tracker.record("sonnet", "vp_engineering", response.usage.input_tokens, response.usage.output_tokens)
 
-    return response.content[0].text  # type: ignore[union-attr]
+    return str(response.content[0].text)  # type: ignore[union-attr]
 
 
 async def execute_conversation(message: str, intent: dict, history: list[dict] | None = None) -> str:
@@ -404,7 +404,7 @@ His current vibe seems: {mood}""",
         from src.cost.tracker import cost_tracker
         cost_tracker.record("sonnet", "nexus_chat", response.usage.input_tokens, response.usage.output_tokens)
 
-    return response.content[0].text  # type: ignore[union-attr]
+    return str(response.content[0].text)  # type: ignore[union-attr]
 
 
 import os

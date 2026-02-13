@@ -147,7 +147,7 @@ def _ask_gemini(prompt: str, system: str = "") -> str:
                 model="gemini-2.0-flash",
                 contents=full_prompt,
             )
-            return response.text  # type: ignore[return-value]
+            return str(response.text)
         except Exception as e:
             print(f"[Documents] Gemini failed ({e}), falling back to Claude")
 
@@ -165,7 +165,7 @@ def _ask_gemini(prompt: str, system: str = "") -> str:
         system=system or "You generate document content as requested.",
         messages=messages,  # type: ignore[arg-type]
     )
-    return claude_response.content[0].text  # type: ignore[union-attr]
+    return str(claude_response.content[0].text)  # type: ignore[union-attr]
 
 
 def _parse_json(content: str) -> dict:

@@ -10,6 +10,7 @@ FastAPI on localhost:4200.
 
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -84,8 +85,8 @@ app.add_middleware(
     allow_origin_regex=r"https://.*\.trycloudflare\.com",
     allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Nexus-JWT"],
 )
 
 
@@ -123,9 +124,6 @@ async def jwt_signing_middleware(request: Request, call_next):
 
 _PUBLIC_PATHS = {
     "/auth/login", "/auth/check", "/health", "/dashboard/logo.svg",
-    "/events", "/state", "/agents", "/cost", "/org", "/directive",
-    "/services", "/status", "/sessions", "/metrics/health",
-    "/metrics/daily", "/metrics/agents",
 }
 _PUBLIC_PREFIXES = ("/auth/",)
 _TOKEN_HEADER = "Authorization"  # noqa: S105 — header name, not a password
@@ -135,7 +133,7 @@ def _get_client_ip(request: Request) -> str:
     """Extract client IP, respecting reverse-proxy headers."""
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        return str(forwarded.split(",")[0].strip())
     return request.client.host if request.client else "127.0.0.1"
 
 
@@ -237,7 +235,7 @@ async def auth_login(req: LoginRequest, request: Request):
         max_age=SESSION_TTL,
         httponly=True,
         samesite="strict",
-        secure=False,
+        secure=os.environ.get("NEXUS_ENV") != "development",
         path="/",
     )
     return resp

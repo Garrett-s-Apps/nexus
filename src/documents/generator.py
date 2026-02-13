@@ -265,8 +265,132 @@ def _parse_json(content: str) -> dict:
 # DOCX
 # ============================================
 
+def _parse_markdown_to_docx_elements(markdown_text: str) -> list[dict]:
+    """Parse markdown text into structured elements for DOCX rendering.
+
+    Handles headings (#), bullets (- or *), numbered lists (1.), code blocks (```),
+    tables (| ... |), blockquotes (>), and plain paragraphs.
+    """
+    import re
+
+    elements: list[dict] = []
+    lines = markdown_text.split("\n")
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Skip empty lines
+        if not stripped:
+            i += 1
+            continue
+
+        # Code block (```)
+        if stripped.startswith("```"):
+            language = stripped[3:].strip()
+            code_lines: list[str] = []
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                code_lines.append(lines[i])
+                i += 1
+            i += 1  # skip closing ```
+            elements.append({"type": "code", "code": "\n".join(code_lines), "language": language})
+            continue
+
+        # Headings (# through ####)
+        heading_match = re.match(r'^(#{1,4})\s+(.+)$', stripped)
+        if heading_match:
+            level = len(heading_match.group(1))
+            elements.append({"type": "heading", "text": heading_match.group(2).strip(), "level": level})
+            i += 1
+            continue
+
+        # Table (| Header | Header |)
+        if stripped.startswith("|") and "|" in stripped[1:]:
+            table_lines: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_lines.append(lines[i].strip())
+                i += 1
+            # Parse table
+            headers: list[str] = []
+            rows: list[list[str]] = []
+            for _ti, tline in enumerate(table_lines):
+                cells = [c.strip() for c in tline.strip("|").split("|")]
+                # Skip separator rows (|---|---|)
+                if all(re.match(r'^[-:]+$', c) for c in cells):
+                    continue
+                if not headers:
+                    headers = cells
+                else:
+                    rows.append(cells)
+            if headers:
+                elements.append({"type": "table", "headers": headers, "rows": rows})
+            continue
+
+        # Blockquote (>)
+        if stripped.startswith(">"):
+            quote_lines: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith(">"):
+                quote_lines.append(lines[i].strip().lstrip(">").strip())
+                i += 1
+            elements.append({"type": "quote", "text": " ".join(quote_lines)})
+            continue
+
+        # Bullet list (- or *)
+        if re.match(r'^[\-\*]\s+', stripped):
+            items: list[str] = []
+            while i < len(lines) and re.match(r'^\s*[\-\*]\s+', lines[i]):
+                items.append(re.sub(r'^\s*[\-\*]\s+', '', lines[i]).strip())
+                i += 1
+            elements.append({"type": "bullets", "items": items})
+            continue
+
+        # Numbered list (1. 2. etc.)
+        if re.match(r'^\d+[\.\)]\s+', stripped):
+            items = []
+            while i < len(lines) and re.match(r'^\s*\d+[\.\)]\s+', lines[i]):
+                items.append(re.sub(r'^\s*\d+[\.\)]\s+', '', lines[i]).strip())
+                i += 1
+            elements.append({"type": "numbered_list", "items": items})
+            continue
+
+        # Bold-prefixed lines that act as inline sub-headings (e.g., "**Key Point:** ...")
+        if stripped.startswith("**") and "**" in stripped[2:]:
+            elements.append({"type": "paragraph", "text": stripped})
+            i += 1
+            continue
+
+        # Plain paragraph — collect consecutive non-empty, non-special lines
+        para_lines: list[str] = []
+        while i < len(lines):
+            cur = lines[i].strip()
+            if not cur:
+                i += 1
+                break
+            # Stop if next line is a special element
+            if (cur.startswith("#") or cur.startswith("```") or cur.startswith("|")
+                    or cur.startswith(">") or re.match(r'^[\-\*]\s+', cur)
+                    or re.match(r'^\d+[\.\)]\s+', cur)):
+                break
+            para_lines.append(cur)
+            i += 1
+        if para_lines:
+            elements.append({"type": "paragraph", "text": " ".join(para_lines)})
+        continue
+
+    return elements
+
+
 def create_docx(title: str, request: str, output_dir: str | None = None) -> str:
-    """Generate a Word document based on the request."""
+    """Generate a Word document based on the request.
+
+    Uses a markdown-based generation approach: the LLM produces well-formatted
+    markdown prose, which is then parsed into DOCX elements. This avoids the
+    fragile JSON serialization that caused raw JSON to appear in documents.
+    """
+    import re
+
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement
@@ -274,34 +398,35 @@ def create_docx(title: str, request: str, output_dir: str | None = None) -> str:
     from docx.shared import Pt, RGBColor
 
     content = _ask_gemini(
-        f"Generate the full content for a professional document.\n\n"
+        f"Write the full content for a professional document.\n\n"
         f"Title: {title}\n"
         f"Request: {request}\n\n"
-        f"Return the content as JSON with this exact structure:\n"
-        f'{{"title": "...", "subtitle": "...", "author": "NEXUS", "sections": ['
-        f'{{"heading": "...", "level": 1, "content": ['
-        f'{{"type": "paragraph", "text": "..."}}, '
-        f'{{"type": "bullets", "items": ["...", "..."]}}, '
-        f'{{"type": "numbered_list", "items": ["...", "..."]}}, '
-        f'{{"type": "table", "headers": ["..."], "rows": [["...", "..."]]}} '
-        f'{{"type": "code", "language": "python", "code": "..."}}, '
-        f'{{"type": "quote", "text": "...", "attribution": "..."}}'
-        f']}}, ...]}}\n\n'
-        f"Only return the JSON, nothing else.",
-        system="You generate document content as structured JSON. No markdown, no code fences, just JSON. "
+        f"FORMAT RULES:\n"
+        f"- Write in well-structured markdown with proper headings (# for top-level, ## for sub-sections, ### for details).\n"
+        f"- Use bullet lists (- item), numbered lists (1. item), tables (| col | col |), and code blocks (```) where appropriate.\n"
+        f"- Write substantive prose paragraphs — not bullet-only content. Each section should have explanatory text.\n"
+        f"- Do NOT wrap output in JSON. Do NOT use code fences around the entire document.\n"
+        f"- Do NOT include ```markdown or ```json wrappers.\n"
+        f"- Output ONLY the markdown document content, starting with the first # heading.\n",
+        system="You are a professional technical writer. Write detailed, well-structured markdown documents. "
+               "Never output JSON. Never wrap your response in code fences. Write natural prose with markdown formatting. "
                "If the request includes INTERNAL DATA sections, use that real data as the basis for the document content. "
                "Do NOT invent or hallucinate information when real data is provided."
     )
 
-    try:
-        data = _parse_json(content)
-    except json.JSONDecodeError:
-        data = {
-            "title": title,
-            "subtitle": "",
-            "author": "NEXUS",
-            "sections": [{"heading": "Content", "level": 1, "content": [{"type": "paragraph", "text": content}]}],
-        }
+    # Strip any accidental markdown code fence wrapping
+    content = content.strip()
+    if content.startswith("```markdown"):
+        content = content[len("```markdown"):].strip()
+    if content.startswith("```md"):
+        content = content[len("```md"):].strip()
+    if content.startswith("```"):
+        content = content[3:].strip()
+    if content.endswith("```"):
+        content = content[:-3].strip()
+
+    # Parse the markdown into structured elements
+    elements = _parse_markdown_to_docx_elements(content)
 
     doc = Document()
 
@@ -314,18 +439,10 @@ def create_docx(title: str, request: str, output_dir: str | None = None) -> str:
     # Cover page
     title_para = doc.add_paragraph()
     title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title_run = title_para.add_run(data.get("title", title))
+    title_run = title_para.add_run(title)
     title_run.font.name = 'Cambria'
     title_run.font.size = Pt(28)
     title_run.font.bold = True
-
-    if data.get("subtitle"):
-        subtitle_para = doc.add_paragraph()
-        subtitle_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        subtitle_run = subtitle_para.add_run(data["subtitle"])
-        subtitle_run.font.name = 'Calibri'
-        subtitle_run.font.size = Pt(14)
-        subtitle_run.font.color.rgb = RGBColor(0x66, 0x66, 0x88)
 
     doc.add_paragraph("")
     doc.add_paragraph("")
@@ -348,121 +465,162 @@ def create_docx(title: str, request: str, output_dir: str | None = None) -> str:
     doc.add_page_break()
 
     # Section counter for numbering
-    section_counters = {1: 0, 2: 0, 3: 0}
+    section_counters = {1: 0, 2: 0, 3: 0, 4: 0}
 
-    # Sections
-    for section in data.get("sections", []):
-        level = section.get("level", 1)
+    def _strip_markdown_inline(text: str) -> list[tuple[str, bool, bool]]:
+        """Split text into runs with bold/italic flags for inline markdown.
 
-        if section.get("heading"):
+        Returns list of (text, is_bold, is_italic) tuples.
+        """
+        runs: list[tuple[str, bool, bool]] = []
+        # Pattern: **bold**, *italic*, ***bold+italic***
+        pattern = re.compile(r'(\*{1,3})(.*?)\1')
+        pos = 0
+        for m in pattern.finditer(text):
+            # Add preceding plain text
+            if m.start() > pos:
+                runs.append((text[pos:m.start()], False, False))
+            stars = len(m.group(1))
+            inner = m.group(2)
+            if stars == 3:
+                runs.append((inner, True, True))
+            elif stars == 2:
+                runs.append((inner, True, False))
+            else:
+                runs.append((inner, False, True))
+            pos = m.end()
+        # Remaining text
+        if pos < len(text):
+            runs.append((text[pos:], False, False))
+        return runs if runs else [(text, False, False)]
+
+    def _add_rich_paragraph(doc_ref, text: str, style_name: str | None = None):
+        """Add a paragraph with inline bold/italic markdown rendered."""
+        para = doc_ref.add_paragraph(style=style_name)
+        para.paragraph_format.space_after = Pt(6)
+        for run_text, is_bold, is_italic in _strip_markdown_inline(text):
+            run = para.add_run(run_text)
+            if is_bold:
+                run.font.bold = True
+            if is_italic:
+                run.font.italic = True
+        return para
+
+    # Render elements
+    for elem in elements:
+        elem_type = elem.get("type")
+
+        if elem_type == "heading":
+            level = min(elem.get("level", 1), 3)
+            text = elem.get("text", "")
+
             # Update section numbering
             section_counters[level] += 1
-            if level == 1:
-                section_counters[2] = 0
-                section_counters[3] = 0
-            elif level == 2:
-                section_counters[3] = 0
+            for reset_level in range(level + 1, 5):
+                section_counters[reset_level] = 0
 
-            # Create section number
+            # Build section number
             if level == 1:
                 section_num = f"{section_counters[1]}. "
             elif level == 2:
-                section_num = f"{section_counters[1]}.{section_counters[2]}. "
+                section_num = f"{section_counters[1]}.{section_counters[2]} "
             else:
-                section_num = f"{section_counters[1]}.{section_counters[2]}.{section_counters[3]}. "
+                section_num = f"{section_counters[1]}.{section_counters[2]}.{section_counters[3]} "
 
-            heading = doc.add_heading(section_num + section["heading"], level=level)
+            heading = doc.add_heading(section_num + text, level=level)
             heading.paragraph_format.space_before = Pt(12)
             heading.paragraph_format.space_after = Pt(6)
-            heading_run = heading.runs[0]
-            heading_run.font.name = 'Cambria'
+            if heading.runs:
+                heading.runs[0].font.name = 'Cambria'
 
-        # Render content items
-        for item in section.get("content", []):
-            item_type = item.get("type")
+        elif elem_type == "paragraph":
+            _add_rich_paragraph(doc, elem.get("text", ""))
 
-            if item_type == "paragraph":
-                para = doc.add_paragraph(item.get("text", ""))
-                para.paragraph_format.space_after = Pt(6)
+        elif elem_type == "bullets":
+            for bullet_text in elem.get("items", []):
+                para = doc.add_paragraph(style='List Bullet')
+                para.paragraph_format.space_after = Pt(3)
+                for run_text, is_bold, is_italic in _strip_markdown_inline(bullet_text):
+                    run = para.add_run(run_text)
+                    if is_bold:
+                        run.font.bold = True
+                    if is_italic:
+                        run.font.italic = True
+            doc.add_paragraph("")
 
-            elif item_type == "bullets":
-                for bullet_text in item.get("items", []):
-                    para = doc.add_paragraph(bullet_text, style='List Bullet')
-                    para.paragraph_format.space_after = Pt(3)
-                doc.add_paragraph("")  # Space after bullet list
+        elif elem_type == "numbered_list":
+            for num_text in elem.get("items", []):
+                para = doc.add_paragraph(style='List Number')
+                para.paragraph_format.space_after = Pt(3)
+                for run_text, is_bold, is_italic in _strip_markdown_inline(num_text):
+                    run = para.add_run(run_text)
+                    if is_bold:
+                        run.font.bold = True
+                    if is_italic:
+                        run.font.italic = True
+            doc.add_paragraph("")
 
-            elif item_type == "numbered_list":
-                for num_text in item.get("items", []):
-                    para = doc.add_paragraph(num_text, style='List Number')
-                    para.paragraph_format.space_after = Pt(3)
-                doc.add_paragraph("")  # Space after numbered list
+        elif elem_type == "table":
+            headers = elem.get("headers", [])
+            rows = elem.get("rows", [])
 
-            elif item_type == "table":
-                headers = item.get("headers", [])
-                rows = item.get("rows", [])
+            if headers:
+                num_rows = 1 + len(rows)
+                table = doc.add_table(rows=num_rows, cols=len(headers))
+                table.style = 'Light Grid Accent 1'
 
-                if headers and rows:
-                    table = doc.add_table(rows=1 + len(rows), cols=len(headers))
-                    table.style = 'Light Grid Accent 1'
+                # Header row
+                header_cells = table.rows[0].cells
+                for ci, header in enumerate(headers):
+                    header_cells[ci].text = header
+                    for paragraph in header_cells[ci].paragraphs:
+                        for run in paragraph.runs:
+                            run.font.bold = True
 
-                    # Header row
-                    header_cells = table.rows[0].cells
-                    for i, header in enumerate(headers):
-                        header_cells[i].text = header
-                        # Style header
-                        for paragraph in header_cells[i].paragraphs:
-                            for run in paragraph.runs:
-                                run.font.bold = True
+                # Data rows
+                for row_idx, row_data in enumerate(rows):
+                    row_cells = table.rows[row_idx + 1].cells
+                    for col_idx, cell_data in enumerate(row_data):
+                        if col_idx < len(row_cells):
+                            row_cells[col_idx].text = str(cell_data)
 
-                    # Data rows
-                    for row_idx, row_data in enumerate(rows):
-                        row_cells = table.rows[row_idx + 1].cells
-                        for col_idx, cell_data in enumerate(row_data):
-                            if col_idx < len(row_cells):
-                                row_cells[col_idx].text = str(cell_data)
+                doc.add_paragraph("")
 
-                    doc.add_paragraph("")  # Space after table
+        elif elem_type == "code":
+            code_para = doc.add_paragraph()
+            code_run = code_para.add_run(elem.get("code", ""))
+            code_run.font.name = 'Courier New'
+            code_run.font.size = Pt(9)
 
-            elif item_type == "code":
-                code_para = doc.add_paragraph()
-                code_run = code_para.add_run(item.get("code", ""))
-                code_run.font.name = 'Courier New'
-                code_run.font.size = Pt(9)
+            shading_elm = OxmlElement('w:shd')
+            shading_elm.set(qn('w:fill'), 'F0F0F5')
+            code_para._element.get_or_add_pPr().append(shading_elm)
 
-                # Add light gray background
-                shading_elm = OxmlElement('w:shd')
-                shading_elm.set(qn('w:fill'), 'F0F0F5')
-                code_para._element.get_or_add_pPr().append(shading_elm)
+            code_para.paragraph_format.space_after = Pt(6)
+            code_para.paragraph_format.left_indent = Pt(20)
 
-                code_para.paragraph_format.space_after = Pt(6)
-                code_para.paragraph_format.left_indent = Pt(20)
+        elif elem_type == "quote":
+            quote_para = doc.add_paragraph()
+            quote_para.paragraph_format.left_indent = Pt(40)
+            quote_para.paragraph_format.space_after = Pt(6)
 
-            elif item_type == "quote":
-                quote_para = doc.add_paragraph()
-                quote_para.paragraph_format.left_indent = Pt(40)
-                quote_para.paragraph_format.space_after = Pt(6)
-
-                quote_run = quote_para.add_run(f'"{item.get("text", "")}"')
-                quote_run.font.italic = True
-
-                if item.get("attribution"):
-                    quote_para.add_run(f"\n— {item['attribution']}")
+            quote_run = quote_para.add_run(f'"{elem.get("text", "")}"')
+            quote_run.font.italic = True
 
     # Add header
-    section = doc.sections[0]
-    header = section.header
+    doc_section = doc.sections[0]
+    header = doc_section.header
     header_para = header.paragraphs[0]
-    header_run = header_para.add_run(data.get("title", title))
+    header_run = header_para.add_run(title)
     header_run.font.size = Pt(9)
     header_run.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
 
     # Add footer with page number
-    footer = section.footer
+    footer = doc_section.footer
     footer_para = footer.paragraphs[0]
     footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     footer_para.add_run("Page ")
 
-    # Add page number field
     fldChar1 = OxmlElement('w:fldChar')
     fldChar1.set(qn('w:fldCharType'), 'begin')
 

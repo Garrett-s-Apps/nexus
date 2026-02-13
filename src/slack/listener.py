@@ -618,7 +618,7 @@ async def start_slack_listener():
                 })
                 if doc_info["format"] == "text":
                     # Enrich with internal + web data, let engine respond with formatted text
-                    internal_context = _gather_internal_context(text)
+                    internal_context = await _gather_internal_context(text)
                     web_context = ""
                     search_query = _needs_web_enrichment(text, bool(internal_context))
                     if search_query:

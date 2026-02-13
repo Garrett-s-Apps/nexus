@@ -79,7 +79,7 @@ async def converse(message: str, history: list[dict] | None = None) -> dict:
     messages = _fix_alternation(messages)
 
     response = await client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-5-20250929",
         max_tokens=2048,
         system=_build_system_prompt(),
         messages=messages,

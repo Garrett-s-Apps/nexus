@@ -16,15 +16,13 @@ import google.genai as genai
 from src.config import get_key as _load_key  # consolidated key loading
 
 
-def _classify_context_needs(message: str) -> list[str]:
+async def _classify_context_needs(message: str) -> list[str]:
     """Use LLM to determine which internal data sources are relevant to a request.
 
     Returns a list of source tags: "org", "costs", "architecture", "dependencies",
     "readme", "source_tree", "config".
     """
     try:
-        import asyncio
-
         from src.agents.base import allm_call
         from src.agents.org_chart import HAIKU
 
@@ -47,8 +45,7 @@ Example: ["architecture", "dependencies", "source_tree", "readme"]
 
 Return ONLY the JSON array."""
 
-        loop = asyncio.get_event_loop()
-        raw, _ = loop.run_until_complete(allm_call(prompt, HAIKU, max_tokens=200))
+        raw, _ = await allm_call(prompt, HAIKU, max_tokens=200)
         cleaned = raw.strip()
         if "```" in cleaned:
             cleaned = cleaned.split("```json")[-1].split("```")[0].strip() if "```json" in cleaned else cleaned.split("```")[1].strip()
@@ -62,13 +59,13 @@ Return ONLY the JSON array."""
     return ["org", "architecture", "dependencies", "readme", "source_tree", "config"]
 
 
-def _gather_internal_context(message: str) -> str:
+async def _gather_internal_context(message: str) -> str:
     """Gather internal NEXUS data relevant to a document request.
 
     Uses LLM classification to determine which data sources are needed,
     then loads them from disk and runtime state.
     """
-    sources = _classify_context_needs(message)
+    sources = await _classify_context_needs(message)
     context_parts: list[str] = []
     repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -227,7 +224,7 @@ def _ask_gemini(prompt: str, system: str = "") -> str:
             client = genai.Client(api_key=api_key)
             full_prompt = f"{system}\n\n{prompt}" if system else prompt
             response = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-2.5-pro",
                 contents=full_prompt,
             )
             return str(response.text)
@@ -243,7 +240,7 @@ def _ask_gemini(prompt: str, system: str = "") -> str:
     claude_client = anthropic.Anthropic(api_key=anthropic_key)
     messages = [{"role": "user", "content": prompt}]
     claude_response = claude_client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-5-20250929",
         max_tokens=4096,
         system=system or "You generate document content as requested.",
         messages=messages,  # type: ignore[arg-type]
@@ -1363,7 +1360,7 @@ async def generate_document(message: str, doc_info: dict) -> dict:
     fmt = doc_info["format"]
 
     # Gather internal NEXUS data relevant to the request
-    internal_context = _gather_internal_context(message)
+    internal_context = await _gather_internal_context(message)
 
     # Search the web if the request needs public info
     web_context = ""

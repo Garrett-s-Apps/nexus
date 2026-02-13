@@ -111,10 +111,24 @@ class MLStore:
             updated_at REAL NOT NULL
         )""")
 
+        # RAG knowledge chunks — general-purpose semantic store
+        c.execute("""CREATE TABLE IF NOT EXISTS knowledge_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chunk_type TEXT NOT NULL,
+            source_id TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            metadata TEXT DEFAULT '{}',
+            created_at REAL NOT NULL,
+            UNIQUE(source_id)
+        )""")
+
         c.execute("CREATE INDEX IF NOT EXISTS idx_outcomes_agent ON task_outcomes(agent_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_outcomes_directive ON task_outcomes(directive_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_circuit_agent ON circuit_events(agent_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_escalation_agent ON escalation_events(agent_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_chunks_type ON knowledge_chunks(chunk_type)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_chunks_source ON knowledge_chunks(source_id)")
 
         self._db.commit()
 
@@ -208,6 +222,64 @@ class MLStore:
         c = self._db.cursor()
         c.execute("SELECT * FROM directive_embeddings ORDER BY created_at DESC")
         return [dict(r) for r in c.fetchall()]
+
+    # === RAG KNOWLEDGE CHUNKS ===
+    def store_chunk(
+        self,
+        chunk_type: str,
+        content: str,
+        embedding: bytes,
+        source_id: str = "",
+        metadata: dict | None = None,
+    ):
+        with self._lock:
+            self._db.cursor().execute(
+                "INSERT INTO knowledge_chunks "
+                "(chunk_type,source_id,content,embedding,metadata,created_at) "
+                "VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(source_id) DO UPDATE SET "
+                "content=excluded.content, embedding=excluded.embedding, "
+                "metadata=excluded.metadata, created_at=excluded.created_at",
+                (chunk_type, source_id, content, embedding,
+                 json.dumps(metadata or {}), time.time()),
+            )
+            self._db.commit()
+
+    def get_all_chunks(
+        self, chunk_type: str | None = None, limit: int = 500,
+    ) -> list[dict]:
+        c = self._db.cursor()
+        if chunk_type:
+            c.execute(
+                "SELECT * FROM knowledge_chunks WHERE chunk_type=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (chunk_type, limit),
+            )
+        else:
+            c.execute(
+                "SELECT * FROM knowledge_chunks ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+        return [dict(r) for r in c.fetchall()]
+
+    def count_chunks(self) -> dict:
+        c = self._db.cursor()
+        rows = c.execute(
+            "SELECT chunk_type, COUNT(*) as cnt FROM knowledge_chunks GROUP BY chunk_type"
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def prune_old_chunks(self, max_age_days: int = 30, keep_types: tuple = ("error_resolution",)):
+        """Remove chunks older than max_age_days, preserving high-value types."""
+        cutoff = time.time() - (max_age_days * 86400)
+        placeholders = ",".join("?" for _ in keep_types)
+        with self._lock:
+            self._db.cursor().execute(
+                f"DELETE FROM knowledge_chunks WHERE created_at < ? "
+                f"AND chunk_type NOT IN ({placeholders})",
+                (cutoff, *keep_types),
+            )
+            self._db.commit()
 
     # === CIRCUIT BREAKER EVENTS ===
     def record_circuit_event(

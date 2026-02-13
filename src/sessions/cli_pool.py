@@ -159,6 +159,12 @@ class CLISessionPool:
             while True:
                 await asyncio.sleep(300)
                 await self.cleanup_stale()
+                # Periodic RAG maintenance — prune old chunks
+                try:
+                    from src.ml.store import ml_store
+                    ml_store.prune_old_chunks(max_age_days=30)
+                except Exception:
+                    pass
 
         self._cleanup_task = asyncio.ensure_future(_loop())
 

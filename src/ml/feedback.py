@@ -51,6 +51,17 @@ def record_task_outcome(
         model=model,
     )
 
+    # Ingest into RAG knowledge base
+    try:
+        from src.ml.rag import ingest_task_outcome
+        ingest_task_outcome(
+            directive_id=directive_id, task_id=task_id,
+            agent_id=agent_id, description=task_description,
+            outcome=outcome, defect_count=defect_count, cost_usd=cost_usd,
+        )
+    except Exception:
+        pass  # RAG ingestion is best-effort
+
     _outcomes_since_train += 1
     logger.debug(
         "Recorded outcome: %s by %s → %s (cost=$%.4f, defects=%d)",
@@ -151,6 +162,7 @@ def record_escalation(
 def get_learning_status() -> dict:
     """Get overall ML learning system status."""
     from src.ml.predictor import predictor_status
+    from src.ml.rag import rag_status
     from src.ml.router import router_status
 
     data = ml_store.get_training_data_count()
@@ -158,6 +170,7 @@ def get_learning_status() -> dict:
         "data": data,
         "router": router_status(),
         "predictors": predictor_status(),
+        "rag": rag_status(),
         "outcomes_since_retrain": _outcomes_since_train,
         "retrain_threshold": RETRAIN_THRESHOLD,
     }

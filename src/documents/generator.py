@@ -62,6 +62,77 @@ def _gather_internal_context(message: str) -> str:
         except ImportError:
             pass
 
+    # Architecture / technical documentation
+    arch_keywords = ["architecture", "system design", "technical", "services",
+                     "api", "apis", "data flow", "auth", "authentication",
+                     "infrastructure", "stack", "libraries", "dependencies",
+                     "database", "endpoints", "how it works", "current state"]
+    if any(kw in msg_lower for kw in arch_keywords):
+        repo_root = os.path.join(os.path.dirname(__file__), "..", "..")
+        repo_root = os.path.normpath(repo_root)
+
+        # Load ARCHITECTURE.md — the primary technical reference
+        arch_path = os.path.join(repo_root, "docs", "ARCHITECTURE.md")
+        if os.path.exists(arch_path):
+            with open(arch_path) as f:
+                content = f.read()
+            context_parts.append(
+                "=== NEXUS INTERNAL DATA: Architecture Documentation ===\n"
+                f"{content}\n"
+                "=== END INTERNAL DATA ===\n"
+            )
+
+        # Load requirements.txt for dependency inventory
+        req_path = os.path.join(repo_root, "requirements.txt")
+        if os.path.exists(req_path):
+            with open(req_path) as f:
+                content = f.read()
+            context_parts.append(
+                "=== NEXUS INTERNAL DATA: Python Dependencies (requirements.txt) ===\n"
+                f"{content}\n"
+                "=== END INTERNAL DATA ===\n"
+            )
+
+        # Load pyproject.toml for project metadata
+        pyproject_path = os.path.join(repo_root, "pyproject.toml")
+        if os.path.exists(pyproject_path):
+            with open(pyproject_path) as f:
+                content = f.read()
+            context_parts.append(
+                "=== NEXUS INTERNAL DATA: Project Config (pyproject.toml) ===\n"
+                f"{content}\n"
+                "=== END INTERNAL DATA ===\n"
+            )
+
+        # Load README for high-level overview
+        readme_path = os.path.join(repo_root, "README.md")
+        if os.path.exists(readme_path):
+            with open(readme_path) as f:
+                content = f.read()
+            context_parts.append(
+                "=== NEXUS INTERNAL DATA: README ===\n"
+                f"{content}\n"
+                "=== END INTERNAL DATA ===\n"
+            )
+
+        # Source tree structure for module layout
+        src_dir = os.path.join(repo_root, "src")
+        if os.path.isdir(src_dir):
+            tree_lines = []
+            for root, dirs, files in os.walk(src_dir):
+                dirs[:] = [d for d in sorted(dirs) if d != "__pycache__"]
+                depth = root.replace(src_dir, "").count(os.sep)
+                indent = "  " * depth
+                tree_lines.append(f"{indent}{os.path.basename(root)}/")
+                for f in sorted(files):
+                    if f.endswith(".py"):
+                        tree_lines.append(f"{indent}  {f}")
+            context_parts.append(
+                "=== NEXUS INTERNAL DATA: Source Tree ===\n"
+                + "\n".join(tree_lines) + "\n"
+                "=== END INTERNAL DATA ===\n"
+            )
+
     # Project / registry info from ORG_CHART.md on disk
     if not context_parts:
         # Broader check: if message mentions NEXUS-specific nouns, load org chart file

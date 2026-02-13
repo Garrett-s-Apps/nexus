@@ -4,31 +4,128 @@
 
 A 26-agent autonomous software engineering organization controlled entirely through natural language. Tell it what to build. It figures out the rest.
 
+NEXUS doesn't just execute tasks — it learns from every outcome, predicts costs before committing resources, and routes work to agents based on historical success patterns.
+
+---
+
 ## Architecture
 
 ```
 You (CEO)
   └─ Slack / Neovim / CLI / API
        └─ NEXUS Server (localhost:4200)
-            ├─ CEO Interpreter (Opus) — classifies your intent
+            ├─ CEO Interpreter (Opus) — classifies intent into actions
+            ├─ LangGraph Orchestrator — decomposes directives into tasks
+            │     ├─ ML Agent Router — learned task→agent matching
+            │     ├─ ML Intelligence Briefing — similar past work + cost estimate
+            │     └─ Feedback Loop — records every outcome for retraining
+            ├─ Agent SDK Bridge — executes code via Claude Code CLI
             ├─ Agent Registry (SQLite) — dynamic org management
-            ├─ LangGraph Orchestrator — routes work through the org
-            ├─ Agent SDK Bridge — executes code via Claude Agent SDK
+            ├─ Plugin Review Pipeline — LSP, security, quality checks
+            ├─ ML Prediction Engine — cost, quality, escalation forecasting
             └─ Multi-Model — Anthropic, Google, OpenAI
 ```
 
+### Pipeline Flow
+
+```
+Directive ──► CEO Interpreter ──► Decomposition ──► Task Assignment
+                                                        │
+                    ┌───────────────────────────────────┘
+                    ▼
+              ML Intelligence Briefing
+              (similar directives, cost estimate, risk assessment)
+                    │
+                    ▼
+              ML Agent Router ──► keyword fallback if <20 training samples
+                    │
+                    ▼
+              Agent Execution (Claude Code CLI sessions)
+                    │
+                    ├── Success ──► QA Review ──► Plugin Review ──► Complete
+                    ├── Failure ──► Retry / Escalate
+                    └── Circuit Open ──► Model Upgrade / Reassign
+                    │
+                    ▼
+              Feedback Loop (every outcome recorded → auto-retrain)
+```
+
+### Data Stores
+
+| Database | Location | Purpose |
+|----------|----------|---------|
+| `memory.db` | `~/.nexus/` | Directives, tasks, events, peer decisions |
+| `cost.db` | `~/.nexus/` | Per-API-call token usage and costs |
+| `kpi.db` | `~/.nexus/` | Productivity and quality metrics |
+| `registry.db` | `~/.nexus/` | Agent configurations and org structure |
+| `ml.db` | `~/.nexus/` | Task outcomes, embeddings, model artifacts, circuit events |
+
+---
+
 ## The Organization
 
-| Layer | Agents | Model |
-|-------|--------|-------|
-| Executive | CEO, CPO, CFO, CRO | Opus |
-| Management | VP Eng, Tech Lead, 3 EMs | Opus/Sonnet |
-| Senior | 4 Senior Engineers | Sonnet |
-| Implementation | 5 Developers | Sonnet |
-| Quality | QA Lead, 2 Test Eng, Linting | Sonnet/Haiku |
-| Consultants | Security (Opus), UX (Gemini), Systems (o3), Cost (Haiku) | Mixed |
+| Layer | Agents | Model | Responsibility |
+|-------|--------|-------|----------------|
+| Executive | CEO, CPO, CFO, CRO | Opus | Strategy, budget, quality bar, velocity |
+| Management | VP Eng, Tech Lead, 3 EMs | Opus/Sonnet | Architecture, team leadership, PR governance |
+| Senior | 4 Senior Engineers | Sonnet | Code review, design system, API contracts |
+| Implementation | 5 Developers | Sonnet | Frontend, backend, full-stack, DevOps |
+| Quality | QA Lead, 2 Test Eng, Linting | Sonnet/Haiku | Test strategy, frontend/backend testing |
+| Consultants | Security, UX, Systems, Cost | Mixed | On-demand specialist advisory |
 
 All agents are dynamically managed. Hire, fire, promote, reassign — all through natural language.
+
+---
+
+## Machine Learning — Self-Learning System
+
+NEXUS learns from its own execution history. Every task outcome, cost event, and escalation becomes training data.
+
+### What It Learns
+
+| Capability | Model | What It Does |
+|-----------|-------|-------------|
+| **Agent Routing** | TF-IDF + RandomForest | Routes tasks to agents based on who historically succeeds at similar work. Replaces brittle keyword matching. |
+| **Cost Prediction** | TF-IDF + RandomForest Regressor | Estimates total directive cost with confidence interval before execution begins. |
+| **Quality Prediction** | TF-IDF + GradientBoosting | Predicts P(first-pass approval) per agent+task. Recommends reviewer pre-assignment when risk is high. |
+| **Escalation Prediction** | TF-IDF + GradientBoosting | Predicts P(escalation needed) from agent reliability history. Suggests preemptive model upgrades. |
+| **Directive Similarity** | Sentence-Transformers (all-MiniLM-L6-v2) | Finds past directives semantically similar to new ones — "we did something like this before." |
+
+### Cold-Start Design
+
+Every ML feature degrades gracefully when training data is insufficient:
+
+| Feature | Cold Start | After Training |
+|---------|-----------|---------------|
+| Agent routing | Keyword matching | ML routing (>20 samples) |
+| Cost prediction | No estimate | Prediction + confidence interval (>15 samples) |
+| Directive similarity | No matches | Semantic search across all past directives |
+| Embeddings | Hash-based pseudo-vectors | TF-IDF vectors → Sentence-transformer vectors |
+
+### How It Learns
+
+1. **Every task completion/failure** records: agent, task description, outcome, cost, duration, defect count
+2. **Every directive completion** stores a 384-dim embedding for future similarity search
+3. **Every circuit breaker trip/recovery** persists reliability data (previously lost on restart)
+4. **After every 10 new outcomes**, all models retrain automatically (throttled to 1x/hour)
+
+### ML Use Cases
+
+**Before a directive runs:**
+- "3 similar directives found — last one cost $2.45 across 8 tasks"
+- "Predicted cost: $3.12 +/- $0.80"
+- "Agent be_engineer_1 has 92% success rate on similar backend tasks"
+
+**During task assignment:**
+- Routes a "build React dashboard" task to `fe_engineer_1` (0.87 confidence) instead of keyword-guessing
+- Flags `be_engineer_2` as high escalation risk (3 circuit trips in past week) and suggests `be_engineer_1`
+
+**After execution:**
+- Quality predictor recommends pre-assigning reviewer when P(defects) > 0.5
+- Cost predictor refines estimates as more directives complete
+- Agent router improves routing accuracy with each successful outcome
+
+---
 
 ## Quick Start
 
@@ -59,19 +156,43 @@ chmod 600 ~/.nexus/.env.keys
 python -m src.main
 ```
 
+---
+
 ## Usage
 
 ### Slack (Primary Interface)
 
 Send messages in your configured Slack channel:
 
+**Build software:**
 ```
-Build me a landing page for RezFix
+Build me a landing page for our SaaS product with pricing and signup
+Create a REST API for user authentication with JWT tokens
+Set up a CI/CD pipeline for the mobile app repo
+Refactor the payment service to support Stripe and PayPal
+```
+
+**Manage the org:**
+```
 What's our current org structure?
 Hire a performance engineer, Sonnet, reports to EM Backend
 Fire the frontend dev and have fullstack cover it
-Create a pitch deck for investor meetings
+Promote the QA lead to EM Platform
+```
+
+**Generate documents:**
+```
+Create a pitch deck showing problem, solution, and market size
+Write a PDF report on our Q1 engineering metrics
+Generate a Word doc outlining the 90-day product roadmap
+```
+
+**Get intelligence:**
+```
 What's our burn rate?
+Show me agent performance stats
+How did similar projects go in the past?
+Which engineers have the best success rate on backend tasks?
 ```
 
 ### Neovim
@@ -97,22 +218,24 @@ python nexus_cli.py message "Deploy to staging"
 ### API
 
 ```bash
+# Send a directive
 curl -X POST http://127.0.0.1:4200/message \
   -H "Content-Type: application/json" \
-  -d '{"message": "Show me the org", "source": "api"}'
+  -d '{"message": "Build a user dashboard", "source": "api"}'
+
+# Check ML learning status
+curl http://127.0.0.1:4200/ml/status
+
+# Find similar past directives
+curl -X POST http://127.0.0.1:4200/ml/similar \
+  -H "Content-Type: application/json" \
+  -d '{"text": "build authentication system", "top_k": 5}'
+
+# Get agent performance stats
+curl http://127.0.0.1:4200/ml/agent/be_engineer_1/stats
 ```
 
-## Document Generation
-
-Ask for any document and NEXUS generates and uploads it to Slack:
-
-```
-Create a pitch deck for RezFix showing problem, solution, and market size
-Write a PDF report on our Q1 engineering metrics
-Generate a Word doc outlining the 90-day roadmap for The Prompt Fixer
-```
-
-Supports: `.docx`, `.pptx`, `.pdf`
+---
 
 ## API Endpoints
 
@@ -123,10 +246,22 @@ Supports: `.docx`, `.pptx`, `.pdf`
 | `/message` | POST | Universal input — CEO interpreter routes everything |
 | `/talk` | POST | Direct conversation with specific agent |
 | `/org` | GET | Full org summary and reporting tree |
-| `/org/chart` | GET | Generated org chart markdown |
+| `/org/chart` | GET | Generated org chart |
 | `/kpi` | GET | KPI dashboard |
 | `/sessions` | GET | Recent session history |
 | `/session/{id}` | GET | Session detail with messages |
+| `/ml/status` | GET | ML model readiness, training data counts |
+| `/ml/train` | POST | Force retrain all ML models |
+| `/ml/similar` | POST | Find similar past directives by semantic search |
+| `/ml/agent/{id}/stats` | GET | ML-derived agent performance stats |
+
+## Document Generation
+
+Ask for any document and NEXUS generates and uploads it to Slack:
+
+Supports: `.docx`, `.pptx`, `.pdf`
+
+---
 
 ## Auto-Start (macOS)
 
@@ -136,14 +271,22 @@ bash install_service.sh
 
 NEXUS starts on login, restarts on crash. Logs at `~/.nexus/logs/`.
 
+---
+
 ## Tech Stack
 
-- **Orchestration**: LangGraph + Claude Agent SDK
-- **Server**: FastAPI + Uvicorn
-- **Persistence**: SQLite (registry, sessions, KPIs)
-- **Communication**: Slack Socket Mode
-- **Models**: Claude Opus/Sonnet/Haiku, Gemini, OpenAI o3
-- **IDE**: Neovim Lua plugin (extensible to any IDE)
+| Category | Technology |
+|----------|-----------|
+| **Orchestration** | LangGraph + Claude Agent SDK |
+| **Server** | FastAPI + Uvicorn |
+| **Persistence** | SQLite (5 databases — registry, memory, cost, KPIs, ML) |
+| **Communication** | Slack Socket Mode |
+| **Models** | Claude Opus/Sonnet/Haiku, Gemini, OpenAI o3 |
+| **ML** | scikit-learn (routing, prediction), sentence-transformers (embeddings), numpy |
+| **IDE** | Neovim Lua plugin (extensible to any IDE) |
+| **Security** | SOC 2 Type II controls, JWT auth, encrypted key store |
+
+---
 
 ## License
 

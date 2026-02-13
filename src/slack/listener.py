@@ -28,6 +28,8 @@ from src.documents.generator import (
     generate_document,
 )
 from src.memory.store import memory
+from src.ml.rag import build_rag_context, ingest_conversation
+from src.ml.similarity import analyze_new_directive
 from src.sessions.cli_pool import CLISession, cli_pool
 
 
@@ -228,7 +230,11 @@ async def download_and_parse_file(url: str, filename: str, bot_token: str) -> st
                         import shutil
                         img_dir = os.path.join(tempfile.gettempdir(), "nexus_images")
                         os.makedirs(img_dir, exist_ok=True)
-                        img_path = os.path.join(img_dir, filename)
+                        # Sanitize filename to prevent path traversal attacks
+                        safe_filename = os.path.basename(filename)
+                        if not safe_filename:
+                            safe_filename = "image"
+                        img_path = os.path.join(img_dir, safe_filename)
                         shutil.copy2(tmp_path, img_path)
                         content = f"\n[IMAGE ATTACHED: Use your Read tool to view the image at {img_path}]\n"
                     else:
@@ -407,11 +413,78 @@ _RETRY_REINFORCEMENT = (
 )
 
 
+def _build_ml_briefing(message: str) -> str:
+    """Build an ML intelligence briefing for the CLI prompt.
+
+    Combines three ML signals: similar past directives, cost/quality predictions,
+    and escalation risk. Returns empty string if no ML data is available yet.
+    """
+    try:
+        analysis = analyze_new_directive(message)
+
+        parts = []
+        # Similar past work
+        if analysis.get("has_precedent"):
+            similar = analysis["similar_directives"][:3]
+            items = []
+            for s in similar:
+                pct = int(s["similarity"] * 100)
+                cost = f"${s['total_cost']:.2f}" if s["total_cost"] > 0 else "n/a"
+                items.append(f"  - [{pct}% match] {s['directive_text'][:80]} (cost: {cost})")
+            parts.append("Similar past work:\n" + "\n".join(items))
+
+        # Cost estimate
+        cost_est = analysis.get("cost_estimate", {})
+        if cost_est.get("predicted"):
+            parts.append(
+                f"Cost estimate: ${cost_est['predicted']:.2f} "
+                f"(range: ${cost_est['confidence_low']:.2f}–${cost_est['confidence_high']:.2f})"
+            )
+
+        # Historical averages
+        hist = analysis.get("historical_average", {})
+        if hist.get("avg_tasks", 0) > 0:
+            parts.append(
+                f"Historical average: {hist['avg_tasks']} tasks, "
+                f"${hist['avg_cost']:.2f}, {hist['avg_duration_sec']/60:.0f}min"
+            )
+
+        # Risk assessment
+        if analysis.get("risk_factors"):
+            parts.append(f"Risk: {analysis['risk'].upper()} — " + "; ".join(analysis["risk_factors"]))
+
+        # Agent recommendations
+        recs = analysis.get("agent_recommendations", {})
+        if recs:
+            top = list(recs.items())[:3]
+            parts.append("Top agents: " + ", ".join(f"{a} ({r:.0%})" for a, r in top))
+
+        if not parts:
+            return ""
+
+        return (
+            "\n\n[ML INTELLIGENCE BRIEFING — from NEXUS learning system]\n"
+            + "\n".join(parts)
+            + "\nUse this context to inform your response, but don't mention it unless asked."
+        )
+    except Exception:
+        return ""
+
+
 def _build_threaded_prompt(
     history: list[dict[str, str]], current_message: str, *, is_retry: bool = False,
+    ml_briefing: str = "", rag_context: str = "",
 ) -> str:
     """Build a prompt with thread history so CLI has conversational context."""
     parts = [_SYSTEM_PREAMBLE, ""]
+
+    if ml_briefing:
+        parts.append(ml_briefing)
+        parts.append("")
+
+    if rag_context:
+        parts.append(rag_context)
+        parts.append("")
 
     if history:
         parts.append("You are continuing a Slack thread conversation. Here is the prior context:")
@@ -600,10 +673,17 @@ async def start_slack_listener():
                 current_ts=event.get("ts", ""),
             )
 
+            # Build ML intelligence briefing + RAG context (runs once, reused across retries)
+            ml_briefing = _build_ml_briefing(text)
+            rag_context = build_rag_context(text)
+
             max_attempts = 3
             for attempt in range(max_attempts):
                 is_retry = attempt > 0
-                cli_message = _build_threaded_prompt(thread_history, text, is_retry=is_retry)
+                cli_message = _build_threaded_prompt(
+                    thread_history, text, is_retry=is_retry,
+                    ml_briefing=ml_briefing, rag_context=rag_context,
+                )
                 try:
                     await safe_react("robot_face")
                     session = await cli_pool.get_or_create(thread_ts, project_path)
@@ -681,6 +761,13 @@ async def start_slack_listener():
                     await web_client.chat_delete(channel=channel_id, ts=thinking_msg)
                 except Exception:
                     pass
+
+            # Ingest this exchange into RAG for future retrieval
+            if response and not response.startswith("I had trouble"):
+                try:
+                    ingest_conversation(thread_ts, text, response)
+                except Exception:
+                    pass  # RAG ingestion is best-effort
 
             print(f"[Slack] Responded in thread {thread_ts}: {slack_text[:100]}...")
 

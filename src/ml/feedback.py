@@ -10,6 +10,7 @@ store its embedding + total cost for similarity search.
 
 import logging
 
+from src.agents.registry import registry
 from src.ml.store import ml_store
 
 logger = logging.getLogger("nexus.ml.feedback")
@@ -128,13 +129,11 @@ def record_circuit_event(
     recovery_time_sec: float = 0,
 ):
     """Persist a circuit breaker event for reliability modeling."""
-    ml_store.record_circuit_event(
+    reason = f"failure_count={failure_count}, model={model}, task_type={task_type}, recovery_time_sec={recovery_time_sec}"
+    registry.record_circuit_event(
         agent_id=agent_id,
         event_type=event_type,
-        failure_count=failure_count,
-        model=model,
-        task_type=task_type,
-        recovery_time_sec=recovery_time_sec,
+        reason=reason,
     )
 
 

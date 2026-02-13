@@ -77,18 +77,6 @@ class MLStore:
             created_at REAL NOT NULL
         )""")
 
-        # Circuit breaker events (persisted, not in-memory only)
-        c.execute("""CREATE TABLE IF NOT EXISTS circuit_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp REAL NOT NULL,
-            agent_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            failure_count INTEGER DEFAULT 0,
-            model TEXT DEFAULT '',
-            task_type TEXT DEFAULT '',
-            recovery_time_sec REAL DEFAULT 0
-        )""")
-
         # Escalation events
         c.execute("""CREATE TABLE IF NOT EXISTS escalation_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,7 +101,6 @@ class MLStore:
 
         c.execute("CREATE INDEX IF NOT EXISTS idx_outcomes_agent ON task_outcomes(agent_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_outcomes_directive ON task_outcomes(directive_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_circuit_agent ON circuit_events(agent_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_escalation_agent ON escalation_events(agent_id)")
 
         self._db.commit()
@@ -209,47 +196,6 @@ class MLStore:
         c.execute("SELECT * FROM directive_embeddings ORDER BY created_at DESC")
         return [dict(r) for r in c.fetchall()]
 
-    # === CIRCUIT BREAKER EVENTS ===
-    def record_circuit_event(
-        self,
-        agent_id: str,
-        event_type: str,
-        failure_count: int = 0,
-        model: str = "",
-        task_type: str = "",
-        recovery_time_sec: float = 0,
-    ):
-        with self._lock:
-            self._db.cursor().execute(
-                "INSERT INTO circuit_events (timestamp,agent_id,event_type,"
-                "failure_count,model,task_type,recovery_time_sec) VALUES (?,?,?,?,?,?,?)",
-                (time.time(), agent_id, event_type, failure_count, model,
-                 task_type, recovery_time_sec),
-            )
-            self._db.commit()
-
-    def get_agent_reliability(self, agent_id: str) -> dict:
-        c = self._db.cursor()
-        trips = c.execute(
-            "SELECT COUNT(*) FROM circuit_events WHERE agent_id=? AND event_type='trip'",
-            (agent_id,),
-        ).fetchone()[0]
-        recoveries = c.execute(
-            "SELECT COUNT(*) FROM circuit_events WHERE agent_id=? AND event_type='recovery'",
-            (agent_id,),
-        ).fetchone()[0]
-        avg_recovery = c.execute(
-            "SELECT COALESCE(AVG(recovery_time_sec), 0) FROM circuit_events "
-            "WHERE agent_id=? AND event_type='recovery'",
-            (agent_id,),
-        ).fetchone()[0]
-        return {
-            "agent_id": agent_id,
-            "circuit_trips": trips,
-            "recoveries": recoveries,
-            "avg_recovery_sec": float(avg_recovery),
-        }
-
     # === ESCALATION EVENTS ===
     def record_escalation(
         self,
@@ -307,7 +253,6 @@ class MLStore:
         return {
             "task_outcomes": c.execute("SELECT COUNT(*) FROM task_outcomes").fetchone()[0],
             "directive_embeddings": c.execute("SELECT COUNT(*) FROM directive_embeddings").fetchone()[0],
-            "circuit_events": c.execute("SELECT COUNT(*) FROM circuit_events").fetchone()[0],
             "escalation_events": c.execute("SELECT COUNT(*) FROM escalation_events").fetchone()[0],
         }
 

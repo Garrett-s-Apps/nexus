@@ -373,15 +373,230 @@ async def get_services():
 
 @app.get("/health")
 async def health():
-    from src.orchestrator.engine import engine
-    from src.resilience.health_monitor import health_monitor
-    return {
-        "status": "ok", "engine_running": engine.running,
-        "agents": len(memory.get_all_agents()),
-        "active_directive": memory.get_active_directive() is not None,
-        "working_agents": len(memory.get_working_agents()),
-        "resilience": health_monitor.status(),
-    }
+    from datetime import datetime
+
+    from starlette.responses import JSONResponse
+
+    from src.agents.registry import registry
+    from src.cost.tracker import cost_tracker
+    from src.ml.knowledge_store import knowledge_store
+    from src.ml.store import ml_store
+    from src.observability.background import scheduler
+
+    checks: dict[str, dict] = {}
+    overall = "healthy"
+
+    # Database connectivity
+    for name, check_fn in [
+        ("ml_db", lambda: ml_store._conn is not None),
+        ("knowledge_db", lambda: knowledge_store._conn is not None),
+        ("memory_db", lambda: memory._conn is not None),
+        ("registry_db", lambda: registry._conn is not None),
+        ("cost_db", lambda: cost_tracker._conn is not None),
+    ]:
+        try:
+            checks[name] = {"status": "up" if check_fn() else "down"}
+            if not check_fn():
+                overall = "degraded"
+        except Exception as e:
+            checks[name] = {"status": "down", "error": str(e)}
+            overall = "unhealthy"
+
+    # ML model staleness
+    try:
+        from src.ml.feedback import get_learning_status
+        learning = get_learning_status()
+        checks["ml_models"] = {
+            "status": "up",
+            "training_data_count": learning.get("training_data_count", 0),
+            "models_trained": learning.get("models_trained", False),
+        }
+    except Exception as e:
+        checks["ml_models"] = {"status": "degraded", "error": str(e)}
+        if overall == "healthy":
+            overall = "degraded"
+
+    # RAG index health
+    try:
+        chunk_count_dict: dict = knowledge_store.count_chunks()
+        total_chunks = sum(chunk_count_dict.values())
+        checks["rag_index"] = {
+            "status": "up",
+            "chunk_count": total_chunks,
+        }
+    except Exception as e:
+        checks["rag_index"] = {"status": "degraded", "error": str(e)}
+        if overall == "healthy":
+            overall = "degraded"
+
+    # Circuit breaker summary
+    try:
+        agents = registry.get_active_agents()
+        circuit_summary = {"closed": 0, "open": 0, "half_open": 0}
+        for agent in agents:
+            state = agent.metadata.get("circuit_state", "closed")
+            if state in circuit_summary:
+                circuit_summary[state] += 1
+        checks["circuit_breakers"] = {
+            "status": "up" if circuit_summary["open"] == 0 else "degraded",
+            **circuit_summary,
+        }
+    except Exception as e:
+        checks["circuit_breakers"] = {"status": "unknown", "error": str(e)}
+
+    # Background scheduler
+    try:
+        sched_status = scheduler.status()
+        running = scheduler._running
+        checks["scheduler"] = {
+            "status": "up" if running else "down",
+            "jobs": sched_status,
+        }
+    except Exception as e:
+        checks["scheduler"] = {"status": "unknown", "error": str(e)}
+
+    status_code = 200 if overall != "unhealthy" else 503
+    return JSONResponse(
+        {"status": overall, "checks": checks, "timestamp": datetime.utcnow().isoformat()},
+        status_code=status_code,
+    )
+
+
+@app.get("/health/detail")
+async def health_detail():
+    """Detailed health check with per-subsystem diagnostics."""
+    from datetime import datetime
+
+    from starlette.responses import JSONResponse
+
+    from src.agents.registry import registry
+    from src.cost.tracker import cost_tracker
+    from src.ml.knowledge_store import knowledge_store
+    from src.ml.store import ml_store
+    from src.observability.background import scheduler
+
+    checks: dict[str, dict] = {}
+    overall = "healthy"
+
+    # Database connectivity (same as /health)
+    for name, check_fn in [
+        ("ml_db", lambda: ml_store._conn is not None),
+        ("knowledge_db", lambda: knowledge_store._conn is not None),
+        ("memory_db", lambda: memory._conn is not None),
+        ("registry_db", lambda: registry._conn is not None),
+        ("cost_db", lambda: cost_tracker._conn is not None),
+    ]:
+        try:
+            checks[name] = {"status": "up" if check_fn() else "down"}
+            if not check_fn():
+                overall = "degraded"
+        except Exception as e:
+            checks[name] = {"status": "down", "error": str(e)}
+            overall = "unhealthy"
+
+    # ML model staleness with detailed metrics
+    try:
+        from src.ml.feedback import get_learning_status
+        learning = get_learning_status()
+
+        # Get pending outcomes count
+        pending_outcomes = 0
+        try:
+            c = ml_store._db.cursor()
+            pending_outcomes = c.execute(
+                "SELECT COUNT(*) FROM task_outcomes WHERE created_at > (SELECT COALESCE(MAX(trained_at), 0) FROM model_artifacts)"
+            ).fetchone()[0]
+        except Exception:
+            pass
+
+        checks["ml_models"] = {
+            "status": "up",
+            "training_data_count": learning.get("training_data_count", 0),
+            "models_trained": learning.get("models_trained", False),
+            "pending_outcomes": pending_outcomes,
+            "router_status": learning.get("router", {}),
+            "predictor_status": learning.get("predictor", {}),
+        }
+    except Exception as e:
+        checks["ml_models"] = {"status": "degraded", "error": str(e)}
+        if overall == "healthy":
+            overall = "degraded"
+
+    # RAG index health with chunk breakdown
+    try:
+        chunk_count_dict: dict = knowledge_store.count_chunks()
+        total_chunks = sum(chunk_count_dict.values())
+        checks["rag_index"] = {
+            "status": "up",
+            "chunk_count": total_chunks,
+            "chunks_by_type": chunk_count_dict,
+        }
+    except Exception as e:
+        checks["rag_index"] = {"status": "degraded", "error": str(e)}
+        if overall == "healthy":
+            overall = "degraded"
+
+    # Circuit breaker summary with agent details
+    try:
+        agents = registry.get_active_agents()
+        circuit_summary = {"closed": 0, "open": 0, "half_open": 0}
+        circuit_details = []
+        for agent in agents:
+            state = agent.metadata.get("circuit_state", "closed")
+            if state in circuit_summary:
+                circuit_summary[state] += 1
+            if state != "closed":
+                circuit_details.append({
+                    "agent_id": agent.id,
+                    "state": state,
+                    "failure_count": agent.metadata.get("failure_count", 0),
+                })
+        checks["circuit_breakers"] = {
+            "status": "up" if circuit_summary["open"] == 0 else "degraded",
+            **circuit_summary,
+            "details": circuit_details,
+        }
+    except Exception as e:
+        checks["circuit_breakers"] = {"status": "unknown", "error": str(e)}
+
+    # Background scheduler with job details
+    try:
+        sched_status = scheduler.status()
+        running = scheduler._running
+        checks["scheduler"] = {
+            "status": "up" if running else "down",
+            "running": running,
+            "job_count": len(sched_status),
+            "jobs": sched_status,
+        }
+    except Exception as e:
+        checks["scheduler"] = {"status": "unknown", "error": str(e)}
+
+    # Engine status
+    try:
+        from src.orchestrator.engine import engine
+        checks["engine"] = {
+            "status": "up" if engine.running else "down",
+            "running": engine.running,
+        }
+    except Exception as e:
+        checks["engine"] = {"status": "unknown", "error": str(e)}
+
+    # Resilience monitor
+    try:
+        from src.resilience.health_monitor import health_monitor
+        checks["resilience"] = {
+            "status": "up",
+            **health_monitor.status(),
+        }
+    except Exception as e:
+        checks["resilience"] = {"status": "unknown", "error": str(e)}
+
+    status_code = 200 if overall != "unhealthy" else 503
+    return JSONResponse(
+        {"status": overall, "checks": checks, "timestamp": datetime.utcnow().isoformat()},
+        status_code=status_code,
+    )
 
 
 @app.get("/cost")
@@ -540,8 +755,9 @@ async def ml_similar(req: MessageRequest):
 @app.get("/ml/agent/{agent_id}/stats")
 async def ml_agent_stats(agent_id: str):
     """Get ML-derived performance stats for an agent."""
+    from src.agents.registry import registry
     from src.ml.store import ml_store
     return {
         "success_rate": ml_store.get_agent_success_rate(agent_id),
-        "reliability": ml_store.get_agent_reliability(agent_id),
+        "reliability": registry.get_agent_reliability(agent_id),
     }

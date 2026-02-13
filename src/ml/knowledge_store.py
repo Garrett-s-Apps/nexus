@@ -11,6 +11,7 @@ import os
 import sqlite3
 import threading
 import time
+from datetime import datetime, timedelta
 
 from src.config import KNOWLEDGE_DB_PATH
 
@@ -45,11 +46,18 @@ class KnowledgeStore:
             content TEXT NOT NULL,
             embedding BLOB NOT NULL,
             metadata TEXT DEFAULT '{}',
+            domain_tag TEXT DEFAULT '',
             created_at REAL NOT NULL,
             UNIQUE(source_id)
         )""")
+        # Migrate existing databases: add domain_tag column if missing
+        try:
+            c.execute("ALTER TABLE knowledge_chunks ADD COLUMN domain_tag TEXT DEFAULT ''")
+        except Exception:
+            pass  # Column already exists
         c.execute("CREATE INDEX IF NOT EXISTS idx_chunks_type ON knowledge_chunks(chunk_type)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_chunks_source ON knowledge_chunks(source_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_chunks_domain ON knowledge_chunks(domain_tag)")
         self._db.commit()
 
     def store_chunk(
@@ -59,17 +67,18 @@ class KnowledgeStore:
         embedding: bytes,
         source_id: str = "",
         metadata: dict | None = None,
+        domain_tag: str = "",
     ):
         with self._lock:
             self._db.cursor().execute(
                 "INSERT INTO knowledge_chunks "
-                "(chunk_type,source_id,content,embedding,metadata,created_at) "
-                "VALUES (?,?,?,?,?,?) "
+                "(chunk_type,source_id,content,embedding,metadata,domain_tag,created_at) "
+                "VALUES (?,?,?,?,?,?,?) "
                 "ON CONFLICT(source_id) DO UPDATE SET "
                 "content=excluded.content, embedding=excluded.embedding, "
-                "metadata=excluded.metadata, created_at=excluded.created_at",
+                "metadata=excluded.metadata, domain_tag=excluded.domain_tag, created_at=excluded.created_at",
                 (chunk_type, source_id, content, embedding,
-                 json.dumps(metadata or {}), time.time()),
+                 json.dumps(metadata or {}), domain_tag, time.time()),
             )
             self._db.commit()
 
@@ -90,6 +99,39 @@ class KnowledgeStore:
             )
         return [dict(r) for r in c.fetchall()]
 
+    def get_chunks_filtered(
+        self,
+        chunk_type: str | None = None,
+        domain_tag: str | None = None,
+        max_age_days: int | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Get chunks with SQL pre-filtering before cosine similarity.
+
+        Reduces candidate set for similarity scoring by filtering on indexed columns.
+        """
+        conditions = []
+        params: list[str | float] = []
+
+        if chunk_type:
+            conditions.append("chunk_type = ?")
+            params.append(chunk_type)
+        if domain_tag:
+            conditions.append("domain_tag = ?")
+            params.append(domain_tag)
+        if max_age_days:
+            cutoff = (datetime.utcnow() - timedelta(days=max_age_days)).timestamp()
+            conditions.append("created_at > ?")
+            params.append(cutoff)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(float(limit))
+        rows = self._db.execute(
+            f"SELECT * FROM knowledge_chunks {where} ORDER BY created_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def count_chunks(self) -> dict:
         c = self._db.cursor()
         rows = c.execute(
@@ -97,16 +139,33 @@ class KnowledgeStore:
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
-    def prune_old_chunks(self, max_age_days: int = 30, keep_types: tuple = ("error_resolution",)):
-        """Remove chunks older than max_age_days, preserving high-value types."""
-        cutoff = time.time() - (max_age_days * 86400)
-        placeholders = ",".join("?" for _ in keep_types)
+    def prune_old_chunks(self):
+        """Remove chunks based on type-specific retention policies.
+
+        Retention policy:
+        - error_resolution: kept indefinitely
+        - task_outcome: 90-day TTL
+        - conversation, code_change: 30-day TTL
+        """
+        now = time.time()
         with self._lock:
+            # Prune conversation and code_change chunks older than 30 days
+            cutoff_30 = now - (30 * 86400)
             self._db.cursor().execute(
-                f"DELETE FROM knowledge_chunks WHERE created_at < ? "
-                f"AND chunk_type NOT IN ({placeholders})",
-                (cutoff, *keep_types),
+                "DELETE FROM knowledge_chunks WHERE created_at < ? "
+                "AND chunk_type IN ('conversation', 'code_change')",
+                (cutoff_30,),
             )
+
+            # Prune task_outcome chunks older than 90 days
+            cutoff_90 = now - (90 * 86400)
+            self._db.cursor().execute(
+                "DELETE FROM knowledge_chunks WHERE created_at < ? "
+                "AND chunk_type = 'task_outcome'",
+                (cutoff_90,),
+            )
+
+            # error_resolution chunks are never pruned
             self._db.commit()
 
 

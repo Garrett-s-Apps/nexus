@@ -541,12 +541,11 @@ class ReasoningEngine:
             })
 
             # ML: persist circuit breaker event
-            ml_feedback.record_circuit_event(
+            from src.agents.registry import registry
+            registry.record_circuit_event(
                 agent_id=agent_id,
                 event_type="trip",
-                failure_count=breaker.failure_count,
-                model=ORG_CHART.get(agent_id, {}).get("model", ""),
-                task_type=getattr(decision, 'action', '')[:100],
+                reason=f"failure_count={breaker.failure_count}, model={ORG_CHART.get(agent_id, {}).get('model', '')}, task_type={getattr(decision, 'action', '')[:100]}",
             )
 
             # Attempt escalation to higher-tier agent

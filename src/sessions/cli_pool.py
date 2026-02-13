@@ -37,7 +37,7 @@ class CLISession:
         try:
             # Uses create_subprocess_exec (not shell) — args passed as array, safe from injection
             self.process = await asyncio.create_subprocess_exec(
-                CLAUDE_CMD, "--dangerously-skip-permissions", "--model", "sonnet", "-p",
+                CLAUDE_CMD, "--dangerously-skip-permissions", "--model", "opus", "-p",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

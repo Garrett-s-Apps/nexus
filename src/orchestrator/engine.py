@@ -12,6 +12,7 @@ PMs enrich tasks. QA files defects. Engineers fix them. Loop until clean.
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 
@@ -55,13 +56,6 @@ CODE ONLY tasks. No planning. No docs. JSON array only."""
     raw, _ = await allm_call(prompt, SONNET, max_tokens=3000)
     data = extract_json(raw)
     tasks = data if isinstance(data, list) else (data.get("tasks", []) if isinstance(data, dict) else [])
-
-    if not tasks:
-        import re
-        match = re.search(r'\[[\s\S]*\]', raw)
-        if match:
-            try: tasks = json.loads(match.group())
-            except (json.JSONDecodeError, ValueError): tasks = []
 
     created = 0
     for task in tasks:
@@ -371,7 +365,18 @@ class ReasoningEngine:
             await self._notify(f"Code review found {len(defects)} issue(s). Fixing.", did)
         else:
             memory.update_directive(did, status="complete")
-            await self._notify("*Project complete!* Code built, tested, and reviewed. Check your project directory.", did)
+            # Report back with specifics about what was delivered
+            directive = memory.get_directive(did) if hasattr(memory, 'get_directive') else None
+            board = memory.get_board_tasks(did)
+            completed_tasks = [t for t in board if t["status"] == "complete"] if board else []
+            task_summary = "\n".join(f"  - {t['title']}" for t in completed_tasks[:10])
+            project_path = os.environ.get("NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus"))
+            await self._notify(
+                f"*Project complete!* Code built, tested, and reviewed.\n\n"
+                f"*Delivered {len(completed_tasks)} task(s):*\n{task_summary}\n\n"
+                f"*Output location:* `{project_path}`",
+                did,
+            )
 
     async def _safe_run(self, agent_id, decision, directive_id):
         agent = self.agents.get(agent_id)

@@ -16,34 +16,81 @@ import google.genai as genai
 from src.config import get_key as _load_key  # consolidated key loading
 
 
-def _gather_internal_context(message: str) -> str:
-    """Check if a request references internal NEXUS data and return it as context.
+def _classify_context_needs(message: str) -> list[str]:
+    """Use LLM to determine which internal data sources are relevant to a request.
 
-    This prevents Gemini from hallucinating when the user asks for documents
-    about things NEXUS actually knows (org chart, agents, team structure, etc.).
+    Returns a list of source tags: "org", "costs", "architecture", "dependencies",
+    "readme", "source_tree", "config".
     """
-    msg_lower = message.lower()
-    context_parts = []
+    try:
+        import asyncio
 
-    # Org chart / team / agents / reporting structure
-    org_keywords = ["org chart", "org structure", "organization", "reporting structure",
-                    "team structure", "our team", "my team", "company structure",
-                    "who reports to", "direct reports", "headcount", "agents"]
-    if any(kw in msg_lower for kw in org_keywords):
+        from src.agents.base import allm_call
+        from src.agents.org_chart import HAIKU
+
+        prompt = f"""Which internal data sources would help generate this document?
+Message: "{message}"
+
+Available sources:
+- "org" — org chart, team structure, agents, reporting hierarchy
+- "costs" — model costs, token budgets, spending breakdown
+- "architecture" — system design, APIs, services, auth, data flow, databases
+- "dependencies" — Python libraries, requirements.txt
+- "readme" — project overview, features, high-level description
+- "source_tree" — directory/file structure of the codebase
+- "config" — pyproject.toml, project metadata
+
+Return a JSON array of relevant source tags. Include ALL sources that would produce
+a complete, accurate document. When in doubt, include the source.
+
+Example: ["architecture", "dependencies", "source_tree", "readme"]
+
+Return ONLY the JSON array."""
+
+        loop = asyncio.get_event_loop()
+        raw, _ = loop.run_until_complete(allm_call(prompt, HAIKU, max_tokens=200))
+        cleaned = raw.strip()
+        if "```" in cleaned:
+            cleaned = cleaned.split("```json")[-1].split("```")[0].strip() if "```json" in cleaned else cleaned.split("```")[1].strip()
+        result = json.loads(cleaned)
+        if isinstance(result, list):
+            return [s for s in result if isinstance(s, str)]
+    except Exception as e:
+        print(f"[Documents] Context classification failed: {e}")
+
+    # Fallback: include everything so we never produce an empty document
+    return ["org", "architecture", "dependencies", "readme", "source_tree", "config"]
+
+
+def _gather_internal_context(message: str) -> str:
+    """Gather internal NEXUS data relevant to a document request.
+
+    Uses LLM classification to determine which data sources are needed,
+    then loads them from disk and runtime state.
+    """
+    sources = _classify_context_needs(message)
+    context_parts: list[str] = []
+    repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+    if "org" in sources:
         try:
-            from src.agents.org_chart import ORG_CHART, get_org_summary
+            from src.agents.org_chart import get_org_summary
             context_parts.append(
                 "=== NEXUS INTERNAL DATA: Organization Chart ===\n"
                 f"{get_org_summary()}\n"
                 "=== END INTERNAL DATA ===\n"
             )
         except ImportError:
-            pass
+            # Fallback to file on disk
+            org_path = os.path.join(repo_root, "ORG_CHART.md")
+            if os.path.exists(org_path):
+                with open(org_path) as f:
+                    context_parts.append(
+                        "=== NEXUS INTERNAL DATA: Organization Chart ===\n"
+                        f"{f.read()}\n=== END INTERNAL DATA ===\n"
+                    )
 
-    # Model distribution / costs
-    cost_keywords = ["model cost", "model distribution", "token cost", "budget",
-                     "cost breakdown", "spending"]
-    if any(kw in msg_lower for kw in cost_keywords):
+    if "costs" in sources:
         try:
             from src.agents.org_chart import MODEL_COSTS, ORG_CHART
             model_counts: dict[str, int] = {}
@@ -56,99 +103,64 @@ def _gather_internal_context(message: str) -> str:
                 summary += f"  {model}: {count} agents (input: ${cost.get('input', '?')}/M, output: ${cost.get('output', '?')}/M)\n"
             context_parts.append(
                 "=== NEXUS INTERNAL DATA: Model Costs ===\n"
-                f"{summary}"
-                "=== END INTERNAL DATA ===\n"
+                f"{summary}=== END INTERNAL DATA ===\n"
             )
         except ImportError:
             pass
 
-    # Architecture / technical documentation
-    arch_keywords = ["architecture", "system design", "technical", "services",
-                     "api", "apis", "data flow", "auth", "authentication",
-                     "infrastructure", "stack", "libraries", "dependencies",
-                     "database", "endpoints", "how it works", "current state"]
-    if any(kw in msg_lower for kw in arch_keywords):
-        repo_root = os.path.join(os.path.dirname(__file__), "..", "..")
-        repo_root = os.path.normpath(repo_root)
-
-        # Load ARCHITECTURE.md — the primary technical reference
+    if "architecture" in sources:
         arch_path = os.path.join(repo_root, "docs", "ARCHITECTURE.md")
         if os.path.exists(arch_path):
             with open(arch_path) as f:
-                content = f.read()
-            context_parts.append(
-                "=== NEXUS INTERNAL DATA: Architecture Documentation ===\n"
-                f"{content}\n"
-                "=== END INTERNAL DATA ===\n"
-            )
+                context_parts.append(
+                    "=== NEXUS INTERNAL DATA: Architecture Documentation ===\n"
+                    f"{f.read()}\n=== END INTERNAL DATA ===\n"
+                )
 
-        # Load requirements.txt for dependency inventory
+    if "dependencies" in sources:
         req_path = os.path.join(repo_root, "requirements.txt")
         if os.path.exists(req_path):
             with open(req_path) as f:
-                content = f.read()
-            context_parts.append(
-                "=== NEXUS INTERNAL DATA: Python Dependencies (requirements.txt) ===\n"
-                f"{content}\n"
-                "=== END INTERNAL DATA ===\n"
-            )
+                context_parts.append(
+                    "=== NEXUS INTERNAL DATA: Python Dependencies ===\n"
+                    f"{f.read()}\n=== END INTERNAL DATA ===\n"
+                )
 
-        # Load pyproject.toml for project metadata
-        pyproject_path = os.path.join(repo_root, "pyproject.toml")
-        if os.path.exists(pyproject_path):
-            with open(pyproject_path) as f:
-                content = f.read()
-            context_parts.append(
-                "=== NEXUS INTERNAL DATA: Project Config (pyproject.toml) ===\n"
-                f"{content}\n"
-                "=== END INTERNAL DATA ===\n"
-            )
-
-        # Load README for high-level overview
+    if "readme" in sources:
         readme_path = os.path.join(repo_root, "README.md")
         if os.path.exists(readme_path):
             with open(readme_path) as f:
-                content = f.read()
-            context_parts.append(
-                "=== NEXUS INTERNAL DATA: README ===\n"
-                f"{content}\n"
-                "=== END INTERNAL DATA ===\n"
-            )
+                context_parts.append(
+                    "=== NEXUS INTERNAL DATA: README ===\n"
+                    f"{f.read()}\n=== END INTERNAL DATA ===\n"
+                )
 
-        # Source tree structure for module layout
+    if "config" in sources:
+        pyproject_path = os.path.join(repo_root, "pyproject.toml")
+        if os.path.exists(pyproject_path):
+            with open(pyproject_path) as f:
+                context_parts.append(
+                    "=== NEXUS INTERNAL DATA: Project Config ===\n"
+                    f"{f.read()}\n=== END INTERNAL DATA ===\n"
+                )
+
+    if "source_tree" in sources:
         src_dir = os.path.join(repo_root, "src")
         if os.path.isdir(src_dir):
-            tree_lines = []
+            tree_lines: list[str] = []
             for root, dirs, files in os.walk(src_dir):
                 dirs[:] = [d for d in sorted(dirs) if d != "__pycache__"]
                 depth = root.replace(src_dir, "").count(os.sep)
                 indent = "  " * depth
                 tree_lines.append(f"{indent}{os.path.basename(root)}/")
-                for f in sorted(files):
-                    if f.endswith(".py"):
-                        tree_lines.append(f"{indent}  {f}")
+                for f_name in sorted(files):
+                    if f_name.endswith(".py"):
+                        tree_lines.append(f"{indent}  {f_name}")
             context_parts.append(
                 "=== NEXUS INTERNAL DATA: Source Tree ===\n"
                 + "\n".join(tree_lines) + "\n"
                 "=== END INTERNAL DATA ===\n"
             )
-
-    # Project / registry info from ORG_CHART.md on disk
-    if not context_parts:
-        # Broader check: if message mentions NEXUS-specific nouns, load org chart file
-        nexus_keywords = ["nexus", "our engineers", "our org", "engineering team",
-                          "product team", "security team", "qa team"]
-        if any(kw in msg_lower for kw in nexus_keywords):
-            org_chart_path = os.path.join(os.path.dirname(__file__), "..", "..", "ORG_CHART.md")
-            org_chart_path = os.path.normpath(org_chart_path)
-            if os.path.exists(org_chart_path):
-                with open(org_chart_path) as f:
-                    content = f.read()
-                context_parts.append(
-                    "=== NEXUS INTERNAL DATA: Organization Chart ===\n"
-                    f"{content}\n"
-                    "=== END INTERNAL DATA ===\n"
-                )
 
     return "\n".join(context_parts)
 

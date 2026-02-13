@@ -11,8 +11,12 @@ Uses the CEO agent (Opus) to interpret ambiguous input.
 """
 
 import json
+import os
+
+import anthropic
 
 from src.agents.registry import registry
+from src.config import get_key as _load_key
 
 CEO_INTERPRETER_PROMPT = """You are the CEO's chief interpreter at NEXUS. Garrett (the human CEO) has
 sent a message. Your job is to classify it and extract structured intent.
@@ -95,10 +99,8 @@ async def interpret_ceo_input(message: str) -> dict:
     Interpret natural language from Garrett and return structured intent.
     Uses a fast pre-filter for casual messages, then Haiku for classification.
     """
-    import os
     import re
 
-    import anthropic
 
     # FAST PRE-FILTER: catch obviously casual messages without hitting the API
     casual_patterns = [
@@ -145,17 +147,6 @@ async def interpret_ceo_input(message: str) -> dict:
 
     # For real work messages: use Haiku for classification (faster + cheaper than Sonnet)
     org_summary = registry.get_org_summary()
-
-    def _load_key(key_name):
-        try:
-            with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith(key_name + "="):
-                        return line.split("=", 1)[1]
-        except FileNotFoundError:
-            pass
-        return os.environ.get(key_name)
 
     api_key = _load_key("ANTHROPIC_API_KEY")
     client = anthropic.AsyncAnthropic(api_key=api_key)
@@ -291,23 +282,8 @@ async def execute_org_change(intent: dict) -> str:
 
 async def execute_question(intent: dict, history: list[dict] | None = None) -> str:
     """Route a CEO question to the appropriate agent via direct API for speed."""
-    import os
-
-    import anthropic
-
     details = intent.get("details", {})
     question = details.get("question", intent.get("summary", ""))
-
-    def _load_key(key_name):
-        try:
-            with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith(key_name + "="):
-                        return line.split("=", 1)[1]
-        except FileNotFoundError:
-            pass
-        return os.environ.get(key_name)
 
     api_key = _load_key("ANTHROPIC_API_KEY")
     client = anthropic.AsyncAnthropic(api_key=api_key)
@@ -352,21 +328,8 @@ Be specific, data-driven, and concise.""",
 
 async def execute_conversation(message: str, intent: dict, history: list[dict] | None = None) -> str:
     """Have a natural, casual conversation with Garrett. No formal org stuff."""
-    import anthropic
-
     details = intent.get("details", {})
     mood = details.get("mood", "neutral")
-
-    def _load_key(key_name):
-        try:
-            with open(os.path.expanduser("~/.nexus/.env.keys")) as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith(key_name + "="):
-                        return line.split("=", 1)[1]
-        except FileNotFoundError:
-            pass
-        return os.environ.get(key_name)
 
     api_key = _load_key("ANTHROPIC_API_KEY")
     client = anthropic.AsyncAnthropic(api_key=api_key)
@@ -406,8 +369,6 @@ His current vibe seems: {mood}""",
 
     return str(response.content[0].text)  # type: ignore[union-attr]
 
-
-import os
 
 
 def _generate_system_prompt(agent_data: dict) -> str:

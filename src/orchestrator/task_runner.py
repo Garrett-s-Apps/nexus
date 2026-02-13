@@ -103,8 +103,11 @@ async def run_task(task_id: str, directive: str, project_path: str, project_id: 
 
             total_cost += result.pop("_cost", 0)
 
-            # Write file to disk
-            full_path = os.path.join(project_path, file_path)
+            # Write file to disk (canonicalize to block path traversal from LLM output)
+            full_path = os.path.realpath(os.path.join(project_path, file_path))
+            if not full_path.startswith(os.path.realpath(project_path) + os.sep):
+                print(f"[TaskRunner] BLOCKED path traversal attempt: {file_path}")
+                continue
             parent_dir = os.path.dirname(full_path)
             if parent_dir:
                 os.makedirs(parent_dir, exist_ok=True)

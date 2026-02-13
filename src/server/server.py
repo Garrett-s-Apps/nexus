@@ -46,7 +46,7 @@ def _register_background_jobs():
     # RAG chunk pruning — remove old knowledge chunks
     def _rag_prune():
         from src.ml.knowledge_store import knowledge_store
-        knowledge_store.prune_old_chunks(max_age_days=30)
+        knowledge_store.prune_old_chunks()
 
     scheduler.register("rag_prune", _rag_prune, interval_seconds=300)
 

@@ -68,10 +68,6 @@ def record_task_outcome(
         task_id, agent_id, outcome, cost_usd, defect_count,
     )
 
-    # Auto-retrain when enough new data
-    if _outcomes_since_train >= RETRAIN_THRESHOLD:
-        _trigger_retrain()
-
 
 def record_directive_complete(
     directive_id: str,
@@ -176,9 +172,17 @@ def get_learning_status() -> dict:
     }
 
 
-def _trigger_retrain():
-    """Retrain all models with new data."""
+def should_retrain() -> bool:
+    """Check if enough outcomes have accumulated to warrant retraining."""
+    return _outcomes_since_train >= RETRAIN_THRESHOLD
+
+
+def do_retrain():
+    """Retrain all models with new data. Called by BackgroundScheduler."""
     global _outcomes_since_train
+
+    if not should_retrain():
+        return
 
     logger.info("Triggering ML model retrain (%d new outcomes)", _outcomes_since_train)
     _outcomes_since_train = 0
@@ -195,3 +199,8 @@ def _trigger_retrain():
         )
     except Exception as e:
         logger.error("Retrain failed: %s", e)
+
+
+def _trigger_retrain():
+    """Legacy wrapper — kept for backward compatibility."""
+    do_retrain()

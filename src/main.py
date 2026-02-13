@@ -12,10 +12,15 @@ import os
 import uvicorn
 
 from src.agents.org_chart import get_org_summary
+from src.config import NEXUS_DIR
+from src.observability.logging import configure_logging
 from src.server.server import app
 
 
 def main():
+    # Initialize structured logging before anything else
+    configure_logging(os.path.join(NEXUS_DIR, "logs"))
+
     # Binds to all interfaces for container/Docker deployment.
     # In production, place behind a reverse proxy with TLS termination.
     host = os.environ.get("NEXUS_HOST", "0.0.0.0")  # noqa: S104

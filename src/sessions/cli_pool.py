@@ -14,6 +14,8 @@ import os
 import shutil
 import time
 
+from src.agents.task_result import TaskResult
+
 logger = logging.getLogger(__name__)
 
 CLAUDE_CMD = "claude"
@@ -54,7 +56,7 @@ class CLISession:
             logger.error("Failed to start CLI session: %s", e)
             return False
 
-    async def send(self, message: str, timeout: int = 300) -> str:
+    async def send(self, message: str, timeout: int = 300) -> TaskResult:
         """Send a message to the CLI process and collect the response.
 
         The CLI runs in pipe mode (-p), which reads stdin until EOF then responds.
@@ -64,14 +66,20 @@ class CLISession:
         async with self._lock:
             # Always start a fresh process — pipe mode is one-shot
             if not await self.start():
-                return "CLI session unavailable"
+                return TaskResult(
+                    status="unavailable", output="CLI session unavailable",
+                    error_type="cli_not_found",
+                )
 
             self.last_used = time.monotonic()
 
             try:
                 proc = self.process
                 if not proc or not proc.stdin or not proc.stdout:
-                    return "CLI session unavailable"
+                    return TaskResult(
+                        status="unavailable", output="CLI session unavailable",
+                        error_type="cli_not_found",
+                    )
 
                 proc.stdin.write(message.encode())
                 await proc.stdin.drain()
@@ -88,20 +96,32 @@ class CLISession:
                     logger.warning("CLI timed out after %ds for thread %s", timeout, self.thread_ts)
                     proc.kill()
                     await proc.wait()
-                    return "(CLI timed out — the request may be too complex)"
+                    return TaskResult(
+                        status="timeout",
+                        output="(CLI timed out — the request may be too complex)",
+                        error_type="timeout",
+                    )
 
                 result = stdout_data.decode(errors="replace").strip() if stdout_data else ""
                 stderr_text = stderr_data.decode(errors="replace").strip() if stderr_data else ""
 
                 if not result and stderr_text:
                     logger.warning("CLI stderr for thread %s: %s", self.thread_ts, stderr_text[:500])
-                    return f"CLI error: {stderr_text[:300]}"
+                    return TaskResult(
+                        status="error", output=f"CLI error: {stderr_text[:300]}",
+                        error_type="api_error", error_detail=stderr_text[:500],
+                    )
 
-                return result or "(No response from CLI)"
+                return TaskResult(
+                    status="success", output=result or "(No response from CLI)",
+                )
 
             except Exception as e:
                 logger.error("CLI session error for thread %s: %s", self.thread_ts, e)
-                return f"CLI error: {e}"
+                return TaskResult(
+                    status="error", output=f"CLI error: {e}",
+                    error_type="api_error", error_detail=str(e),
+                )
 
     @property
     def is_idle(self) -> bool:
@@ -139,7 +159,7 @@ class CLISessionPool:
             self._sessions[thread_ts] = session
         return session
 
-    async def send_message(self, thread_ts: str, message: str, project_path: str) -> str:
+    async def send_message(self, thread_ts: str, message: str, project_path: str) -> TaskResult:
         session = await self.get_or_create(thread_ts, project_path)
         return await session.send(message)
 
@@ -159,12 +179,6 @@ class CLISessionPool:
             while True:
                 await asyncio.sleep(300)
                 await self.cleanup_stale()
-                # Periodic RAG maintenance — prune old chunks
-                try:
-                    from src.ml.store import ml_store
-                    ml_store.prune_old_chunks(max_age_days=30)
-                except Exception:
-                    pass
 
         self._cleanup_task = asyncio.ensure_future(_loop())
 

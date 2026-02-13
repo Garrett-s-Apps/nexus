@@ -116,6 +116,15 @@ class Memory:
             rationale TEXT DEFAULT '', timestamp TEXT NOT NULL,
             FOREIGN KEY (directive_id) REFERENCES directives(id))""")
 
+        # --- IDEMPOTENCY ---
+        c.execute("""CREATE TABLE IF NOT EXISTS processed_messages (
+            dedup_key TEXT PRIMARY KEY,
+            slack_ts TEXT NOT NULL,
+            channel TEXT DEFAULT '',
+            directive_id TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )""")
+
         c.execute("CREATE INDEX IF NOT EXISTS idx_events_since ON event_log(id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_world_ctx_directive ON world_context(directive_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_task_board_status ON task_board(status)")
@@ -496,6 +505,36 @@ class Memory:
     def remove_service(self, service_id):
         with self._lock:
             self._conn.cursor().execute("DELETE FROM running_services WHERE id=?", (service_id,))
+            self._conn.commit()
+
+    # === IDEMPOTENCY ===
+    def is_message_processed(self, dedup_key: str) -> bool:
+        """Check if a message with this dedup key has already been processed."""
+        row = self._conn.cursor().execute(
+            "SELECT 1 FROM processed_messages WHERE dedup_key=?", (dedup_key,)
+        ).fetchone()
+        return row is not None
+
+    def mark_message_processed(self, dedup_key: str, slack_ts: str,
+                                channel: str = "", directive_id: str = ""):
+        """Record that a message has been processed (idempotency guard)."""
+        with self._lock:
+            self._conn.cursor().execute(
+                "INSERT OR IGNORE INTO processed_messages "
+                "(dedup_key, slack_ts, channel, directive_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (dedup_key, slack_ts, channel, directive_id,
+                 datetime.now(UTC).isoformat()),
+            )
+            self._conn.commit()
+
+    def cleanup_old_processed(self, max_age_hours: int = 24):
+        """Prune processed message records older than max_age_hours."""
+        cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
+        with self._lock:
+            self._conn.cursor().execute(
+                "DELETE FROM processed_messages WHERE created_at < ?", (cutoff,)
+            )
             self._conn.commit()
 
     # === CONTEXT BUILDING ===

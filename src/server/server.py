@@ -32,6 +32,38 @@ from src.security.auth_gate import (
 from src.security.jwt_auth import sign_response
 
 
+def _register_background_jobs():
+    """Register all periodic background jobs with the scheduler."""
+    from src.observability.background import scheduler
+
+    # ML retraining — checks threshold, runs only when enough outcomes
+    def _retrain():
+        from src.ml.feedback import do_retrain
+        do_retrain()
+
+    scheduler.register("ml_retrain", _retrain, interval_seconds=3600)
+
+    # RAG chunk pruning — remove old knowledge chunks
+    def _rag_prune():
+        from src.ml.knowledge_store import knowledge_store
+        knowledge_store.prune_old_chunks(max_age_days=30)
+
+    scheduler.register("rag_prune", _rag_prune, interval_seconds=300)
+
+    # Dedup table cleanup — remove old processed message entries
+    def _dedup_cleanup():
+        memory.cleanup_old_processed(max_age_hours=24)
+
+    scheduler.register("dedup_cleanup", _dedup_cleanup, interval_seconds=3600)
+
+    # Embedding warmup — run once at startup to avoid cold-start penalty
+    def _embedding_warmup():
+        from src.ml.embeddings import encode
+        encode("warmup")
+
+    scheduler.register("embedding_warmup", _embedding_warmup, interval_seconds=86400, run_immediately=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("[Server] Initializing...")
@@ -41,6 +73,11 @@ async def lifespan(app: FastAPI):
     from src.orchestrator.engine import engine
     await engine.start()
 
+    # Start background scheduler with periodic jobs
+    from src.observability.background import scheduler
+    _register_background_jobs()
+    await scheduler.start()
+
     asyncio.create_task(_start_slack())
 
     print("[Server] NEXUS v1 running on http://localhost:4200")
@@ -48,6 +85,8 @@ async def lifespan(app: FastAPI):
     yield
 
     print("[Server] Shutting down...")
+    from src.observability.background import scheduler as bg
+    await bg.stop()
     from src.orchestrator.engine import engine as eng
     await eng.stop()
     memory.emit_event("server", "stopped", {})

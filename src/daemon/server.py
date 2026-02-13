@@ -266,9 +266,9 @@ async def talk_to_agent(req: TalkRequest):
     return {
         "agent": agent.name,
         "agent_id": agent.id,
-        "response": result["output"],
-        "cost": result["cost"],
-        "model": result["model"],
+        "response": result.output,
+        "cost": result.cost_usd,
+        "model": result.model,
     }
 
 

@@ -11,17 +11,23 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import BackgroundTasks, FastAPI
+from fastapi import BackgroundTasks, FastAPI, Request
 from pydantic import BaseModel, Field
+from starlette.responses import JSONResponse
 
 from src.agents.ceo_interpreter import execute_org_change, execute_question, interpret_ceo_input
 from src.agents.org_chart_generator import generate_org_chart, update_org_chart_in_repo
 from src.agents.registry import registry
 from src.agents.sdk_bridge import cost_tracker, run_planning_agent, run_sdk_agent
+from src.security.auth_gate import verify_session
 from src.slack.notifier import notify, notify_completion, notify_demo, notify_escalation, notify_kpi
 
 sessions: dict[str, dict] = {}
 active_runs: dict[str, asyncio.Task] = {}
+
+AUTH_COOKIE = "nexus_session"
+_PUBLIC_PATHS = {"/health"}
+_TOKEN_HEADER = "Authorization"  # noqa: S105 — header name, not a password
 
 
 class MessageRequest(BaseModel):
@@ -113,6 +119,31 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def auth_gate_middleware(request: Request, call_next):
+    """Reject unauthenticated requests to protected routes."""
+    path = request.url.path
+    if path in _PUBLIC_PATHS:
+        return await call_next(request)
+
+    session_id = request.cookies.get(AUTH_COOKIE)
+    if not session_id:
+        auth_header = request.headers.get(_TOKEN_HEADER, "")
+        if auth_header.startswith("Bearer "):
+            session_id = auth_header[7:]
+
+    user_agent = request.headers.get("user-agent", "")
+    forwarded = request.headers.get("x-forwarded-for")
+    client_ip = forwarded.split(",")[0].strip() if forwarded else (
+        request.client.host if request.client else "127.0.0.1"
+    )
+
+    if not verify_session(session_id, user_agent=user_agent, client_ip=client_ip):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    return await call_next(request)
 
 
 @app.get("/health")

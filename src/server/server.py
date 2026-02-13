@@ -74,11 +74,9 @@ _ALLOWED_ORIGINS = [
 
 def _origin_allowed(origin: str) -> bool:
     """Allow listed origins plus any *.trycloudflare.com tunnel."""
-    if origin in _ALLOWED_ORIGINS:
-        return True
-    if origin.endswith(".trycloudflare.com") and origin.startswith("https://"):
-        return True
-    return False
+    return origin in _ALLOWED_ORIGINS or (
+        origin.endswith(".trycloudflare.com") and origin.startswith("https://")
+    )
 
 
 app.add_middleware(
@@ -130,7 +128,7 @@ _PUBLIC_PATHS = {
     "/metrics/daily", "/metrics/agents",
 }
 _PUBLIC_PREFIXES = ("/auth/",)
-_TOKEN_HEADER = "Authorization"
+_TOKEN_HEADER = "Authorization"  # noqa: S105 — header name, not a password
 
 
 def _get_client_ip(request: Request) -> str:

@@ -14,7 +14,7 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 
 from src.agents.base import Agent
 from src.agents.org_chart import ORG_CHART

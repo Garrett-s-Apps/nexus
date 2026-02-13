@@ -7,6 +7,7 @@ DuckDuckGo via the ddgs package (free, no API key needed).
 
 import asyncio
 import logging
+
 import aiohttp
 
 from src.config import get_key

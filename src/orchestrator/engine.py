@@ -20,7 +20,7 @@ from src.agents.base import Agent, Decision, allm_call
 from src.agents.implementations import create_agent, create_all_agents, extract_json
 from src.agents.org_chart import HAIKU, ORG_CHART, SONNET
 from src.memory.store import memory
-from src.resilience.circuit_breaker import breaker_registry, CircuitOpenError
+from src.resilience.circuit_breaker import CircuitOpenError, breaker_registry
 from src.resilience.escalation import escalation_chain
 
 logger = logging.getLogger("nexus.engine")
@@ -366,7 +366,6 @@ class ReasoningEngine:
         else:
             memory.update_directive(did, status="complete")
             # Report back with specifics about what was delivered
-            directive = memory.get_directive(did) if hasattr(memory, 'get_directive') else None
             board = memory.get_board_tasks(did)
             completed_tasks = [t for t in board if t["status"] == "complete"] if board else []
             task_summary = "\n".join(f"  - {t['title']}" for t in completed_tasks[:10])
@@ -406,7 +405,7 @@ class ReasoningEngine:
             upgrade_model = escalation_chain.get_upgrade_model(current_model)
 
             if upgrade_model:
-                event = escalation_chain.escalate(
+                escalation_chain.escalate(
                     agent_id,
                     f"Circuit open, escalating to {upgrade_model}",
                     tier=escalation_chain.TIER_MAP.get(upgrade_model, 2)

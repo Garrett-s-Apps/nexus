@@ -13,11 +13,10 @@ Flow:
 Total: ~30-60 seconds for a small feature vs 10+ minutes through full graph.
 """
 
-import os
 import json
-import asyncio
+import os
+
 import anthropic
-from typing import Any
 
 
 def _load_key(key_name: str) -> str | None:
@@ -100,7 +99,7 @@ Only return the JSON."""}],
             plan_text = plan_text.rsplit("```", 1)[0]
         plan = json.loads(plan_text.strip())
     except json.JSONDecodeError:
-        _log("PLAN", f"Failed to parse plan JSON, using raw text")
+        _log("PLAN", "Failed to parse plan JSON, using raw text")
         return {
             "status": "error",
             "error": f"VP Engineering produced invalid plan: {plan_text[:500]}",
@@ -217,7 +216,7 @@ Report:
         cost_tracker.record("haiku", "qa_lead", qa_response.usage.input_tokens, qa_response.usage.output_tokens)
         total_cost += cost_tracker.calculate_cost("haiku", qa_response.usage.input_tokens, qa_response.usage.output_tokens)
 
-    _log("QA", f"Review complete")
+    _log("QA", "Review complete")
 
     ship_it = "SHIP IT" in qa_result.upper()
 

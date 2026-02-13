@@ -12,7 +12,7 @@ import json
 import os
 import sqlite3
 import threading
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 
 from src.config import MEMORY_DB_PATH
 
@@ -237,15 +237,20 @@ class Memory:
 
     def update_task(self, task_id, status=None, current_step=None, progress=None, error=None, cost=None):
         updates, values = ["updated_at=?"], [datetime.now(UTC).isoformat()]
+        _TASK_COLS = {"status", "completed_at", "current_step", "progress", "error", "cost"}
         if status: updates.append("status=?"); values.append(status)
         if status == "complete": updates.append("completed_at=?"); values.append(datetime.now(UTC).isoformat())
         if current_step: updates.append("current_step=?"); values.append(current_step)
         if progress: updates.append("progress=?"); values.append(json.dumps(progress))
         if error: updates.append("error=?"); values.append(error)
         if cost is not None: updates.append("cost=?"); values.append(cost)
+        # Validate column names are from the known set
+        cols_used = {u.split("=")[0] for u in updates}
+        if not cols_used <= _TASK_COLS:
+            raise ValueError(f"Invalid columns: {cols_used - _TASK_COLS}")
         values.append(task_id)
         with self._lock:
-            self._conn.cursor().execute(f"UPDATE tasks SET {','.join(updates)} WHERE id=?", values)
+            self._conn.cursor().execute(f"UPDATE tasks SET {','.join(updates)} WHERE id=?", values)  # noqa: S608
             self._conn.commit()
 
     def get_task(self, task_id):
@@ -283,13 +288,14 @@ class Memory:
         return dict(row) if row else None
 
     def update_directive(self, directive_id, **kwargs):
+        _DIRECTIVE_COLS = {"status", "intent", "project_path", "updated_at"}
         updates, values = ["updated_at=?"], [datetime.now(UTC).isoformat()]
         for k, v in kwargs.items():
             if k in ("status", "intent", "project_path"):
                 updates.append(f"{k}=?"); values.append(v)
         values.append(directive_id)
         with self._lock:
-            self._conn.cursor().execute(f"UPDATE directives SET {','.join(updates)} WHERE id=?", values)
+            self._conn.cursor().execute(f"UPDATE directives SET {','.join(updates)} WHERE id=?", values)  # noqa: S608
             self._conn.commit()
 
     # === V1: WORLD CONTEXT ===
@@ -394,7 +400,7 @@ class Memory:
         deps = json.loads(row[0])
         if not deps: return True
         ph = ",".join("?" for _ in deps)
-        return self._conn.cursor().execute(f"SELECT COUNT(*) FROM task_board WHERE id IN ({ph}) AND status='complete'", deps).fetchone()[0] == len(deps)
+        return self._conn.cursor().execute(f"SELECT COUNT(*) FROM task_board WHERE id IN ({ph}) AND status='complete'", deps).fetchone()[0] == len(deps)  # noqa: S608
 
     # === V1: AGENT STATE ===
     def register_agent(self, agent_id, name, role, model="haiku"):
@@ -407,13 +413,14 @@ class Memory:
             self._conn.commit()
 
     def update_agent(self, agent_id, status=None, current_task=None, last_action=None):
+        _AGENT_COLS = {"status", "current_task", "last_action", "updated_at"}
         updates, values = ["updated_at=?"], [datetime.now(UTC).isoformat()]
         if status: updates.append("status=?"); values.append(status)
         if current_task is not None: updates.append("current_task=?"); values.append(current_task)
         if last_action: updates.append("last_action=?"); values.append(last_action)
         values.append(agent_id)
         with self._lock:
-            self._conn.cursor().execute(f"UPDATE agent_state SET {','.join(updates)} WHERE agent_id=?", values)
+            self._conn.cursor().execute(f"UPDATE agent_state SET {','.join(updates)} WHERE agent_id=?", values)  # noqa: S608
             self._conn.commit()
 
     def get_agent(self, agent_id):
@@ -473,7 +480,7 @@ class Memory:
         if not updates: return
         values.append(service_id)
         with self._lock:
-            self._conn.cursor().execute(f"UPDATE running_services SET {','.join(updates)} WHERE id=?", values)
+            self._conn.cursor().execute(f"UPDATE running_services SET {','.join(updates)} WHERE id=?", values)  # noqa: S608
             self._conn.commit()
 
     def get_service(self, service_id):

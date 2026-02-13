@@ -21,13 +21,13 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
 from src.config import get_key
-from src.memory.store import memory
 from src.documents.generator import (
     _gather_internal_context,
     _gather_web_context,
     _needs_web_enrichment,
     generate_document,
 )
+from src.memory.store import memory
 from src.sessions.cli_pool import cli_pool
 
 

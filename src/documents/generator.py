@@ -1008,9 +1008,10 @@ def _extract_image_prompt(raw_description: str) -> str:
     # If still too long, ask LLM to distill into an image prompt
     if len(clean) > 500:
         try:
-            from src.agents.org_chart import HAIKU
-            from src.agents.base import allm_call
             import asyncio
+
+            from src.agents.base import allm_call
+            from src.agents.org_chart import HAIKU
             loop = asyncio.get_event_loop()
             summary, _ = loop.run_until_complete(allm_call(
                 f"Distill this into a concise image generation prompt (1-3 sentences). "
@@ -1084,6 +1085,7 @@ def create_image(description: str, output_dir: str = None) -> str:
 
     # Fallback: PIL diagram with improved visuals
     import math
+
     from PIL import Image, ImageDraw, ImageFont
 
     # Extract a clean prompt for the diagram structure

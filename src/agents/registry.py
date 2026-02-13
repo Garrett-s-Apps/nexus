@@ -364,9 +364,16 @@ class AgentRegistry:
             conn.close()
             return False
 
+        _AGENT_COLS = {
+            "name", "title", "role", "model", "specialty", "layer",
+            "reports_to", "status", "spawns_sdk",
+        }
+        if not set(updates.keys()) <= _AGENT_COLS:
+            bad = set(updates.keys()) - _AGENT_COLS
+            raise ValueError(f"Invalid columns: {bad}")
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [agent_id]
-        conn.execute(f"UPDATE agents SET {set_clause} WHERE id = ?", values)
+        conn.execute(f"UPDATE agents SET {set_clause} WHERE id = ?", values)  # noqa: S608
         self._log_change(conn, "updated", agent_id, f"Updated fields: {list(updates.keys())}")
         conn.commit()
         conn.close()

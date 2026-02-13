@@ -469,3 +469,40 @@ async def serve_logo():
     if os.path.exists(logo_path):
         return FileResponse(logo_path, media_type="image/svg+xml")
     return {"error": "Logo not found"}
+
+
+# === ML Learning Endpoints ===
+
+@app.get("/ml/status")
+async def ml_status():
+    """Get ML learning system status — models, training data, readiness."""
+    from src.ml.feedback import get_learning_status
+    return get_learning_status()
+
+
+@app.post("/ml/train")
+async def ml_train():
+    """Force retrain all ML models."""
+    from src.ml.predictor import train_all
+    from src.ml.router import train
+    return {
+        "router": train(force=True),
+        "predictors": train_all(force=True),
+    }
+
+
+@app.post("/ml/similar")
+async def ml_similar(req: MessageRequest):
+    """Find similar past directives for a given text."""
+    from src.ml.similarity import analyze_new_directive
+    return analyze_new_directive(req.message)
+
+
+@app.get("/ml/agent/{agent_id}/stats")
+async def ml_agent_stats(agent_id: str):
+    """Get ML-derived performance stats for an agent."""
+    from src.ml.store import ml_store
+    return {
+        "success_rate": ml_store.get_agent_success_rate(agent_id),
+        "reliability": ml_store.get_agent_reliability(agent_id),
+    }

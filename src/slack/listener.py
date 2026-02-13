@@ -463,9 +463,10 @@ def _build_ml_briefing(message: str) -> str:
             return ""
 
         return (
-            "\n\n[ML INTELLIGENCE BRIEFING — from NEXUS learning system]\n"
+            "\n\n[ML INTELLIGENCE BRIEFING — internal signals from NEXUS learning system]\n"
             + "\n".join(parts)
-            + "\nUse this context to inform your response, but don't mention it unless asked."
+            + "\nUse this data to calibrate effort, cost awareness, and agent selection. "
+            "Do not surface these metrics to the user unless they specifically ask about costs or history."
         )
     except Exception:
         return ""
@@ -482,10 +483,8 @@ def _build_threaded_prompt(
         parts.append(ml_briefing)
         parts.append("")
 
-    if rag_context:
-        parts.append(rag_context)
-        parts.append("")
-
+    # Thread history goes before RAG so the live conversation is closer to
+    # the user message (LLMs attend more strongly to nearby context).
     if history:
         parts.append("You are continuing a Slack thread conversation. Here is the prior context:")
         parts.append("")
@@ -493,6 +492,13 @@ def _build_threaded_prompt(
             prefix = "User" if msg["role"] == "user" else "You (NEXUS)"
             parts.append(f"{prefix}: {msg['text']}")
         parts.append("")
+
+    # RAG context is supplementary reference — placed after thread history
+    if rag_context:
+        parts.append(rag_context)
+        parts.append("")
+
+    if history:
         parts.append(f"User's new message: {current_message}")
     else:
         parts.append(f"User's message: {current_message}")
@@ -651,6 +657,14 @@ async def start_slack_listener():
                                 title=result.get("title", "Document"),
                                 comment=f"Generated {result['format'].upper()}: *{result.get('title', 'Document')}*",
                                 thread_ts=thread_ts)
+                            # Ingest doc generation into RAG
+                            try:
+                                ingest_conversation(
+                                    thread_ts, text,
+                                    f"Generated {result['format']}: {result.get('title', 'Document')}",
+                                )
+                            except Exception:
+                                pass
                         if thinking_msg:
                             try:
                                 await web_client.chat_delete(channel=channel_id, ts=thinking_msg)
@@ -673,9 +687,12 @@ async def start_slack_listener():
                 current_ts=event.get("ts", ""),
             )
 
-            # Build ML intelligence briefing + RAG context (runs once, reused across retries)
-            ml_briefing = _build_ml_briefing(text)
-            rag_context = build_rag_context(text)
+            # Build ML intelligence briefing + RAG context off the event loop
+            # (embedding computation is CPU-bound — keep asyncio responsive)
+            ml_briefing = await asyncio.to_thread(_build_ml_briefing, text)
+            rag_context = await asyncio.to_thread(
+                build_rag_context, text, 8000, {f"thread:{thread_ts}"},
+            )
 
             max_attempts = 3
             for attempt in range(max_attempts):
@@ -708,6 +725,17 @@ async def start_slack_listener():
 
                         # Check if CLI actually responded
                         if response and response != "(No response from CLI)" and not response.startswith("CLI error"):
+                            # Record error resolution if we recovered from a failed attempt
+                            if attempt > 0:
+                                try:
+                                    from src.ml.rag import ingest_error_resolution
+                                    ingest_error_resolution(
+                                        f"CLI failed on attempts 1-{attempt} for: {text[:200]}",
+                                        f"Succeeded on attempt {attempt + 1}",
+                                        source_id=f"retry:{thread_ts}",
+                                    )
+                                except Exception:
+                                    pass
                             break
 
                     if attempt < max_attempts - 1:
@@ -794,6 +822,9 @@ async def start_slack_listener():
     print("[Slack] Connecting...")
     await socket_client.connect()
     cli_pool.start_cleanup_loop()
+    # Warm up the embedding model in a background thread so the first
+    # user message doesn't pay the cold-start penalty (~1-3s model load)
+    asyncio.ensure_future(asyncio.to_thread(lambda: __import__("src.ml.embeddings", fromlist=["encode"]).encode("warmup")))
     print("[Slack] Connected and listening. CLI session pool active.")
 
     while True:

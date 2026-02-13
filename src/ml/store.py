@@ -115,11 +115,12 @@ class MLStore:
         c.execute("""CREATE TABLE IF NOT EXISTS knowledge_chunks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chunk_type TEXT NOT NULL,
-            source_id TEXT DEFAULT '',
+            source_id TEXT NOT NULL DEFAULT '',
             content TEXT NOT NULL,
             embedding BLOB NOT NULL,
             metadata TEXT DEFAULT '{}',
-            created_at REAL NOT NULL
+            created_at REAL NOT NULL,
+            UNIQUE(source_id)
         )""")
 
         c.execute("CREATE INDEX IF NOT EXISTS idx_outcomes_agent ON task_outcomes(agent_id)")
@@ -235,7 +236,10 @@ class MLStore:
             self._db.cursor().execute(
                 "INSERT INTO knowledge_chunks "
                 "(chunk_type,source_id,content,embedding,metadata,created_at) "
-                "VALUES (?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(source_id) DO UPDATE SET "
+                "content=excluded.content, embedding=excluded.embedding, "
+                "metadata=excluded.metadata, created_at=excluded.created_at",
                 (chunk_type, source_id, content, embedding,
                  json.dumps(metadata or {}), time.time()),
             )

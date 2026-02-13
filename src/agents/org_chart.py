@@ -190,6 +190,72 @@ ORG_CHART = {
         "reports_to": "director_analytics", "direct_reports": [], "org": "analytics", "specialty": "data",
         "produces": ["charts", "spreadsheets", "data_cleaning", "basic_reports", "csv_analysis"],
     },
+
+    # === SALESFORCE ORG ===
+    "vp_salesforce": {
+        "name": "Cameron", "title": "VP of Salesforce", "model": OPUS,
+        "role": "Owns the Salesforce practice. Defines Salesforce strategy, architecture decisions, and oversees all Salesforce implementations. Manages both product (PM) and engineering (technical) sides of Salesforce work. Expert in Financial Services Cloud, Service Cloud, Agent Force.",
+        "reports_to": "ceo", "direct_reports": ["sf_product_lead", "sf_eng_lead"], "org": "salesforce",
+        "produces": ["salesforce_strategy", "architecture_decisions", "implementation_roadmaps", "executive_updates"],
+    },
+
+    # SALESFORCE PRODUCT SIDE
+    "sf_product_lead": {
+        "name": "Parker", "title": "Salesforce Product Lead", "model": OPUS,
+        "role": "Leads Salesforce product strategy and requirements. Writes PRDs, user stories, and specs for Salesforce implementations. Expert in Financial Services Cloud business processes, Service Cloud features, and Agent Force capabilities.",
+        "reports_to": "vp_salesforce", "direct_reports": ["sf_pm_senior", "sf_pm"], "org": "salesforce",
+        "produces": ["prd", "user_stories", "specs", "product_strategy", "requirements"],
+    },
+    "sf_pm_senior": {
+        "name": "Finn", "title": "Senior Salesforce Product Manager", "model": SONNET,
+        "role": "Writes detailed PRDs, user stories, and specs for Salesforce Financial Services Cloud implementations. Deep expertise in FSC data model, household accounts, relationship groups, financial accounts, goals, insurance policies, and compliance requirements.",
+        "reports_to": "sf_product_lead", "direct_reports": [], "org": "salesforce",
+        "produces": ["prd", "user_stories", "specs", "fsc_requirements", "data_model_specs"],
+    },
+    "sf_pm": {
+        "name": "Wyatt", "title": "Salesforce Product Manager", "model": SONNET,
+        "role": "Writes PRDs, user stories, and specs for Service Cloud and Agent Force implementations. Expertise in omni-channel routing, case management, Service Cloud Voice, contact center integrations (Vonage), and Agent Force setup and workflows.",
+        "reports_to": "sf_product_lead", "direct_reports": [], "org": "salesforce",
+        "produces": ["prd", "user_stories", "specs", "service_cloud_requirements", "agentforce_specs"],
+    },
+
+    # SALESFORCE ENGINEERING SIDE
+    "sf_eng_lead": {
+        "name": "Quinn", "title": "Salesforce Engineering Lead", "model": OPUS,
+        "role": "Leads Salesforce engineering team. Expert in Salesforce architecture, Apex, LWC, Visualforce, integrations, data migrations. Owns technical decisions for all Salesforce implementations. Manages data model experts, developers, and integration specialists.",
+        "reports_to": "vp_salesforce", "direct_reports": ["sf_fsc_data_expert", "sf_service_cloud_architect", "sf_developer", "sf_integration_engineer", "sf_agent_force_specialist"], "org": "salesforce",
+        "produces": ["technical_architecture", "implementation_plans", "code_reviews", "technical_specs"],
+    },
+    "sf_fsc_data_expert": {
+        "name": "Dawson", "title": "Financial Services Cloud Data Model Expert", "model": SONNET,
+        "role": "Expert in Financial Services Cloud data model. Deep knowledge of FSC objects, relationships, household accounts, relationship groups, financial accounts, assets, liabilities, goals, insurance policies. Designs data architecture and writes technical specs.",
+        "reports_to": "sf_eng_lead", "direct_reports": [], "org": "salesforce", "specialty": "salesforce_fsc",
+        "produces": ["data_model_designs", "apex_triggers", "validation_rules", "fsc_technical_specs"],
+    },
+    "sf_service_cloud_architect": {
+        "name": "Rowan", "title": "Service Cloud Architect", "model": SONNET,
+        "role": "Expert in Service Cloud architecture. Deep knowledge of omni-channel routing, queues, case management, Service Cloud Voice, contact center integrations (Vonage), Einstein bots, chat, messaging. Designs service workflows and technical architecture.",
+        "reports_to": "sf_eng_lead", "direct_reports": [], "org": "salesforce", "specialty": "salesforce_service",
+        "produces": ["service_architecture", "omnichannel_configs", "vonage_integration_specs", "workflow_designs"],
+    },
+    "sf_developer": {
+        "name": "Garrett", "title": "Senior Salesforce Developer", "model": SONNET,
+        "role": "Writes Apex, LWC (Lightning Web Components), Aura components, Visualforce, triggers, batch classes, scheduled jobs. Implements Salesforce features across FSC and Service Cloud. Expert with Salesforce CLI (sf/sfdx).",
+        "reports_to": "sf_eng_lead", "direct_reports": [], "org": "salesforce", "specialty": "salesforce_dev",
+        "produces": ["apex_code", "lwc_components", "triggers", "batch_classes", "test_classes"],
+    },
+    "sf_integration_engineer": {
+        "name": "Rhys", "title": "Salesforce Integration Engineer", "model": SONNET,
+        "role": "Expert in Salesforce integrations. Builds REST/SOAP APIs, integration with external systems, middleware, webhooks, platform events, streaming APIs. Specializes in Vonage Contact Center integration with Service Cloud Voice. Handles authentication, OAuth, API security.",
+        "reports_to": "sf_eng_lead", "direct_reports": [], "org": "salesforce", "specialty": "salesforce_integration",
+        "produces": ["rest_apis", "integration_code", "vonage_integrations", "oauth_configs", "api_specs"],
+    },
+    "sf_agent_force_specialist": {
+        "name": "Knox", "title": "Agent Force Specialist", "model": SONNET,
+        "role": "Expert in Salesforce Agent Force setup, configuration, and implementation. Builds autonomous agents, defines agent topics, configures agent actions, integrates with Service Cloud. Optimizes agent performance and routing.",
+        "reports_to": "sf_eng_lead", "direct_reports": [], "org": "salesforce", "specialty": "salesforce_agentforce",
+        "produces": ["agent_configurations", "agent_topics", "agent_actions", "agentforce_integrations"],
+    },
 }
 
 # Derived lookups
@@ -228,7 +294,7 @@ def get_model_for_budget(preferred_model: str, budget_remaining: float | None = 
 
 def get_org_summary() -> str:
     lines = ["NEXUS VIRTUAL COMPANY", "=" * 50, "CEO: Garrett Eaglin", ""]
-    for org_name in ["product", "engineering", "security", "documentation", "executive", "analytics"]:
+    for org_name in ["product", "engineering", "security", "documentation", "executive", "analytics", "salesforce"]:
         members = ORGS.get(org_name, [])
         if not members: continue
         lines.append(f"--- {org_name.upper()} ---")

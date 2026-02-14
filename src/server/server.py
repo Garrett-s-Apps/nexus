@@ -41,6 +41,11 @@ from src.security.auth_gate import (
     verify_session,
 )
 from src.security.jwt_auth import sign_response
+from src.security.audit_log import (
+    log_auth_attempt,
+    log_rate_limit_violation,
+    log_session_event,
+)
 
 
 class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
@@ -376,7 +381,7 @@ def _get_real_client_ip(request: Request) -> str:
 
 
 def _log_security_event(ip: str, event_type: str, details: str = ""):
-    """Log security events for audit trail."""
+    """Log security events for audit trail (legacy function, delegates to audit_log)."""
     try:
         conn = sqlite3.connect(RATE_LIMIT_DB)
         conn.execute(
@@ -459,9 +464,23 @@ def _record_failed_login(ip: str):
             if duration == float('inf'):
                 locked_until = float('inf')
                 _log_security_event(ip, "PERMANENT_LOCKOUT", f"Permanently locked after {attempt_count} attempts")
+                # Log to audit log (SEC-015)
+                log_rate_limit_violation(
+                    user_ip=ip,
+                    attempt_count=attempt_count,
+                    lockout_duration=None,
+                    details={"lockout_type": "permanent"},
+                )
             else:
                 locked_until = now + duration
                 _log_security_event(ip, "PROGRESSIVE_LOCKOUT", f"Locked for {duration}s after {attempt_count} attempts")
+                # Log to audit log (SEC-015)
+                log_rate_limit_violation(
+                    user_ip=ip,
+                    attempt_count=attempt_count,
+                    lockout_duration=int(duration),
+                    details={"lockout_type": "progressive"},
+                )
 
     # Upsert attempt record
     cursor.execute("""
@@ -498,6 +517,7 @@ async def auth_login(req: LoginRequest, request: Request):
     Verify passphrase and set httponly session cookie.
 
     SEC-005: Uses persistent rate limiting with progressive delays.
+    SEC-015: Logs authentication attempts and events.
     """
     # SEC-005: Use validated IP extraction
     client_ip = _get_real_client_ip(request)
@@ -506,27 +526,48 @@ async def auth_login(req: LoginRequest, request: Request):
     allowed, reason = _check_rate_limit_persistent(client_ip)
     if not allowed:
         from starlette.responses import JSONResponse
+        # Log rate limit rejection (SEC-015)
+        log_rate_limit_violation(
+            user_ip=client_ip,
+            attempt_count=0,
+            details={"reason": reason},
+        )
         return JSONResponse(
             {"error": f"rate limited: {reason}"},
             status_code=429
         )
 
     # Verify passphrase
+    user_agent = request.headers.get("user-agent", "")
     if not verify_passphrase(req.passphrase):
         # SEC-005: Record failed attempt with progressive lockout
         _record_failed_login(client_ip)
+        # SEC-015: Log failed authentication
+        log_auth_attempt(
+            success=False,
+            user_ip=client_ip,
+            user_agent=user_agent,
+            failure_reason="invalid_passphrase",
+        )
         from starlette.responses import JSONResponse
         return JSONResponse({"error": "invalid passphrase"}, status_code=403)
 
     # Successful login - create session
-    user_agent = request.headers.get("user-agent", "")
     accept_language = request.headers.get("accept-language", "")
     accept_encoding = request.headers.get("accept-encoding", "")
     ssl_session_id = request.scope.get("ssl_session_id", "")
     session_id = create_session(user_agent=user_agent, client_ip=client_ip, accept_language=accept_language, accept_encoding=accept_encoding, ssl_session_id=ssl_session_id)
 
-    # SEC-005: Log successful authentication
+    # SEC-005: Log successful authentication (legacy)
     _log_security_event(client_ip, "LOGIN_SUCCESS", f"user-agent: {user_agent}")
+
+    # SEC-015: Log successful authentication
+    log_auth_attempt(
+        success=True,
+        user_ip=client_ip,
+        user_agent=user_agent,
+        details={"session_created": True},
+    )
 
     from starlette.responses import JSONResponse
     resp = JSONResponse({"ok": True, "token": session_id})

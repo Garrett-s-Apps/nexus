@@ -185,6 +185,55 @@ class MLStore:
             "avg_defects": float(avg_defects),
         }
 
+    def get_agent_success_rates_batch(self, agent_ids: list[str]) -> dict[str, dict]:
+        """Batch load agent success rates. Returns dict mapping agent_id -> stats."""
+        if not agent_ids:
+            return {}
+
+        c = self._db.cursor()
+        ph = ",".join("?" for _ in agent_ids)
+
+        # Get all stats in a single query using GROUP BY
+        # Safe: ph contains only "?" placeholders, no user input in query structure
+        rows = c.execute(
+            f"""SELECT
+                agent_id,
+                COUNT(*) as total_tasks,
+                SUM(CASE WHEN outcome='complete' THEN 1 ELSE 0 END) as successes,
+                COALESCE(AVG(cost_usd), 0) as avg_cost,
+                COALESCE(AVG(defect_count), 0) as avg_defects
+            FROM task_outcomes
+            WHERE agent_id IN ({ph})
+            GROUP BY agent_id""",  # noqa: S608
+            agent_ids
+        ).fetchall()
+
+        result = {}
+        for row in rows:
+            agent_id = row[0]
+            total = row[1]
+            successes = row[2]
+            result[agent_id] = {
+                "agent_id": agent_id,
+                "total_tasks": total,
+                "success_rate": successes / total if total > 0 else 0,
+                "avg_cost": float(row[3]),
+                "avg_defects": float(row[4]),
+            }
+
+        # Fill in missing agents with zero stats
+        for agent_id in agent_ids:
+            if agent_id not in result:
+                result[agent_id] = {
+                    "agent_id": agent_id,
+                    "total_tasks": 0,
+                    "success_rate": 0,
+                    "avg_cost": 0.0,
+                    "avg_defects": 0.0,
+                }
+
+        return result
+
     # === DIRECTIVE EMBEDDINGS ===
     def store_embedding(
         self,

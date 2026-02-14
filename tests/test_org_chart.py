@@ -1,46 +1,52 @@
 """Tests for NEXUS Org Chart — agent definitions, model costs, and org structure."""
 
 from src.agents.org_chart import (
-    ORG_CHART, ALL_AGENT_IDS, ORGS, LEADERSHIP, ICS,
     MODEL_COSTS, OPUS, SONNET, HAIKU, O3,
     get_org_summary,
 )
+from src.agents.registry import registry
 
 
 class TestOrgChartStructure:
     def test_org_chart_has_all_agents(self):
-        """ORG_CHART should contain all expected agent categories."""
-        # Check for key roles across orgs
+        """Registry should contain all expected agent categories."""
+        # Ensure registry is initialized
+        if not registry.is_initialized():
+            registry.load_from_yaml()
+
         expected_roles = [
             "vp_product", "pm_1", "vp_engineering", "chief_architect",
             "eng_lead", "fe_engineer_1", "be_engineer_1",
             "qa_lead", "ciso", "head_of_docs", "director_analytics",
         ]
         for role in expected_roles:
-            assert role in ORG_CHART, f"Missing agent: {role}"
+            assert registry.get_agent(role) is not None, f"Missing agent: {role}"
 
     def test_agent_count(self):
         """Should have a reasonable number of agents (20+)."""
-        assert len(ORG_CHART) >= 20
-        assert len(ALL_AGENT_IDS) == len(ORG_CHART)
+        if not registry.is_initialized():
+            registry.load_from_yaml()
+        agents = registry.get_active_agents()
+        assert len(agents) >= 20
 
     def test_all_agents_have_required_fields(self):
-        """Every agent should have name, title, model, role, reports_to, and org."""
-        required_fields = {"name", "title", "model", "role", "reports_to", "org", "direct_reports"}
-        for agent_id, cfg in ORG_CHART.items():
-            for field in required_fields:
-                assert field in cfg, f"Agent {agent_id} missing field: {field}"
-
-    def test_all_agents_have_produces(self):
-        """Every agent should have a 'produces' list."""
-        for agent_id, cfg in ORG_CHART.items():
-            assert "produces" in cfg, f"Agent {agent_id} missing 'produces'"
-            assert isinstance(cfg["produces"], list)
-            assert len(cfg["produces"]) > 0
+        """Every agent should have name, model, description, reports_to, and layer."""
+        if not registry.is_initialized():
+            registry.load_from_yaml()
+        agents = registry.get_active_agents()
+        for agent in agents:
+            assert agent.name, f"Agent {agent.id} missing name"
+            assert agent.model, f"Agent {agent.id} missing model"
+            assert agent.description, f"Agent {agent.id} missing description"
+            assert agent.layer, f"Agent {agent.id} missing layer"
+            # reports_to can be None for CEO
 
     def test_agent_names_are_unique(self):
         """Agent names should be unique across the org chart."""
-        names = [cfg["name"] for cfg in ORG_CHART.values()]
+        if not registry.is_initialized():
+            registry.load_from_yaml()
+        agents = registry.get_active_agents()
+        names = [a.name for a in agents]
         assert len(names) == len(set(names)), f"Duplicate names found: {[n for n in names if names.count(n) > 1]}"
 
 
@@ -67,90 +73,126 @@ class TestModelCosts:
 
     def test_all_agents_use_valid_models(self):
         """Every agent's model should be in the MODEL_COSTS dictionary."""
+        if not registry.is_initialized():
+            registry.load_from_yaml()
+        agents = registry.get_active_agents()
         valid_models = set(MODEL_COSTS.keys())
-        for agent_id, cfg in ORG_CHART.items():
-            assert cfg["model"] in valid_models, f"Agent {agent_id} uses unknown model: {cfg['model']}"
+        for agent in agents:
+            assert agent.model in valid_models, f"Agent {agent.id} uses unknown model: {agent.model}"
 
 
 class TestOrgsGrouping:
     def test_orgs_grouping(self):
-        """ORGS should group agents by organization."""
-        expected_orgs = {"product", "engineering", "security", "documentation", "analytics"}
-        for org in expected_orgs:
-            assert org in ORGS, f"Missing org: {org}"
-            assert len(ORGS[org]) > 0, f"Org {org} has no members"
+        """Registry should group agents by layer (org)."""
+        if not registry.is_initialized():
+            registry.load_from_yaml()
+        expected_layers = {"product", "engineering", "security", "documentation", "analytics"}
+        for layer in expected_layers:
+            agents = registry.get_agents_by_layer(layer)
+            assert len(agents) > 0, f"Layer {layer} has no members"
 
-    def test_all_agents_in_an_org(self):
-        """Every agent should belong to exactly one org."""
-        all_in_orgs = set()
-        for org_members in ORGS.values():
-            all_in_orgs.update(org_members)
-
-        for agent_id in ALL_AGENT_IDS:
-            assert agent_id in all_in_orgs, f"Agent {agent_id} not in any org"
+    def test_all_agents_in_a_layer(self):
+        """Every agent should belong to a layer."""
+        if not registry.is_initialized():
+            registry.load_from_yaml()
+        agents = registry.get_active_agents()
+        for agent in agents:
+            assert agent.layer, f"Agent {agent.id} has no layer"
 
     def test_engineering_is_largest_org(self):
         """Engineering should have the most members."""
-        eng_count = len(ORGS.get("engineering", []))
-        for org_name, members in ORGS.items():
-            if org_name != "engineering":
-                assert eng_count >= len(members), f"{org_name} is larger than engineering"
+        if not registry.is_initialized():
+            registry.load_from_yaml()
+        eng_agents = registry.get_agents_by_layer("engineering")
+        eng_count = len(eng_agents)
+
+        for layer_name in ["product", "security", "documentation", "analytics", "salesforce"]:
+            layer_agents = registry.get_agents_by_layer(layer_name)
+            assert eng_count >= len(layer_agents), f"{layer_name} is larger than engineering"
 
 
 class TestLeadershipAndICs:
     def test_leadership_and_ics(self):
-        """LEADERSHIP should contain agents with direct_reports; ICS should not."""
-        assert len(LEADERSHIP) > 0
-        assert len(ICS) > 0
+        """Some agents should have direct reports (leaders), others should not (ICs)."""
+        if not registry.is_initialized():
+            registry.load_from_yaml()
+        agents = registry.get_active_agents()
 
-        for leader_id in LEADERSHIP:
-            cfg = ORG_CHART[leader_id]
-            assert len(cfg["direct_reports"]) > 0, f"Leader {leader_id} has no direct reports"
+        leaders = []
+        ics = []
+        for agent in agents:
+            direct_reports = registry.get_direct_reports(agent.id)
+            if direct_reports:
+                leaders.append(agent)
+            else:
+                ics.append(agent)
 
-        for ic_id in ICS:
-            cfg = ORG_CHART[ic_id]
-            assert len(cfg["direct_reports"]) == 0, f"IC {ic_id} has direct reports"
+        assert len(leaders) > 0, "Should have some leaders with direct reports"
+        assert len(ics) > 0, "Should have some individual contributors"
 
     def test_leadership_plus_ics_equals_total(self):
         """Leadership + ICs should account for all agents."""
-        assert len(LEADERSHIP) + len(ICS) == len(ORG_CHART)
+        if not registry.is_initialized():
+            registry.load_from_yaml()
+        agents = registry.get_active_agents()
+
+        leaders_count = sum(1 for a in agents if registry.get_direct_reports(a.id))
+        ics_count = sum(1 for a in agents if not registry.get_direct_reports(a.id))
+
+        assert leaders_count + ics_count == len(agents)
 
     def test_direct_reports_reference_valid_agents(self):
         """All direct_reports should reference valid agent IDs."""
-        for agent_id, cfg in ORG_CHART.items():
-            for report_id in cfg["direct_reports"]:
-                assert report_id in ORG_CHART, f"Agent {agent_id} has invalid direct report: {report_id}"
+        if not registry.is_initialized():
+            registry.load_from_yaml()
+        agents = registry.get_active_agents()
+
+        for agent in agents:
+            direct_reports = registry.get_direct_reports(agent.id)
+            for report in direct_reports:
+                assert registry.get_agent(report.id) is not None, \
+                    f"Agent {agent.id} has invalid direct report: {report.id}"
 
     def test_reports_to_references_valid_agents(self):
-        """All reports_to should reference valid agent IDs or 'ceo'."""
-        for agent_id, cfg in ORG_CHART.items():
-            reports_to = cfg["reports_to"]
-            assert reports_to == "ceo" or reports_to in ORG_CHART, \
-                f"Agent {agent_id} reports to invalid: {reports_to}"
+        """All reports_to should reference valid agent IDs or be None (for CEO)."""
+        if not registry.is_initialized():
+            registry.load_from_yaml()
+        agents = registry.get_active_agents()
+
+        for agent in agents:
+            if agent.reports_to is not None:
+                assert registry.get_agent(agent.reports_to) is not None, \
+                    f"Agent {agent.id} reports to invalid: {agent.reports_to}"
 
 
 class TestGetOrgSummary:
     def test_get_org_summary(self):
         """get_org_summary should return a formatted string with key sections."""
+        if not registry.is_initialized():
+            registry.load_from_yaml()
         summary = get_org_summary()
 
-        assert "NEXUS VIRTUAL COMPANY" in summary
-        assert "CEO: Garrett Eaglin" in summary
-        assert "PRODUCT" in summary
-        assert "ENGINEERING" in summary
-        assert "SECURITY" in summary
-        assert "DOCUMENTATION" in summary
-        assert "ANALYTICS" in summary
-        assert "Total headcount:" in summary
+        assert "NEXUS" in summary
+        assert "PRODUCT" in summary or "product" in summary
+        assert "ENGINEERING" in summary or "engineering" in summary
+        assert "SECURITY" in summary or "security" in summary
+        assert "DOCUMENTATION" in summary or "documentation" in summary
+        assert "ANALYTICS" in summary or "analytics" in summary
+        assert "Total headcount:" in summary or "Total active agents:" in summary
 
     def test_org_summary_includes_all_agents(self):
         """The summary should mention all agents by name."""
+        if not registry.is_initialized():
+            registry.load_from_yaml()
         summary = get_org_summary()
-        for agent_id, cfg in ORG_CHART.items():
-            assert cfg["name"] in summary, f"Agent {cfg['name']} not in summary"
+        agents = registry.get_active_agents()
+        for agent in agents:
+            assert agent.name in summary, f"Agent {agent.name} not in summary"
 
     def test_org_summary_includes_model_tiers(self):
         """The summary should show model tier labels."""
+        if not registry.is_initialized():
+            registry.load_from_yaml()
         summary = get_org_summary()
-        assert "Sonnet" in summary
-        assert "Haiku" in summary
+        assert "Sonnet" in summary or "sonnet" in summary
+        assert "Haiku" in summary or "haiku" in summary

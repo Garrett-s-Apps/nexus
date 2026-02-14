@@ -175,10 +175,13 @@ class Agent(ABC):
                 others += f"\n  - {a['name']} ({a['role']}): {a['last_action'][:60]}"
 
         team_status = ""
-        for report_id in self.direct_reports:
-            agent = memory.get_agent(report_id)
-            if agent:
-                team_status += f"\n  - {agent['name']}: {agent['status']} -- {agent['last_action'][:60]}"
+        if self.direct_reports:
+            # Batch load direct reports to avoid N+1 queries
+            agents_map = memory.get_agents_batch(self.direct_reports)
+            for report_id in self.direct_reports:
+                agent = agents_map.get(report_id)
+                if agent:
+                    team_status += f"\n  - {agent['name']}: {agent['status']} -- {agent['last_action'][:60]}"
 
         board_summary = ""
         if board:

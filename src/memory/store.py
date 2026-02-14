@@ -507,6 +507,17 @@ class Memory:
         row = self._conn.cursor().execute("SELECT * FROM agent_state WHERE agent_id=?", (agent_id,)).fetchone()
         return dict(row) if row else None
 
+    def get_agents_batch(self, agent_ids: list[str]) -> dict[str, dict]:
+        """Batch load agents by IDs. Returns dict mapping agent_id -> agent data."""
+        if not agent_ids:
+            return {}
+        ph = ",".join("?" for _ in agent_ids)
+        # Safe: ph contains only "?" placeholders, no user input in query structure
+        rows = self._conn.cursor().execute(
+            f"SELECT * FROM agent_state WHERE agent_id IN ({ph})", agent_ids  # noqa: S608
+        ).fetchall()
+        return {row["agent_id"]: dict(row) for row in rows}
+
     def get_idle_agents(self):
         return [dict(r) for r in self._conn.cursor().execute("SELECT * FROM agent_state WHERE status='idle'").fetchall()]
 

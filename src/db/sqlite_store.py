@@ -13,7 +13,6 @@ import asyncio
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger("nexus.db.sqlite_store")
 
@@ -116,7 +115,7 @@ class SQLiteStore:
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path).expanduser()
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
         self._lock = asyncio.Lock()
 
     def _db(self) -> sqlite3.Connection:

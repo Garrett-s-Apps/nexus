@@ -24,7 +24,6 @@ import time
 
 from src.config import get_key
 from src.security.audit_log import (
-    log_auth_attempt,
     log_session_event,
 )
 

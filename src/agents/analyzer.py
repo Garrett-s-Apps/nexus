@@ -13,6 +13,7 @@ import os
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 from src.agents.base import Agent, allm_call
 from src.agents.org_chart import SONNET
@@ -97,18 +98,19 @@ def save_analysis_state(findings: list[Finding], target_dir: str, project_name: 
     return state_path
 
 
-def load_analysis_state(target_dir: str) -> dict | None:
+def load_analysis_state(target_dir: str) -> dict[str, Any] | None:
     """Load analysis state from .claude/analysis-state.json."""
     state_path = os.path.join(target_dir, ".claude", "analysis-state.json")
     if not os.path.exists(state_path):
         return None
     with open(state_path) as fp:
-        return json.load(fp)
+        result: dict[str, Any] = json.load(fp)
+        return result
 
 
 def _estimate_total_hours(findings: list[Finding]) -> int:
     """Estimate total hours from effort_hours strings like '2-8 hours' or '1-3 days'."""
-    total = 0
+    total = 0.0
     for f in findings:
         text = f.effort_hours.lower()
         numbers = re.findall(r"(\d+)", text)
@@ -180,14 +182,16 @@ class AnalyzerAgent(Agent):
         # Save state
         state_path = save_analysis_state(findings, target_dir)
 
-        summary = {
+        summary: dict[str, Any] = {
             "totalFindings": len(findings),
             "bySeverity": {},
             "byCategory": {},
         }
         for f in findings:
-            summary["bySeverity"][f.severity] = summary["bySeverity"].get(f.severity, 0) + 1
-            summary["byCategory"][f.category] = summary["byCategory"].get(f.category, 0) + 1
+            by_sev: dict[str, int] = summary["bySeverity"]
+            by_cat: dict[str, int] = summary["byCategory"]
+            by_sev[f.severity] = by_sev.get(f.severity, 0) + 1
+            by_cat[f.category] = by_cat.get(f.category, 0) + 1
 
         return {
             "findings": findings,

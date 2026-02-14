@@ -51,8 +51,8 @@ class FailurePatternAnalyzer:
 
         # Analyze patterns
         patterns = []
-        by_agent = defaultdict(int)
-        by_task_type = defaultdict(int)
+        by_agent: dict[str, int] = defaultdict(int)
+        by_task_type: dict[str, int] = defaultdict(int)
         error_messages = []
 
         for event in failure_events:
@@ -121,7 +121,7 @@ class FailurePatternAnalyzer:
 
     def _find_common_error_patterns(self, error_messages: list[dict]) -> list[dict]:
         """Find frequently occurring error patterns."""
-        error_counts = defaultdict(int)
+        error_counts: dict[str, int] = defaultdict(int)
 
         for err_data in error_messages:
             error = err_data["error"]

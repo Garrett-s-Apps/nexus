@@ -29,7 +29,7 @@ from src.agents.registry import registry
 from src.config import get_key
 from src.documents.generator import generate_document
 from src.memory.store import memory
-from src.ml.rag import build_rag_context, build_rag_context_async, ingest_conversation
+from src.ml.rag import build_rag_context_async, ingest_conversation
 from src.ml.similarity import analyze_new_directive
 from src.observability.logging import thread_ts_var
 from src.sessions.cli_pool import cli_pool
@@ -439,14 +439,14 @@ _RETRY_REINFORCEMENT = (
 )
 
 
-def _build_ml_briefing(message: str) -> str:
+async def _build_ml_briefing(message: str) -> str:
     """Build an ML intelligence briefing for the CLI prompt.
 
     Combines three ML signals: similar past directives, cost/quality predictions,
     and escalation risk. Returns empty string if no ML data is available yet.
     """
     try:
-        analysis = analyze_new_directive(message)
+        analysis = await analyze_new_directive(message)
 
         parts = []
         # Similar past work
@@ -748,7 +748,7 @@ async def start_slack_listener():
                         pass
 
                 # Build ML intelligence briefing + RAG context (parallel)
-                ml_briefing = await asyncio.to_thread(_build_ml_briefing, directive_text)
+                ml_briefing = await _build_ml_briefing(directive_text)
                 rag_context = await build_rag_context_async(directive_text, 8000, {f"thread:{thread_ts}"})
 
                 # Sonnet planning step — creates structured execution plan

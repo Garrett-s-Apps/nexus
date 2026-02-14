@@ -6,8 +6,8 @@ Generates professional DOCX reports from analysis-state.json.
 
 import json
 import logging
+
 from docx import Document
-from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 logger = logging.getLogger("nexus.reports")

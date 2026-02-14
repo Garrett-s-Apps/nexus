@@ -24,10 +24,9 @@ import json
 import logging
 import sqlite3
 import time
-from datetime import datetime, timedelta, UTC
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from src.config import NEXUS_DIR
 
@@ -120,7 +119,7 @@ def _redact_pii(value: str, hash_it: bool = True) -> str:
     return "[REDACTED]"
 
 
-def _serialize_details(details: Optional[dict[str, Any]]) -> str:
+def _serialize_details(details: dict[str, Any] | None) -> str:
     """Serialize details dict to JSON, safely handling errors."""
     if not details:
         return ""
@@ -136,9 +135,9 @@ def log_auth_attempt(
     success: bool,
     user_ip: str,
     user_agent: str = "",
-    username: Optional[str] = None,
-    failure_reason: Optional[str] = None,
-    details: Optional[dict[str, Any]] = None,
+    username: str | None = None,
+    failure_reason: str | None = None,
+    details: dict[str, Any] | None = None,
 ):
     """Log an authentication attempt (login)."""
     init_audit_db()
@@ -165,10 +164,10 @@ def log_auth_attempt(
 
 def log_session_event(
     event: str,  # "created", "destroyed", "expired", "theft_detected"
-    session_id: Optional[str] = None,
+    session_id: str | None = None,
     user_ip: str = "",
     user_agent: str = "",
-    details: Optional[dict[str, Any]] = None,
+    details: dict[str, Any] | None = None,
 ):
     """Log session lifecycle events."""
     init_audit_db()
@@ -202,8 +201,8 @@ def log_authz_failure(
     user_ip: str,
     resource: str,
     reason: str,
-    user_id: Optional[str] = None,
-    details: Optional[dict[str, Any]] = None,
+    user_id: str | None = None,
+    details: dict[str, Any] | None = None,
 ):
     """Log an authorization failure."""
     init_audit_db()
@@ -226,8 +225,8 @@ def log_authz_failure(
 def log_rate_limit_violation(
     user_ip: str,
     attempt_count: int,
-    lockout_duration: Optional[int] = None,
-    details: Optional[dict[str, Any]] = None,
+    lockout_duration: int | None = None,
+    details: dict[str, Any] | None = None,
 ):
     """Log rate limit violations."""
     init_audit_db()
@@ -265,8 +264,8 @@ def log_api_key_event(
     event: str,  # "used", "generated", "revoked"
     key_id: str,
     user_ip: str = "",
-    user_id: Optional[str] = None,
-    details: Optional[dict[str, Any]] = None,
+    user_id: str | None = None,
+    details: dict[str, Any] | None = None,
 ):
     """Log API key usage and lifecycle events."""
     init_audit_db()
@@ -297,9 +296,9 @@ def log_api_key_event(
 def log_encryption_key_event(
     event: str,  # "accessed", "rotated", "generated"
     key_type: str,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     user_ip: str = "",
-    details: Optional[dict[str, Any]] = None,
+    details: dict[str, Any] | None = None,
 ):
     """Log encryption key operations."""
     init_audit_db()
@@ -328,10 +327,10 @@ def log_encryption_key_event(
 
 def log_sensitive_data_access(
     data_type: str,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     user_ip: str = "",
     user_agent: str = "",
-    details: Optional[dict[str, Any]] = None,
+    details: dict[str, Any] | None = None,
 ):
     """Log access to sensitive data (configs, secrets, etc.)."""
     init_audit_db()
@@ -353,11 +352,11 @@ def log_sensitive_data_access(
 
 def log_config_change(
     config_key: str,
-    old_value: Optional[str] = None,
-    new_value: Optional[str] = None,
-    user_id: Optional[str] = None,
+    old_value: str | None = None,
+    new_value: str | None = None,
+    user_id: str | None = None,
     user_ip: str = "",
-    details: Optional[dict[str, Any]] = None,
+    details: dict[str, Any] | None = None,
 ):
     """Log configuration changes."""
     init_audit_db()
@@ -383,7 +382,7 @@ def log_config_change(
 def log_jwt_event(
     event: str,  # "signed", "verified", "verify_failed"
     user_ip: str = "",
-    details: Optional[dict[str, Any]] = None,
+    details: dict[str, Any] | None = None,
 ):
     """Log JWT operations."""
     init_audit_db()
@@ -413,11 +412,11 @@ def _log_event(
     severity: AuditSeverity,
     action: str,
     result: str,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     user_ip: str = "",
     user_agent: str = "",
-    details: Optional[dict[str, Any]] = None,
-    pii_hash: Optional[str] = None,
+    details: dict[str, Any] | None = None,
+    pii_hash: str | None = None,
 ):
     """Internal: insert an audit event into the database."""
     try:
@@ -448,9 +447,9 @@ def _log_event(
 
 
 def get_audit_log(
-    event_type: Optional[str] = None,
-    severity: Optional[str] = None,
-    user_ip: Optional[str] = None,
+    event_type: str | None = None,
+    severity: str | None = None,
+    user_ip: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -475,7 +474,7 @@ def get_audit_log(
             params.append(user_ip)
 
         query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        params.extend([str(limit), str(offset)])
 
         rows = cursor.execute(query, params).fetchall()
         conn.close()

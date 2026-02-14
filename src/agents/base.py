@@ -6,7 +6,6 @@ decides if it should act based on its role, and executes work autonomously.
 Teams self-organize scrum-style. Leaders set direction and unblock.
 """
 
-import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod

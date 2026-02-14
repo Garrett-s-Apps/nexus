@@ -123,7 +123,7 @@ async def handle_mutate_org(params: dict) -> str:
         if not all(k in new_agent for k in required):
             return f"Error: Missing required fields for hire: {required}"
 
-        agent = registry.hire_agent(
+        agent_coro = registry.hire_agent(
             agent_id=new_agent["agent_id"],
             name=new_agent["name"],
             model=new_agent["model"],
@@ -137,13 +137,14 @@ async def handle_mutate_org(params: dict) -> str:
             temporary=new_agent.get("temporary", False),
             temp_duration_hours=new_agent.get("temp_duration_hours"),
         )
+        agent = await agent_coro
         update_org_chart_in_repo(project_path)
         return f"Hired {agent.name} ({agent.id}) as {agent.layer} agent, model={agent.model}"
 
     if action == "fire":
         if not agent_id:
             return "Error: agent_id required for fire action"
-        success = registry.fire_agent(agent_id, reason="CEO decision")
+        success = await registry.fire_agent(agent_id, reason="CEO decision")
         if success:
             update_org_chart_in_repo(project_path)
             return f"Fired agent '{agent_id}'"
@@ -155,7 +156,7 @@ async def handle_mutate_org(params: dict) -> str:
         new_model = action_params.get("new_model")
         if not new_model:
             return "Error: new_model required in params for promote"
-        success = registry.promote_agent(agent_id, new_model)
+        success = await registry.promote_agent(agent_id, new_model)
         if success:
             update_org_chart_in_repo(project_path)
             return f"Promoted agent '{agent_id}' to {new_model}"
@@ -167,7 +168,7 @@ async def handle_mutate_org(params: dict) -> str:
         new_manager = action_params.get("new_manager")
         if not new_manager:
             return "Error: new_manager required in params for reassign"
-        success = registry.reassign_agent(agent_id, new_manager)
+        success = await registry.reassign_agent(agent_id, new_manager)
         if success:
             update_org_chart_in_repo(project_path)
             return f"Reassigned agent '{agent_id}' to report to '{new_manager}'"
@@ -179,7 +180,7 @@ async def handle_mutate_org(params: dict) -> str:
         new_model = action_params.get("new_model")
         if not new_model:
             return "Error: new_model required in params for update_model"
-        success = registry.update_agent(agent_id, model=new_model)
+        success = await registry.update_agent(agent_id, model=new_model)
         if success:
             update_org_chart_in_repo(project_path)
             return f"Updated agent '{agent_id}' to use model {new_model}"
@@ -315,7 +316,7 @@ async def handle_query_ml(params: dict) -> str:
     if query_type == "similar_directives":
         if not text:
             return "Error: text required for similar_directives query"
-        analysis = analyze_new_directive(text)
+        analysis = await analyze_new_directive(text)
         briefing: str = format_briefing(analysis)
         return briefing
 

@@ -18,9 +18,7 @@ import time
 
 from src.ml.embeddings import (
     bytes_to_embedding,
-    cosine_similarity,
     embedding_to_bytes,
-    encode,
     encode_async,
 )
 from src.ml.knowledge_store import knowledge_store
@@ -98,6 +96,25 @@ async def ingest_async(
         return True
     except Exception as e:
         logger.warning("RAG ingest failed: %s", e)
+        return False
+
+
+def ingest(
+    chunk_type: str,
+    content: str,
+    source_id: str = "",
+    metadata: dict | None = None,
+) -> bool:
+    """Sync wrapper for ingest_async - runs async ingest in event loop."""
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If loop is running, schedule task and return True optimistically
+            asyncio.create_task(ingest_async(chunk_type, content, source_id, metadata))
+            return True
+        return loop.run_until_complete(ingest_async(chunk_type, content, source_id, metadata))
+    except Exception:
         return False
 
 

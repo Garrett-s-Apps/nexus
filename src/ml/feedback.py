@@ -8,7 +8,6 @@ Also handles directive-level feedback: when a directive completes,
 store its embedding + total cost for similarity search.
 """
 
-import asyncio
 import logging
 import time
 

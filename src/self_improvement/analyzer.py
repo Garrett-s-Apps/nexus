@@ -4,12 +4,11 @@ NEXUS Self-Improvement Loop (ARCH-015)
 Analyzes Nexus's own codebase and applies improvements automatically.
 """
 
-import json
 import logging
 import os
 from datetime import UTC, datetime
 
-from src.agents.analyzer import AnalyzerAgent, Finding, save_analysis_state, load_analysis_state
+from src.agents.analyzer import AnalyzerAgent, Finding, load_analysis_state, save_analysis_state
 from src.git_ops.git import GitOps
 
 logger = logging.getLogger("nexus.self_improvement")
@@ -27,7 +26,7 @@ class SelfImprovementLoop:
         Returns:
             {"findings": list[Finding], "summary": dict, "state_path": str}
         """
-        analyzer = AnalyzerAgent()
+        analyzer = AnalyzerAgent(agent_id="self-analyzer")
 
         # Get Nexus root directory (two levels up from src/)
         nexus_path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))

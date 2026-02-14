@@ -124,7 +124,7 @@ class CheckpointManager:
                 uncommitted_changes=uncommitted,
                 has_stash=has_stash
             )
-        except subprocess.CalledProcessError as e:
+        except subprocess.CalledProcessError:
             return GitState(error="Not a git repository")
         except Exception as e:
             return GitState(error=str(e))
@@ -336,20 +336,20 @@ class CheckpointManager:
 
             memory_state = data.get("memory", {})
             if memory_state.get("session_count", 0) > 0:
-                print(f"\nMemory State:")
+                print("\nMemory State:")
                 print(f"  Total Sessions: {memory_state.get('session_count')}")
                 print(f"  Active Sessions: {memory_state.get('active_sessions')}")
 
             tasks_state = data.get("tasks", {})
             if tasks_state.get("total_tasks", 0) > 0:
-                print(f"\nTask State:")
+                print("\nTask State:")
                 print(f"  Total: {tasks_state.get('total_tasks')}")
                 print(f"  Completed: {tasks_state.get('completed')}")
                 print(f"  In Progress: {tasks_state.get('in_progress')}")
                 print(f"  Failed: {tasks_state.get('failed')}")
 
             cost_state = data.get("cost", {})
-            print(f"\nCost State:")
+            print("\nCost State:")
             print(f"  Total: ${cost_state.get('total_cost_usd', 0.0):.2f}")
             print(f"  Hourly Rate: ${cost_state.get('hourly_rate', 0.0):.2f}/hr")
 

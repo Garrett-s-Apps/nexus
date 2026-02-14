@@ -17,7 +17,7 @@ import re
 import sqlite3
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -32,6 +32,11 @@ from src.agents.org_chart import get_org_summary
 from src.cost.api_routes import router as costwise_router
 from src.memory.store import memory
 from src.observability.api_routes import router as metrics_router
+from src.security.audit_log import (
+    log_auth_attempt,
+    log_rate_limit_violation,
+    log_session_event,
+)
 from src.security.auth_gate import (
     AUTH_COOKIE,
     SESSION_TTL,
@@ -41,11 +46,6 @@ from src.security.auth_gate import (
     verify_session,
 )
 from src.security.jwt_auth import sign_response
-from src.security.audit_log import (
-    log_auth_attempt,
-    log_rate_limit_violation,
-    log_session_event,
-)
 
 
 class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
@@ -702,7 +702,7 @@ async def get_services():
 
 @app.get("/health")
 async def health():
-    from datetime import UTC, datetime
+    from datetime import UTC
 
     from starlette.responses import JSONResponse
 
@@ -822,7 +822,6 @@ async def health():
 @app.get("/health/detail")
 async def health_detail():
     """Detailed health check with per-subsystem diagnostics."""
-    from datetime import datetime
 
     from starlette.responses import JSONResponse
 

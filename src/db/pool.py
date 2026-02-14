@@ -13,10 +13,8 @@ Design:
 
 import asyncio
 import logging
-import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
 
 import aiosqlite
 
@@ -117,7 +115,7 @@ class AsyncSQLitePool:
         if self._closed:
             raise RuntimeError("Pool is closed")
 
-        conn: Optional[aiosqlite.Connection] = None
+        conn: aiosqlite.Connection | None = None
 
         async with self._lock:
             # Try to get connection from pool

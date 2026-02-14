@@ -17,11 +17,10 @@ import pickle
 import sqlite3
 import threading
 import time
-from typing import Optional
 
 from src.config import NEXUS_DIR
-from src.db.sqlite_store import connect_encrypted
 from src.db.pool import AsyncSQLitePool
+from src.db.sqlite_store import connect_encrypted
 
 ML_DB_PATH = os.path.join(NEXUS_DIR, "ml.db")
 
@@ -33,7 +32,7 @@ class MLStore:
         self.db_path = db_path
         self._conn: sqlite3.Connection | None = None
         self._lock = threading.Lock()
-        self._pool: Optional[AsyncSQLitePool] = None
+        self._pool: AsyncSQLitePool | None = None
 
     @property
     def _db(self) -> sqlite3.Connection:

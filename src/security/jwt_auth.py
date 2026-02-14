@@ -16,8 +16,8 @@ import uuid
 
 import jwt as pyjwt
 
-from src.security.key_manager import get_private_key, get_public_key
 from src.security.audit_log import log_jwt_event
+from src.security.key_manager import get_private_key, get_public_key
 
 logger = logging.getLogger("nexus.jwt_auth")
 

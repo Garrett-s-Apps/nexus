@@ -102,7 +102,7 @@ async def request_user_approval(
             print("⚠️  Invalid response - defaulting to REJECT")
             return False
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error("User approval timeout for %s after %ds, defaulting to REJECT", title, timeout_seconds)
         print(f"\n⏱️  Approval timeout after {timeout_seconds}s - defaulting to REJECT")
         return False

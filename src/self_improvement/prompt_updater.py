@@ -6,8 +6,9 @@ Updates agent system prompts based on learnings.
 
 import logging
 import os
-import yaml
 from datetime import UTC, datetime
+
+import yaml
 
 logger = logging.getLogger("nexus.self_improvement.prompt_updater")
 

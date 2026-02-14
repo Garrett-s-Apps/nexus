@@ -7,7 +7,6 @@ Stores historical data in SQLite for trend analysis.
 
 import json
 import os
-import sqlite3
 import time
 
 from src.db.sqlite_store import SQLiteStore

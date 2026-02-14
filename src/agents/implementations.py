@@ -16,8 +16,8 @@ import re
 import uuid
 from datetime import UTC, datetime
 
-from src.agents.base import Agent
 from src.agents.analyzer import AnalyzerAgent
+from src.agents.base import Agent
 from src.agents.registry import registry
 from src.memory.store import memory
 

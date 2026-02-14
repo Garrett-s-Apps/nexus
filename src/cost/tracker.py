@@ -11,7 +11,6 @@ Extends the basic cost tracker with:
 
 import logging
 import os
-import sqlite3
 import time
 from typing import Any
 

@@ -17,6 +17,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
@@ -256,7 +257,8 @@ Output as JSON:
             start = raw.find("{")
             end = raw.rfind("}") + 1
             if start >= 0 and end > start:
-                return json.loads(raw[start:end])
+                parsed: dict[str, Any] = json.loads(raw[start:end])
+                return parsed
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             logger.warning("Failed to parse contracts: %s", exc)
 
@@ -334,7 +336,8 @@ Output as JSON:
                 "depends_on": instance.dependencies,
             }
 
-        return yaml.dump(compose, default_flow_style=False, sort_keys=False)
+        result: str = yaml.dump(compose, default_flow_style=False, sort_keys=False)
+        return result
 
     # ------------------------------------------------------------------
     # Phase 6: Integration tests

@@ -172,7 +172,7 @@ class ImprovementMetrics:
                 "XL": 80,
             }
             total += effort_map.get(effort, 8)
-        return round(total)
+        return int(round(total))
 
     def _count_by_effort(self, findings: list[dict]) -> dict:
         """Count findings by effort level."""

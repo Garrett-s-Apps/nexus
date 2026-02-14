@@ -10,8 +10,8 @@ Enables Nexus to analyze and improve its own codebase through:
 """
 
 from src.self_improvement.analyzer import SelfImprovementLoop
-from src.self_improvement.metrics import ImprovementMetrics
 from src.self_improvement.learner import FailurePatternAnalyzer
+from src.self_improvement.metrics import ImprovementMetrics
 
 __all__ = [
     "SelfImprovementLoop",

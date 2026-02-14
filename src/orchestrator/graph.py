@@ -193,7 +193,7 @@ Output a budget allocation as key:value pairs.""",
     if budget_warnings:
         logger.warning("CFO Budget Warnings: %s", " | ".join(budget_warnings))
         # Add warnings to budget allocation for visibility
-        budget_allocation["_warnings"] = " | ".join(budget_warnings)
+        budget_allocation["_warnings"] = " | ".join(budget_warnings)  # type: ignore[assignment]
 
     # USER approval for budget > $50
     if total_budget > 50.0:
@@ -1176,7 +1176,7 @@ TECHNICAL DESIGN:
 {state.technical_design or 'No design document'}
 
 PR REVIEWS:
-{chr(10).join(f'[{r.reviewer}] {r.status}: {r.feedback[:300]}' for r in state.pr_reviews) if state.pr_reviews else 'No PR reviews'}
+{chr(10).join(f'[{r.reviewer}] {r.status}: {r.feedback[:300] if r.feedback else ""}' for r in state.pr_reviews) if state.pr_reviews and isinstance(state.pr_reviews, list) else 'No PR reviews'}
 
 TEST RESULTS:
 {state.test_results or 'No test results'}

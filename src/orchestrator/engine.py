@@ -25,7 +25,7 @@ import logging
 import os
 import uuid
 
-from src.agents.base import Decision, allm_call
+from src.agents.base import allm_call
 from src.agents.implementations import extract_json
 from src.agents.org_chart import HAIKU, SONNET
 from src.memory.store import memory
@@ -187,7 +187,7 @@ class OrchestrationFacade:
             )
 
             config = {"configurable": {"thread_id": directive_id}}
-            await self._notify(f"On it. Running through the org now.", directive_id)
+            await self._notify("On it. Running through the org now.", directive_id)
 
             result = await nexus_app.ainvoke(initial_state.model_dump(), config=config)
 

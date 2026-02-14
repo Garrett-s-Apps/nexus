@@ -10,10 +10,9 @@ Real-time web dashboard showing:
 
 import json
 import logging
-import os
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, Response
+from flask import Flask, Response, jsonify, render_template
 from flask_cors import CORS
 
 from src.cost.tracker import cost_tracker

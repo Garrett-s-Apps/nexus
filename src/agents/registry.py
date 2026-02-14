@@ -9,10 +9,8 @@ The LangGraph graph rebuilds dynamically after every org change.
 The ORG_CHART.md auto-regenerates after every change.
 """
 
-import asyncio
 import json
 import os
-import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -237,7 +235,12 @@ class AgentRegistry(SQLiteStore):
         for row in rows:
             agent = Agent.from_row(row)
             if agent.status == "temporary" and agent.temp_expiry and agent.temp_expiry < now:
-                self.fire_agent(agent.id, reason="Temporary contract expired")
+                # Fire agent without awaiting (fire_agent can be sync or async)
+                import asyncio
+                try:
+                    asyncio.create_task(self.fire_agent(agent.id, reason="Temporary contract expired"))
+                except RuntimeError:
+                    pass  # No event loop running, skip cleanup
                 continue
             agents.append(agent)
         return agents
@@ -405,7 +408,7 @@ class AgentRegistry(SQLiteStore):
             conn.commit()
             return True
 
-    def consolidate_agents(self, agent_ids: list[str], new_agent_id: str, new_name: str, new_description: str) -> Agent | None:
+    async def consolidate_agents(self, agent_ids: list[str], new_agent_id: str, new_name: str, new_description: str) -> Agent | None:
         """Consolidate multiple agents using batch queries instead of N+1 pattern."""
         # Batch fetch all agents in one query
         agents_dict = self.get_agents_batch(agent_ids)
@@ -428,7 +431,7 @@ class AgentRegistry(SQLiteStore):
         reports_to = agents[0].reports_to
 
         for aid in agent_ids:
-            self.fire_agent(aid, reason=f"Consolidated into {new_name}")
+            await self.fire_agent(aid, reason=f"Consolidated into {new_name}")
 
         # Batch fetch all orphans in one query
         conn = self._db()
@@ -453,15 +456,15 @@ class AgentRegistry(SQLiteStore):
         )
 
         for orphan_id in all_orphans:
-            self.reassign_agent(orphan_id, new_agent_id)
+            await self.reassign_agent(orphan_id, new_agent_id)
 
-        return new_agent
+        return await new_agent
 
-    def promote_agent(self, agent_id: str, new_model: str) -> bool:
-        return self.update_agent(agent_id, model=new_model)
+    async def promote_agent(self, agent_id: str, new_model: str) -> bool:
+        return await self.update_agent(agent_id, model=new_model)
 
-    def demote_agent(self, agent_id: str, new_model: str) -> bool:
-        return self.update_agent(agent_id, model=new_model)
+    async def demote_agent(self, agent_id: str, new_model: str) -> bool:
+        return await self.update_agent(agent_id, model=new_model)
 
     # ============================================
     # ORG INTROSPECTION (for CEO questions)

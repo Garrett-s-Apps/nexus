@@ -9,17 +9,18 @@ Storage: SQLite at ~/.nexus/memory.db
 Connection Pooling: AsyncSQLitePool with 8 connections for high concurrency
 """
 
-import asyncio
 import json
+import logging
 import os
 import sqlite3
 import threading
 from datetime import UTC, datetime, timedelta
-from typing import Optional
 
 from src.config import MEMORY_DB_PATH
-from src.db.sqlite_store import connect_encrypted
 from src.db.pool import AsyncSQLitePool
+from src.db.sqlite_store import connect_encrypted
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = MEMORY_DB_PATH
 
@@ -29,7 +30,7 @@ class Memory:
         self.db_path = DB_PATH
         self._conn = None
         self._lock = threading.Lock()
-        self._pool: Optional[AsyncSQLitePool] = None
+        self._pool: AsyncSQLitePool | None = None
 
     def init(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)

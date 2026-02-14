@@ -5,14 +5,14 @@ Handles interactive button clicks and actions from Slack messages.
 Integrates with LangGraph state to drive approval workflows.
 """
 
+import hashlib
+import hmac
 import json
 import logging
-import hmac
-import hashlib
 import time
-from typing import Optional
+from typing import Any
 
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 
 logger = logging.getLogger("nexus.slack.webhook")
 
@@ -27,7 +27,7 @@ class SlackWebhookHandler:
             signing_secret: SLACK_SIGNING_SECRET for request verification
         """
         self.signing_secret = signing_secret
-        self.approval_states = {}  # In-memory approval state tracker
+        self.approval_states: dict[str, dict[str, Any]] = {}  # In-memory approval state tracker
 
     def verify_slack_request(self, timestamp: str, signature: str, body: str) -> bool:
         """Verify that the request came from Slack using signature verification.
@@ -114,7 +114,7 @@ class SlackWebhookHandler:
         }
         return f"{decision_map.get(decision, 'Decision recorded')}: {approval_id}"
 
-    def get_approval_decision(self, approval_id: str) -> Optional[dict]:
+    def get_approval_decision(self, approval_id: str) -> dict | None:
         """Retrieve an approval decision from state.
 
         Args:

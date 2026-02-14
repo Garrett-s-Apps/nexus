@@ -22,6 +22,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from src.agents.haiku_intake import format_with_tool_result, run_haiku_intake
 from src.agents.intake_dispatcher import dispatch
+from src.agents.planner import create_plan
 from src.agents.registry import registry
 from src.config import get_key
 from src.documents.generator import generate_document
@@ -29,7 +30,7 @@ from src.memory.store import memory
 from src.ml.rag import build_rag_context, ingest_conversation
 from src.ml.similarity import analyze_new_directive
 from src.observability.logging import thread_ts_var
-from src.sessions.cli_pool import CLISession, cli_pool
+from src.sessions.cli_pool import cli_pool
 
 
 def md_to_slack(text: str) -> str:
@@ -231,6 +232,64 @@ def get_channel_id() -> str | None:
     return _channel_id
 
 
+def _build_execution_report(cli_result, directive_text: str) -> str:
+    """Build a concise post-execution summary report for Slack."""
+    from src.agents.task_result import TaskResult
+
+    if not isinstance(cli_result, TaskResult):
+        return ""
+
+    parts: list[str] = []
+    parts.append(":clipboard: *Execution Report*")
+
+    # Status
+    status_icon = ":white_check_mark:" if cli_result.succeeded else ":x:"
+    parts.append(f"{status_icon} *Status:* {cli_result.status}")
+
+    # Duration
+    if cli_result.elapsed_seconds > 0:
+        mins, secs = divmod(int(cli_result.elapsed_seconds), 60)
+        time_str = f"{mins}m {secs}s" if mins else f"{secs}s"
+        parts.append(f":stopwatch: *Duration:* {time_str}")
+
+    # Cost
+    if cli_result.cost_usd > 0:
+        parts.append(f":moneybag: *CLI Cost:* ${cli_result.cost_usd:.4f}")
+
+    # Tools used
+    meta = cli_result.metadata or {}
+    tools_used = meta.get("tools_used", 0)
+    if tools_used:
+        # Summarize tool usage by type
+        tools_log: list[str] = meta.get("tools_log", [])
+        if tools_log:
+            from collections import Counter
+            counts = Counter(tools_log)
+            tool_summary = ", ".join(
+                f"{name} x{count}" for name, count in counts.most_common(8)
+            )
+            parts.append(f":hammer_and_wrench: *Tools:* {tools_used} total ({tool_summary})")
+        else:
+            parts.append(f":hammer_and_wrench: *Tools:* {tools_used} total")
+
+    # Files touched
+    files_touched: list[str] = meta.get("files_touched", [])
+    if files_touched:
+        file_names = [f.split("/")[-1] for f in files_touched[:10]]
+        parts.append(f":page_facing_up: *Files:* {', '.join(file_names)}")
+        if len(files_touched) > 10:
+            parts.append(f"  _...and {len(files_touched) - 10} more_")
+
+    # Errors
+    if not cli_result.succeeded:
+        if cli_result.error_type:
+            parts.append(f":warning: *Error type:* {cli_result.error_type}")
+        if cli_result.error_detail:
+            parts.append(f":memo: *Detail:* {cli_result.error_detail[:200]}")
+
+    return "\n".join(parts)
+
+
 def _is_garbage_response(response: str) -> bool:
     """Detect responses that are leaked instructions or placeholder templates.
 
@@ -355,7 +414,11 @@ _SYSTEM_PREAMBLE = (
     "4. Never output instruction-style text like 'Provide X' or 'List Y' — give the actual answer.\n"
     "5. If asked about architecture, read docs/ARCHITECTURE.md and src/ to give real details.\n"
     "6. If you don't know something, say so directly.\n"
-    "7. Always give complete, substantive answers grounded in the actual codebase.\n\n"
+    "7. Always give complete, substantive answers grounded in the actual codebase.\n"
+    "8. NEVER give the user step-by-step instructions to follow. YOU execute the steps yourself.\n"
+    "   Do NOT say 'Step 1: Create a file...', 'Run npm install...', or 'Add this to your config'.\n"
+    "   Instead, create the files, run the commands, and install the dependencies yourself.\n"
+    "   Garrett is the CEO — he tells you WHAT to build, you figure out HOW and DO it.\n\n"
     "PROJECT SETUP — when creating ANY new project:\n"
     "1. Always run `git init` in the new project directory.\n"
     "2. Make an initial commit with all scaffolding files.\n"
@@ -435,13 +498,22 @@ def _build_ml_briefing(message: str) -> str:
 
 def _build_threaded_prompt(
     history: list[dict[str, str]], current_message: str, *, is_retry: bool = False,
-    ml_briefing: str = "", rag_context: str = "",
+    ml_briefing: str = "", rag_context: str = "", execution_plan: str = "",
 ) -> str:
     """Build a prompt with thread history so CLI has conversational context."""
     parts = [_SYSTEM_PREAMBLE, ""]
 
     if ml_briefing:
         parts.append(ml_briefing)
+        parts.append("")
+
+    # Execution plan from Sonnet planner — gives Opus structured direction
+    if execution_plan:
+        parts.append(
+            "[EXECUTION PLAN — created by Sonnet planner. Follow this plan unless "
+            "you discover a better approach during implementation.]\n"
+        )
+        parts.append(execution_plan)
         parts.append("")
 
     # Thread history goes before RAG so the live conversation is closer to
@@ -583,9 +655,7 @@ async def start_slack_listener():
             # Detect follow-up: if this thread has an active CLI session,
             # tell Haiku this is a follow-up so it routes to start_directive
             thread_context = ""
-            has_active_session = (
-                thread_ts in cli_pool._sessions and cli_pool._sessions[thread_ts].alive
-            )
+            has_active_session = cli_pool.has_busy_sessions(thread_ts)
             if has_active_session:
                 thread_context = (
                     "This thread has an ACTIVE CLI session — the user is following up on "
@@ -609,6 +679,15 @@ async def start_slack_listener():
                 thread_context=thread_context,
             )
 
+            # Emit Haiku classification event for dashboard live ticker
+            memory.emit_event("haiku", "classification", {
+                "tool_called": intake_result.tool_called or "conversation",
+                "tokens_in": intake_result.tokens_in,
+                "tokens_out": intake_result.tokens_out,
+                "message_preview": text[:100],
+                "thread_ts": thread_ts,
+            })
+
             response = None
             project_path = os.environ.get("NEXUS_PROJECT_PATH", os.path.expanduser("~/Projects/nexus"))
 
@@ -621,6 +700,42 @@ async def start_slack_listener():
                 # Engineering work — use the existing CLI flow
                 directive_text = intake_result.tool_input.get("directive_text", text) if intake_result.tool_input else text
 
+                # Detect explicit cancel intent
+                cancel_keywords = {"stop", "cancel", "nevermind", "never mind", "abort", "kill it"}
+                is_cancel = any(kw in text.lower() for kw in cancel_keywords)
+
+                if is_cancel and cli_pool.has_busy_sessions(thread_ts):
+                    killed = await cli_pool.cancel_all(thread_ts)
+                    memory.emit_event("cli", "cancelled_by_user", {
+                        "thread_ts": thread_ts,
+                        "sessions_killed": killed,
+                        "cancel_message": text[:200],
+                    })
+                    response = f":octagonal_sign: *Cancelled {killed} running agent(s).* Say what you'd like to do next."
+                    if thinking_msg:
+                        try:
+                            await web_client.chat_delete(channel=channel_id, ts=thinking_msg)
+                        except Exception:
+                            pass
+                    memory.emit_event("slack", "response_sent", {
+                        "text": (response or "")[:200], "thread_ts": thread_ts,
+                    })
+                    slack_text = md_to_slack(response)
+                    await web_client.chat_postMessage(
+                        channel=channel_id, text=slack_text, thread_ts=thread_ts)
+                    memory.mark_message_processed(dedup_key, slack_ts, channel_id)
+                    return
+
+                # Parallel execution: spawn a new CLI session for this directive
+                # Multiple CLIs can run concurrently within the same thread
+                busy = cli_pool.busy_count(thread_ts)
+                if busy > 0:
+                    memory.emit_event("cli", "parallel_spawn", {
+                        "thread_ts": thread_ts,
+                        "existing_busy": busy,
+                        "new_directive": directive_text[:200],
+                    })
+
                 # Update status: directive accepted
                 if thinking_msg:
                     try:
@@ -630,78 +745,139 @@ async def start_slack_listener():
                     except Exception:
                         pass
 
-                # Build ML intelligence briefing + RAG context
+                # Build ML intelligence briefing + RAG context (parallel)
                 ml_briefing = await asyncio.to_thread(_build_ml_briefing, directive_text)
                 rag_context = await asyncio.to_thread(
                     build_rag_context, directive_text, 8000, {f"thread:{thread_ts}"},
                 )
 
-                # Update status: briefing complete, agent starting
+                # Sonnet planning step — creates structured execution plan
+                if thinking_msg:
+                    try:
+                        await web_client.chat_update(
+                            channel=channel_id, ts=thinking_msg,
+                            text=f":brain: *Planning:* _{directive_text[:120]}_\n:memo: Sonnet creating execution plan...")
+                    except Exception:
+                        pass
+                memory.emit_event("planner", "started", {
+                    "thread_ts": thread_ts,
+                    "directive": directive_text[:200],
+                })
+
+                execution_plan = await create_plan(
+                    directive_text,
+                    ml_briefing=ml_briefing,
+                    rag_context=rag_context,
+                    thread_history=thread_history,
+                )
+
+                if execution_plan:
+                    memory.emit_event("planner", "completed", {
+                        "thread_ts": thread_ts,
+                        "plan_length": len(execution_plan),
+                    })
+                else:
+                    memory.emit_event("planner", "skipped", {
+                        "thread_ts": thread_ts,
+                        "reason": "planner returned empty",
+                    })
+
+                # Update status: plan ready, agent starting
                 briefing_summary = ""
                 if ml_briefing and "similar directive" in ml_briefing.lower():
                     briefing_summary = "\n:mag: Found similar past work"
+                plan_summary = "\n:memo: Execution plan ready" if execution_plan else ""
                 if thinking_msg:
                     try:
                         await web_client.chat_update(
                             channel=channel_id, ts=thinking_msg,
                             text=f":robot_face: *Working:* _{directive_text[:120]}_"
-                            f"{briefing_summary}\n:hammer_and_wrench: Agent executing...")
+                            f"{briefing_summary}{plan_summary}\n:hammer_and_wrench: Opus executing...")
                     except Exception:
                         pass
 
-                # Send to CLI pool (existing retry logic)
-                max_attempts = 3
-                for attempt in range(max_attempts):
-                    is_retry = attempt > 0
-                    cli_message = _build_threaded_prompt(
-                        thread_history, directive_text, is_retry=is_retry,
-                        ml_briefing=ml_briefing, rag_context=rag_context,
-                    )
-                    try:
-                        await safe_react("robot_face")
-                        session = await cli_pool.get_or_create(thread_ts, project_path)
-                        if not session.alive:
-                            session = CLISession(thread_ts, project_path)
-                            if await session.start():
-                                cli_pool._sessions[thread_ts] = session
-                        if session.alive:
-                            memory.emit_event("slack", "cli_routed", {
-                                "thread_ts": thread_ts,
-                                "pid": session.process.pid if session.process else None,
-                                "attempt": attempt + 1,
-                            })
-                            if is_retry and thinking_msg:
-                                try:
-                                    await web_client.chat_update(
-                                        channel=channel_id, ts=thinking_msg,
-                                        text=f":arrows_counterclockwise: *Retrying (attempt {attempt + 1}/{max_attempts}):* _{directive_text[:100]}_")
-                                except Exception:
-                                    pass
-                            cli_result = await session.send(cli_message)
-                            response = cli_result.output if cli_result.succeeded else None
-                            if response and _is_garbage_response(response):
-                                response = None
-                            if response and response != "(No response from CLI)" and not response.startswith("CLI error"):
-                                if attempt > 0:
-                                    try:
-                                        from src.ml.rag import ingest_error_resolution
-                                        ingest_error_resolution(
-                                            f"CLI failed on attempts 1-{attempt} for: {text[:200]}",
-                                            f"Succeeded on attempt {attempt + 1}",
-                                            source_id=f"retry:{thread_ts}",
-                                        )
-                                    except Exception:
-                                        pass
-                                break
-                        if attempt < max_attempts - 1:
-                            await asyncio.sleep(1.5)
-                    except Exception as e:
-                        print(f"[Slack] CLI attempt {attempt + 1} error: {e}")
-                        if attempt < max_attempts - 1:
-                            await asyncio.sleep(1.5)
+                # Build prompt with plan included
+                cli_message = _build_threaded_prompt(
+                    thread_history, directive_text,
+                    ml_briefing=ml_briefing, rag_context=rag_context,
+                    execution_plan=execution_plan,
+                )
+                cli_result = None
+                try:
+                    await safe_react("robot_face")
+                    session = cli_pool.spawn(thread_ts, project_path)
 
-                if not response or response == "(No response from CLI)" or response.startswith("CLI error"):
+                    memory.emit_event("cli", "started", {
+                        "thread_ts": thread_ts,
+                        "directive": directive_text[:200],
+                        "pid": session.process.pid if session.process else None,
+                    })
+
+                    # Progress callback — updates Slack AND dashboard live
+                    async def _progress(status: str) -> None:
+                        if thinking_msg:
+                            try:
+                                await web_client.chat_update(
+                                    channel=channel_id, ts=thinking_msg,
+                                    text=f":robot_face: *Working:* _{directive_text[:80]}_\n{status}")
+                            except Exception:
+                                pass
+                        memory.emit_event("cli", "progress", {
+                            "thread_ts": thread_ts,
+                            "status": status,
+                        })
+
+                    cli_result = await session.send(
+                        cli_message, on_progress=_progress,
+                    )
+
+                    if cli_result.succeeded:
+                        response = cli_result.output
+                        if response and _is_garbage_response(response):
+                            response = None
+                        memory.emit_event("cli", "completed", {
+                            "thread_ts": thread_ts,
+                            "cost_usd": cli_result.cost_usd,
+                            "elapsed_seconds": cli_result.elapsed_seconds,
+                            "tools_used": cli_result.metadata.get("tools_used", 0),
+                            "files_touched": cli_result.metadata.get("files_touched", []),
+                            "output_len": len(response or ""),
+                        })
+                    else:
+                        error_detail = cli_result.output or cli_result.error_detail or "Unknown error"
+                        error_type = cli_result.error_type or "unknown"
+                        memory.emit_event("cli", "error", {
+                            "thread_ts": thread_ts,
+                            "error_type": error_type,
+                            "detail": error_detail[:300],
+                        })
+                        if error_type == "timeout":
+                            response = f":warning: *Timed out* after 15 minutes.\n{error_detail[:1000]}"
+                        elif error_type == "cancelled":
+                            response = None
+                        else:
+                            response = f":warning: *Error:* {error_detail[:1000]}"
+
+                except Exception as e:
+                    print(f"[Slack] CLI error: {e}")
+                    response = f":warning: *Error:* {e}"
+
+                if not response or response == "(No response from CLI)":
                     response = "I had trouble processing that request. Could you try rephrasing?"
+
+                # === POST-EXECUTION SUMMARY REPORT ===
+                # Send a concise execution report as a follow-up thread message
+                if cli_result:
+                    try:
+                        report = _build_execution_report(cli_result, directive_text)
+                        if report:
+                            await web_client.chat_postMessage(
+                                channel=channel_id,
+                                text=report,
+                                thread_ts=thread_ts,
+                            )
+                    except Exception as e:
+                        print(f"[Slack] Execution report error: {e}")
 
             elif intake_result.tool_called == "generate_document":
                 # Document generation — use existing generate_document flow

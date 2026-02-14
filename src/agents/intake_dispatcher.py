@@ -44,6 +44,12 @@ async def dispatch(
 
     logger.info(f"Dispatching tool: {tool_name} with input: {tool_input}")
 
+    # Emit event for dashboard live ticker
+    memory.emit_event("intake", tool_name, {
+        "input": {k: str(v)[:100] for k, v in tool_input.items()},
+        "source": source,
+    })
+
     # Route to appropriate handler
     handler = DISPATCH_MAP.get(tool_name)
     if not handler:

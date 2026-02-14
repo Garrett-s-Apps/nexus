@@ -890,24 +890,43 @@ async function connectSSE() {
     try {
       const data = JSON.parse(e.data);
       const log = document.getElementById('event-log');
-      // Convert UTC to local time
+      // Convert UTC to local time — handle both +00:00 and Z suffixes
       let time = '';
       if (data.timestamp) {
         try {
-          const d = new Date(data.timestamp.endsWith('Z') ? data.timestamp : data.timestamp + 'Z');
-          time = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+          const ts = data.timestamp.replace(/\+00:00$/, 'Z');
+          const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+          time = isNaN(d.getTime()) ? (data.timestamp.split('T')[1] || '').substring(0,8)
+            : d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
         } catch { time = (data.timestamp.split('T')[1] || '').substring(0,8); }
       }
-      // Show event detail summary from data payload
+      // Show rich event detail from data payload
       let detail = data.type || '--';
       if (data.data && typeof data.data === 'object') {
         const d = data.data;
         const parts = [];
-        if (d.text) parts.push(d.text.substring(0, 60));
-        else if (d.message) parts.push(d.message.substring(0, 60));
-        else if (d.agent_id) parts.push(d.agent_id);
-        else if (d.status) parts.push(d.status);
-        if (parts.length) detail += ': ' + parts.join(', ');
+        // Primary content
+        if (d.text) parts.push(d.text.substring(0, 80));
+        else if (d.directive_text) parts.push(d.directive_text.substring(0, 80));
+        else if (d.message) parts.push(d.message.substring(0, 80));
+        else if (d.description) parts.push(d.description.substring(0, 80));
+        // Agent + model info
+        if (d.agent_id || d.agent) parts.push('[' + (d.agent_id || d.agent) + ']');
+        if (d.model) parts.push('(' + d.model + ')');
+        // Status + outcome
+        if (d.status) parts.push(d.status);
+        if (d.outcome) parts.push(d.outcome);
+        if (d.error) parts.push('ERR: ' + String(d.error).substring(0, 40));
+        // Cost + tokens
+        if (d.cost !== undefined) parts.push('$' + Number(d.cost).toFixed(4));
+        if (d.tokens_in || d.tokens_out) parts.push((d.tokens_in||0) + '/' + (d.tokens_out||0) + ' tok');
+        // Task + directive IDs
+        if (d.directive_id) parts.push('dir:' + d.directive_id.substring(0, 8));
+        if (d.task_id) parts.push('task:' + d.task_id.substring(0, 8));
+        // Attempt info
+        if (d.attempt) parts.push('attempt ' + d.attempt);
+        if (d.pid) parts.push('pid:' + d.pid);
+        if (parts.length) detail += ': ' + parts.join(' | ');
       }
       const detailSpan = el('span', null, detail);
 

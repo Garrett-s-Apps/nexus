@@ -437,10 +437,18 @@ async def format_with_tool_result(
         ],
     })
 
+    format_system = (
+        "You are formatting a tool result into a short, conversational Slack message. "
+        "ONLY summarize the data returned by the tool. Do NOT add instructions, suggestions, "
+        "next steps, or commentary beyond the data. Do NOT tell the user to do things. "
+        "Keep it under 4 sentences. Be concise and direct."
+    )
+
     try:
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=2000,
+            max_tokens=500,
+            system=format_system,
             messages=messages,  # type: ignore[arg-type]
         )
 

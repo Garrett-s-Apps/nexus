@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 
 import jwt as pyjwt
 
@@ -35,8 +36,11 @@ def sign_response(data: dict | list | str) -> str:
     now = int(time.time())
     payload = {
         "sub": "nexus-api",
+        "iss": "nexus-server",
+        "aud": ["nexus-dashboard", "nexus-api"],
         "iat": now,
         "exp": now + TOKEN_TTL_SECONDS,
+        "jti": str(uuid.uuid4()),
         "data_hash": data_hash,
     }
 
@@ -48,7 +52,13 @@ def verify_token(token: str, data: dict | list | str) -> bool:
     """Verify a JWT and confirm the data hash matches the provided payload."""
     try:
         public_key = get_public_key()
-        decoded = pyjwt.decode(token, public_key, algorithms=[ALGORITHM])
+        decoded = pyjwt.decode(
+            token,
+            public_key,
+            algorithms=[ALGORITHM],
+            audience="nexus-dashboard",
+            issuer="nexus-server"
+        )
 
         body = json.dumps(data, sort_keys=True, default=str)
         expected_hash = hashlib.sha256(body.encode()).hexdigest()

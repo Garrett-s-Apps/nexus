@@ -19,7 +19,7 @@ from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
-from src.db.sqlite_store import connect_encrypted
+from src.db.sqlite_store import SQLiteStore
 
 DB_PATH = os.path.expanduser("~/.nexus/registry.db")
 YAML_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "config", "agents.yaml")
@@ -114,18 +114,17 @@ DEFAULT_REPORTING = {
 }
 
 
-class AgentRegistry:
+class AgentRegistry(SQLiteStore):
     """Mutable agent registry backed by SQLite with thread safety."""
 
     def __init__(self, db_path: str = DB_PATH):
-        self.db_path = db_path
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        super().__init__(db_path)
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_db()
         self._changelog: list[dict] = []
-        self._lock = asyncio.Lock()
 
     def _init_db(self):
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS agents (
                 id TEXT PRIMARY KEY,
@@ -166,12 +165,10 @@ class AgentRegistry:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_circuit_agent ON circuit_events(agent_id)")
         conn.commit()
-        conn.close()
 
     def is_initialized(self) -> bool:
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         count = conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
-        conn.close()
         return bool(count > 0)
 
     def load_from_yaml(self):
@@ -179,7 +176,7 @@ class AgentRegistry:
         with open(yaml_path) as f:
             config = yaml.safe_load(f)
 
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         now = time.time()
 
         for agent_id, agent_data in config["agents"].items():
@@ -207,26 +204,33 @@ class AgentRegistry:
 
         self._log_change(conn, "initialized", None, "Loaded initial org from agents.yaml")
         conn.commit()
-        conn.close()
 
     # ============================================
     # READ OPERATIONS
     # ============================================
 
     def get_agent(self, agent_id: str) -> Agent | None:
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
-        conn.close()
         if row:
             return Agent.from_row(row)
         return None
 
+    def get_agents_batch(self, agent_ids: list[str]) -> dict[str, Agent]:
+        """Batch load agents by IDs. Returns dict mapping agent_id -> Agent."""
+        if not agent_ids:
+            return {}
+        conn = self._db()
+        ph = ",".join("?" for _ in agent_ids)
+        # Safe: ph contains only "?" placeholders, no user input in query structure
+        rows = conn.execute(f"SELECT * FROM agents WHERE id IN ({ph})", agent_ids).fetchall()  # noqa: S608
+        return {row[0]: Agent.from_row(row) for row in rows}
+
     def get_active_agents(self) -> list[Agent]:
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         rows = conn.execute(
             "SELECT * FROM agents WHERE status = 'active' OR status = 'temporary'"
         ).fetchall()
-        conn.close()
 
         agents = []
         now = time.time()
@@ -249,26 +253,24 @@ class AgentRegistry:
         return [a for a in self.get_active_agents() if a.reports_to == manager_id]
 
     def get_agent_by_name(self, name: str) -> Agent | None:
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         row = conn.execute(
             "SELECT * FROM agents WHERE LOWER(name) = LOWER(?) AND status IN ('active', 'temporary')",
             (name,),
         ).fetchone()
-        conn.close()
         if row:
             return Agent.from_row(row)
         return None
 
     def search_agents(self, query: str) -> list[Agent]:
         q = f"%{query.lower()}%"
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         rows = conn.execute(
             """SELECT * FROM agents
                WHERE status IN ('active', 'temporary')
                AND (LOWER(id) LIKE ? OR LOWER(name) LIKE ? OR LOWER(description) LIKE ?)""",
             (q, q, q),
         ).fetchall()
-        conn.close()
         return [Agent.from_row(r) for r in rows]
 
     # ============================================
@@ -296,7 +298,7 @@ class AgentRegistry:
             if temporary and temp_duration_hours:
                 temp_expiry = now + (temp_duration_hours * 3600)
 
-            conn = connect_encrypted(self.db_path)
+            conn = self._db()
             conn.execute(
                 """INSERT INTO agents
                    (id, name, model, provider, layer, description, system_prompt,
@@ -321,16 +323,14 @@ class AgentRegistry:
             )
             self._log_change(conn, "hired", agent_id, f"Hired {name} ({model}) in {layer} layer, reports to {reports_to}")
             conn.commit()
-            conn.close()
 
             return self.get_agent(agent_id)  # type: ignore[return-value]
 
     async def fire_agent(self, agent_id: str, reason: str = "") -> bool:
         async with self._lock:
-            conn = connect_encrypted(self.db_path)
+            conn = self._db()
             agent = self.get_agent(agent_id)
             if not agent or agent.status not in ("active", "temporary"):
-                conn.close()
                 return False
 
             conn.execute(
@@ -352,24 +352,22 @@ class AgentRegistry:
 
             self._log_change(conn, "fired", agent_id, f"Fired {agent.name}. Reason: {reason}")
             conn.commit()
-            conn.close()
             return True
 
     async def reassign_agent(self, agent_id: str, new_manager_id: str) -> bool:
         async with self._lock:
-            conn = connect_encrypted(self.db_path)
+            conn = self._db()
             conn.execute(
                 "UPDATE agents SET reports_to = ? WHERE id = ? AND status IN ('active', 'temporary')",
                 (new_manager_id, agent_id),
             )
             self._log_change(conn, "reassigned", agent_id, f"Now reports to {new_manager_id}")
             conn.commit()
-            conn.close()
             return True
 
     async def update_agent(self, agent_id: str, **kwargs) -> bool:
         async with self._lock:
-            conn = connect_encrypted(self.db_path)
+            conn = self._db()
             _AGENT_COLS = {
                 "name", "model", "provider", "layer", "description", "system_prompt",
                 "reports_to", "tools", "spawns_sdk", "metadata",
@@ -378,7 +376,6 @@ class AgentRegistry:
             # Validate all incoming columns first
             for k in kwargs:
                 if k not in _AGENT_COLS:
-                    conn.close()
                     raise ValueError(f"Invalid column: {k}")
 
             allowed_fields = {"name", "model", "provider", "layer", "description", "system_prompt", "reports_to"}
@@ -392,7 +389,6 @@ class AgentRegistry:
                 updates["metadata"] = json.dumps(kwargs["metadata"])
 
             if not updates:
-                conn.close()
                 return False
 
             set_clause = ", ".join(f"{k} = ?" for k in updates)
@@ -401,7 +397,6 @@ class AgentRegistry:
             conn.execute(f"UPDATE agents SET {set_clause} WHERE id = ?", values)  # noqa: S608
             self._log_change(conn, "updated", agent_id, f"Updated fields: {list(updates.keys())}")
             conn.commit()
-            conn.close()
             return True
 
     def consolidate_agents(self, agent_ids: list[str], new_agent_id: str, new_name: str, new_description: str) -> Agent | None:
@@ -427,14 +422,13 @@ class AgentRegistry:
             self.fire_agent(aid, reason=f"Consolidated into {new_name}")
 
         all_orphans = []
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         for aid in agent_ids:
             orphans = conn.execute(
                 "SELECT id FROM agents WHERE reports_to = ? AND status IN ('active', 'temporary')",
                 (aid,),
             ).fetchall()
             all_orphans.extend([o[0] for o in orphans])
-        conn.close()
 
         new_agent = self.hire_agent(
             agent_id=new_agent_id,
@@ -495,12 +489,11 @@ class AgentRegistry:
         return line
 
     def get_changelog(self, limit: int = 20) -> list[dict]:
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         rows = conn.execute(
             "SELECT timestamp, action, agent_id, details FROM org_changelog ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
-        conn.close()
         return [
             {"timestamp": r[0], "action": r[1], "agent_id": r[2], "details": r[3]}
             for r in rows
@@ -522,17 +515,16 @@ class AgentRegistry:
 
     def record_circuit_event(self, agent_id: str, event_type: str, reason: str = ""):
         """Record a circuit breaker event for reliability tracking."""
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         conn.execute(
             "INSERT INTO circuit_events (agent_id, event_type, reason, timestamp) VALUES (?, ?, ?, ?)",
             (agent_id, event_type, reason, time.time()),
         )
         conn.commit()
-        conn.close()
 
     def get_agent_reliability(self, agent_id: str, window_hours: int = 24) -> dict:
         """Get agent reliability metrics from circuit breaker events."""
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         cutoff = time.time() - (window_hours * 3600)
 
         trips = conn.execute(
@@ -545,14 +537,56 @@ class AgentRegistry:
             (agent_id, cutoff),
         ).fetchone()[0]
 
-        conn.close()
-
         return {
             "agent_id": agent_id,
             "circuit_trips": trips,
             "recoveries": recoveries,
             "window_hours": window_hours,
         }
+
+    def get_agent_reliability_batch(self, agent_ids: list[str], window_hours: int = 24) -> dict[str, dict]:
+        """Batch load agent reliability metrics. Returns dict mapping agent_id -> stats."""
+        if not agent_ids:
+            return {}
+
+        conn = self._db()
+        cutoff = time.time() - (window_hours * 3600)
+        ph = ",".join("?" for _ in agent_ids)
+
+        # Get all stats in a single query using GROUP BY
+        # Safe: ph contains only "?" placeholders, no user input in query structure
+        rows = conn.execute(
+            f"""SELECT
+                agent_id,
+                SUM(CASE WHEN event_type='trip' THEN 1 ELSE 0 END) as trips,
+                SUM(CASE WHEN event_type='recovery' THEN 1 ELSE 0 END) as recoveries
+            FROM circuit_events
+            WHERE agent_id IN ({ph}) AND timestamp >= ?
+            GROUP BY agent_id""",  # noqa: S608
+            (*agent_ids, cutoff)
+        ).fetchall()
+
+        result = {}
+        for row in rows:
+            agent_id = row[0]
+            result[agent_id] = {
+                "agent_id": agent_id,
+                "circuit_trips": row[1],
+                "recoveries": row[2],
+                "window_hours": window_hours,
+            }
+
+        # Fill in missing agents with zero stats
+        for agent_id in agent_ids:
+            if agent_id not in result:
+                result[agent_id] = {
+                    "agent_id": agent_id,
+                    "circuit_trips": 0,
+                    "recoveries": 0,
+                    "window_hours": window_hours,
+                }
+
+        return result
 
 
 # Singleton

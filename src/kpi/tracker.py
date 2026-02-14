@@ -10,19 +10,19 @@ import os
 import sqlite3
 import time
 
-from src.db.sqlite_store import connect_encrypted
+from src.db.sqlite_store import SQLiteStore
 
 DB_PATH = os.path.expanduser("~/.nexus/kpi.db")
 
 
-class KPITracker:
+class KPITracker(SQLiteStore):
     def __init__(self, db_path: str = DB_PATH):
-        self.db_path = db_path
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        super().__init__(db_path)
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_db()
 
     def _init_db(self):
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS kpi_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,16 +38,14 @@ class KPITracker:
             ON kpi_snapshots(category, metric)
         """)
         conn.commit()
-        conn.close()
 
     def record(self, category: str, metric: str, value: float, metadata: dict | None = None):
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         conn.execute(
             "INSERT INTO kpi_snapshots (timestamp, category, metric, value, metadata) VALUES (?, ?, ?, ?, ?)",
             (time.time(), category, metric, value, json.dumps(metadata or {})),
         )
         conn.commit()
-        conn.close()
 
     def record_task_completion(self, agent: str, task: str, cost: float, duration_sec: float):
         self.record("productivity", "task_completed", 1, {
@@ -66,7 +64,7 @@ class KPITracker:
 
     def get_summary(self, hours: float = 24) -> dict:
         cutoff = time.time() - (hours * 3600)
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
 
         tasks = conn.execute(
             "SELECT COUNT(*) FROM kpi_snapshots WHERE category='productivity' AND metric='task_completed' AND timestamp > ?",
@@ -97,8 +95,6 @@ class KPITracker:
             "SELECT COUNT(*) FROM kpi_snapshots WHERE category='productivity' AND metric='pr_reviews' AND timestamp > ?",
             (cutoff,),
         ).fetchone()[0]
-
-        conn.close()
 
         lint_total = lint_passes + lint_fails
         lint_rate = (lint_passes / lint_total * 100) if lint_total > 0 else 100

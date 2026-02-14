@@ -16,7 +16,7 @@ import time
 from typing import Any
 
 from src.config import COST_DB_PATH
-from src.db.sqlite_store import connect_encrypted
+from src.db.sqlite_store import SQLiteStore
 
 logger = logging.getLogger("nexus.cost.tracker")
 
@@ -55,12 +55,12 @@ DOWNGRADE_MAP = {
 }
 
 
-class CostTracker:
+class CostTracker(SQLiteStore):
     """Full cost tracking with CFO budget enforcement."""
 
     def __init__(self, db_path: str = DB_PATH):
-        self.db_path = db_path
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        super().__init__(db_path)
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_db()
 
         # In-memory session tracking
@@ -75,7 +75,7 @@ class CostTracker:
         self._alerts_sent: set[str] = set()
 
     def _init_db(self):
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS cost_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,7 +100,6 @@ class CostTracker:
             ON cost_events(timestamp)
         """)
         conn.commit()
-        conn.close()
 
     def calculate_cost(self, model: str, tokens_in: int, tokens_out: int) -> float:
         pricing = MODEL_PRICING.get(model, MODEL_PRICING["sonnet"])
@@ -127,13 +126,12 @@ class CostTracker:
         self.call_count += 1
 
         # Persist to NEXUS cost_events table
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         conn.execute(
             "INSERT INTO cost_events (timestamp, model, agent, project, tokens_in, tokens_out, cost_usd, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (time.time(), model, agent_name, project, tokens_in, tokens_out, cost, session_id),
         )
         conn.commit()
-        conn.close()
 
         # Dual-write to costwise analytics backend
         try:
@@ -238,18 +236,17 @@ class CostTracker:
         t = time.localtime(now)
         month_start = time.mktime((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, -1))
 
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         result = conn.execute(
             "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_events WHERE timestamp >= ?",
             (month_start,),
         ).fetchone()[0]
-        conn.close()
         return float(result)
 
     def get_daily_breakdown(self, days: int = 7) -> list[dict]:
         """Cost breakdown by day for the last N days."""
         cutoff = time.time() - (days * 86400)
-        conn = connect_encrypted(self.db_path)
+        conn = self._db()
         rows = conn.execute(
             """SELECT date(timestamp, 'unixepoch', 'localtime') as day,
                       SUM(cost_usd) as total,
@@ -260,7 +257,6 @@ class CostTracker:
                ORDER BY day DESC""",
             (cutoff,),
         ).fetchall()
-        conn.close()
         return [{"date": r[0], "cost": r[1], "calls": r[2]} for r in rows]
 
     def get_agent_breakdown(self) -> list[dict]:

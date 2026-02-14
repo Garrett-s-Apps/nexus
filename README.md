@@ -487,6 +487,37 @@ NEXUS starts on login, restarts on crash. Logs at `~/.nexus/logs/`.
 
 ---
 
+## Quality Standards
+
+### Warnings = Errors
+
+NEXUS enforces a **zero-tolerance policy** for all warnings:
+
+- **ESLint warnings** → Build fails
+- **TypeScript warnings** → Build fails
+- **Test warnings** → Build fails
+- **Security warnings** → CRITICAL blocker
+- **Ruff/Pylint warnings** → Build fails
+
+**Zero acceptable warnings. Fix it or don't ship it.**
+
+This policy is enforced at the quality gate in the orchestration pipeline. Any warning from linting, testing, or security scans is treated as a blocking error that prevents progression to code review.
+
+### Why Zero Tolerance?
+
+Warnings accumulate into technical debt. Today's "warning" is tomorrow's production bug. By treating warnings as errors from day one, we maintain code quality and prevent degradation over time.
+
+The quality gate checks:
+- All linters passed with zero warnings
+- All tests passed with zero warnings
+- Security scan clean (no CRITICAL/HIGH findings)
+- Zero `type:any` violations in TypeScript
+- Zero failed tasks
+
+Only when ALL checks pass can code proceed to PR review and architect approval.
+
+---
+
 ## License
 
 Private — Garrett-s-Apps

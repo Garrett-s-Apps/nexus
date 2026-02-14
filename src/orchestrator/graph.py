@@ -445,6 +445,149 @@ If you cannot produce JSON, output a bullet list with one task per line.""",
     }
 
 
+async def test_first_node(state: NexusState) -> dict:
+    """TDD RED phase: Write failing tests BEFORE implementation."""
+
+    test_tasks = []
+    total_cost = state.cost
+
+    for task in state.workstreams:
+        if task.status != "completed":
+            # Determine which test agent to use
+            agent_key = "test_frontend" if "frontend" in task.assigned_agent.lower() else "test_backend"
+
+            result = await _run_impl_agent(
+                agent_key,
+                AGENTS[agent_key],
+                f"""TDD RED PHASE: Write tests for this task BEFORE implementation.
+
+Task: {task.description}
+Requirements: {state.cpo_requirements}
+Acceptance criteria: {state.cpo_acceptance_criteria}
+
+Write tests that will FAIL initially (RED phase).
+The tests should verify the feature works once implemented.
+Run the tests and VERIFY they fail.
+
+CRITICAL: Tests MUST fail initially. If they pass, they're not testing the right thing!
+
+Output:
+1. The test code you wrote
+2. The test execution output showing FAILURES
+3. Confirmation that RED phase is complete for this task""",
+                state.project_path,
+            )
+
+            # Verify tests failed
+            output_lower = result.output.lower()
+            if ("0 failed" in output_lower and "failed" in output_lower) or \
+               ("all tests passed" in output_lower) or \
+               ("pass" in output_lower and "fail" not in output_lower):
+                return {
+                    "error": f"RED phase failed for task {task.id}: Tests passed before implementation!",
+                    "current_phase": "implementation",
+                }
+
+            test_tasks.append(result.output)
+            total_cost = _update_cost(total_cost, result)
+
+    return {
+        "red_phase_complete": True,
+        "test_results_red": test_tasks,
+        "current_phase": "implementation",
+        "cost": total_cost,
+    }
+
+
+async def verify_green_phase(state: NexusState) -> dict:
+    """TDD GREEN phase: Verify tests NOW PASS after implementation."""
+
+    test_results = []
+    total_cost = state.cost
+
+    for task in state.workstreams:
+        if task.status == "completed":
+            # Re-run the same tests that failed in RED phase
+            agent_key = "test_frontend" if "frontend" in task.assigned_agent.lower() else "test_backend"
+
+            result = await _run_impl_agent(
+                agent_key,
+                AGENTS[agent_key],
+                f"""TDD GREEN PHASE: Re-run tests to verify implementation is complete.
+
+Task: {task.description}
+
+Re-run the tests you wrote in the RED phase.
+They MUST pass now that implementation is complete.
+
+If they still fail, the implementation is incomplete.
+
+Output:
+1. Test execution results
+2. Confirmation that all tests PASS (GREEN phase complete)""",
+                state.project_path,
+            )
+
+            # Verify tests passed
+            output_lower = result.output.lower()
+            if "failed" in output_lower or "error" in output_lower:
+                has_failures = True
+                # Check if it's just reporting 0 failed
+                if "0 failed" in output_lower or "0 error" in output_lower:
+                    has_failures = False
+
+                if has_failures:
+                    return {
+                        "error": f"GREEN phase failed for task {task.id}: Tests still failing after implementation!",
+                        "green_phase_verified": False,
+                        "current_phase": "implementation",
+                    }
+
+            test_results.append(result.output)
+            total_cost = _update_cost(total_cost, result)
+
+    return {
+        "green_phase_verified": True,
+        "test_results_green": test_results,
+        "cost": total_cost,
+    }
+
+
+async def refactor_node(state: NexusState) -> dict:
+    """TDD REFACTOR phase: Clean up code while keeping tests green."""
+
+    result = await _run_impl_agent(
+        "tech_lead",
+        AGENTS["tech_lead"],
+        f"""TDD REFACTOR PHASE: Review the implementation for refactoring opportunities.
+
+Technical design: {state.technical_design}
+Requirements: {state.cpo_requirements}
+
+Look for:
+- Duplicated code that can be extracted
+- Unclear variable/function names that need improvement
+- Complex logic that can be simplified
+- Missing comments that explain WHY (not WHAT)
+- Opportunities to improve readability without changing behavior
+
+CRITICAL: Tests must stay GREEN. Run tests after each refactor.
+
+If no refactoring is needed, say "No refactoring needed" and explain why the code is already clean.
+
+Output:
+1. Refactoring changes made (if any)
+2. Test results confirming tests still pass
+3. Confirmation that REFACTOR phase is complete""",
+        state.project_path,
+    )
+
+    return {
+        "refactor_complete": True,
+        "cost": _update_cost(state.cost, result),
+    }
+
+
 async def implementation_node(state: NexusState) -> dict:
     """Execute implementation tasks via Agent SDK sessions with per-task tracking."""
     updated_tasks = []
@@ -571,8 +714,19 @@ Run: eslint, ruff, or appropriate linter for each file type found.""",
 
     any_violations = result.output.lower().count("type:any") + result.output.lower().count("type: any")
 
+    # Count ALL warnings - warnings are now treated as blocking errors
+    lint_output = result.output.lower()
+    warnings_count = (
+        lint_output.count('warning') +
+        lint_output.count('warn:') +
+        lint_output.count('[warn]')
+    )
+
+    # ANY warning is a blocking error
+    blocking_issues = 'BLOCKING' in result.output or warnings_count > 0
+
     return {
-        "lint_results": {"output": result.output, "passed": "BLOCKING" not in result.output},
+        "lint_results": {"output": result.output, "passed": not blocking_issues},
         "any_type_violations": any_violations,
         "cost": _update_cost(state.cost, result),
     }
@@ -667,6 +821,24 @@ Be specific about any issues found and recommend exact fixes.""",
     }
 
 
+def _count_warnings(lint_results: dict, test_results: dict) -> int:
+    """Count all warnings in lint and test output."""
+    warnings = 0
+    if lint_results:
+        output = lint_results.get('output', '').lower()
+        warnings += output.count('warning')
+        warnings += output.count('warn:')
+        warnings += output.count('[warn]')
+    if test_results:
+        for output in test_results.values():
+            if isinstance(output, str):
+                output_lower = output.lower()
+                warnings += output_lower.count('warning')
+                warnings += output_lower.count('warn:')
+                warnings += output_lower.count('[warn]')
+    return warnings
+
+
 async def quality_gate_node(state: NexusState) -> dict:
     """QA Lead determines if quality is sufficient to proceed to PR."""
     gate_details = {}
@@ -691,15 +863,19 @@ async def quality_gate_node(state: NexusState) -> dict:
     no_failed_tasks = len(state.failed_tasks) == 0
     gate_details["no_failed_tasks"] = no_failed_tasks
 
+    # Check for warnings - zero tolerance
+    warnings_found = _count_warnings(state.lint_results, state.test_results)
+    gate_details["zero_warnings"] = warnings_found == 0
+
     # Calculate quality score (0-100)
-    checks = [lint_ran, lint_passed, tests_ran, security_ran, security_ok, no_any_violations, no_failed_tasks]
+    checks = [lint_ran, lint_passed, tests_ran, security_ran, security_ok, no_any_violations, no_failed_tasks, warnings_found == 0]
     quality_score = round((sum(checks) / len(checks)) * 100, 1)
 
     # Architect and QA gate checks (enforced at graph level, tracked here)
     gate_details["architect_approved"] = state.architect_approved
     gate_details["qa_verified"] = state.qa_verified
 
-    all_passed = lint_passed and no_any_violations and security_ok and lint_ran and tests_ran and security_ran
+    all_passed = lint_passed and no_any_violations and security_ok and lint_ran and tests_ran and security_ran and warnings_found == 0
 
     if not all_passed:
         failed_gates = [k for k, v in gate_details.items() if not v]
@@ -1060,7 +1236,10 @@ def build_nexus_graph() -> StateGraph:
     graph.add_node("vp_engineering", vp_engineering_node)
     graph.add_node("tech_lead_review", tech_lead_review_node)
     graph.add_node("decomposition", decomposition_node)
+    graph.add_node("test_first", test_first_node)
     graph.add_node("implementation", implementation_node)
+    graph.add_node("verify_green", verify_green_phase)
+    graph.add_node("refactor", refactor_node)
     graph.add_node("linting", linting_node)
     graph.add_node("testing", testing_node)
     graph.add_node("security_scan", security_scan_node)
@@ -1116,14 +1295,23 @@ def build_nexus_graph() -> StateGraph:
         {"vp_engineering": "vp_engineering", "decomposition": "decomposition"},
     )
 
-    # Decomposition → Implementation
-    graph.add_edge("decomposition", "implementation")
+    # Decomposition → Test First (RED phase)
+    graph.add_edge("decomposition", "test_first")
 
-    # Implementation → Quality checks (parallel)
-    graph.add_edge("implementation", "linting")
-    graph.add_edge("implementation", "testing")
-    graph.add_edge("implementation", "security_scan")
-    graph.add_edge("implementation", "visual_qa")
+    # Test First (RED) → Implementation (GREEN)
+    graph.add_edge("test_first", "implementation")
+
+    # Implementation → Verify Green Phase
+    graph.add_edge("implementation", "verify_green")
+
+    # Verify Green → Refactor
+    graph.add_edge("verify_green", "refactor")
+
+    # Refactor → Quality checks (parallel)
+    graph.add_edge("refactor", "linting")
+    graph.add_edge("refactor", "testing")
+    graph.add_edge("refactor", "security_scan")
+    graph.add_edge("refactor", "visual_qa")
 
     # Quality checks → Quality Gate
     graph.add_edge("linting", "quality_gate")

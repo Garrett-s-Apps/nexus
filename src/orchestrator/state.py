@@ -141,5 +141,12 @@ class NexusState(BaseModel):
     error: str | None = None
     escalation_reason: str | None = None
 
+    # --- TDD Workflow Tracking ---
+    red_phase_complete: bool = False
+    green_phase_verified: bool = False
+    refactor_complete: bool = False
+    test_results_red: list[str] = Field(default_factory=list)
+    test_results_green: list[str] = Field(default_factory=list)
+
     # --- Messages (for LangGraph compatibility) ---
     messages: list[Any] = Field(default_factory=list)

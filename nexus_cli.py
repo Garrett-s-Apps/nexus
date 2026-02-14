@@ -12,6 +12,11 @@ Usage:
     nexus checkpoint save <name>   Save a manual checkpoint
     nexus checkpoint list          List all checkpoints
     nexus checkpoint restore <name> Restore a checkpoint
+    nexus analyze <target_dir>     Analyze codebase for issues
+    nexus execute-all              Execute all pending findings
+    nexus execute-priority <sev>   Execute findings by severity
+    nexus execute-category <cat>   Execute findings by category
+    nexus execute-item <item_id>   Execute a single finding
     nexus stop                     Stop the server
 """
 

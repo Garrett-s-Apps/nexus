@@ -4,14 +4,27 @@ NEXUS Conversation Engine — persistent memory version.
 
 import asyncio
 import logging
+import os
 
 import anthropic
 
 logger = logging.getLogger("nexus.conversation")
 
+from src.agents.provider_factory import get_provider_factory
 from src.agents.registry import registry
 from src.config import get_key as _load_key  # consolidated key loading
 from src.memory.store import memory
+
+# Model configuration (no longer hardcoded!)
+CONVERSATION_MODEL = os.environ.get("NEXUS_CONVERSATION_MODEL", "sonnet")
+SUMMARY_MODEL = os.environ.get("NEXUS_SUMMARY_MODEL", "haiku")
+
+# Legacy model IDs (used when SDK providers disabled)
+LEGACY_MODEL_MAP = {
+    "opus": "claude-opus-4-20250514",
+    "sonnet": "claude-sonnet-4-5-20250929",
+    "haiku": "claude-haiku-4-5-20251001",
+}
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
@@ -63,6 +76,7 @@ RULES:
 async def converse(message: str, history: list[dict] | None = None) -> dict:
     """Main conversation entry point."""
     client = _get_client()
+    factory = get_provider_factory()
 
     # Build messages from persistent DB
     messages = memory.build_message_history(max_messages=30)
@@ -81,20 +95,54 @@ async def converse(message: str, history: list[dict] | None = None) -> dict:
     # Fix alternation
     messages = _fix_alternation(messages)
 
-    response = await client.messages.create(
-        model="claude-sonnet-4-5-20250929",
+    # Build full conversation for SDK (it expects a single prompt string)
+    conversation_text = "\n\n".join(
+        f"{m['role'].upper()}: {m['content']}" for m in messages
+    )
+
+    # Try SDK provider first
+    sdk_result = await factory.execute(
+        prompt=conversation_text,
+        model=CONVERSATION_MODEL,
+        system_prompt=_build_system_prompt(),
         max_tokens=2048,
-        system=_build_system_prompt(),
-        messages=messages,
     )
 
     from src.cost.tracker import cost_tracker
 
-    answer = response.content[0].text  # type: ignore[union-attr]
-    cost = 0.0
-    if response.usage:
-        cost_tracker.record("sonnet", "nexus_converse", response.usage.input_tokens, response.usage.output_tokens)
-        cost = cost_tracker.calculate_cost("sonnet", response.usage.input_tokens, response.usage.output_tokens)
+    if sdk_result:
+        # SDK path
+        answer = sdk_result["output"]
+        cost = sdk_result["cost_usd"]
+        cost_tracker.record(
+            sdk_result["model"],
+            "nexus_converse",
+            sdk_result["tokens_in"],
+            sdk_result["tokens_out"],
+        )
+    else:
+        # Legacy path
+        response = await client.messages.create(
+            model=LEGACY_MODEL_MAP[CONVERSATION_MODEL],
+            max_tokens=2048,
+            system=_build_system_prompt(),
+            messages=messages,
+        )
+
+        answer = response.content[0].text  # type: ignore[union-attr]
+        cost = 0.0
+        if response.usage:
+            cost_tracker.record(
+                CONVERSATION_MODEL,
+                "nexus_converse",
+                response.usage.input_tokens,
+                response.usage.output_tokens,
+            )
+            cost = cost_tracker.calculate_cost(
+                CONVERSATION_MODEL,
+                response.usage.input_tokens,
+                response.usage.output_tokens,
+            )
 
     # Persist to DB
     memory.add_message("user", message, category="conversation")
@@ -126,12 +174,32 @@ async def _auto_summarize(client):
             return
         half = msgs[:len(msgs) // 2]
         text = "\n".join(f"{m['role']}: {m['content']}" for m in half)
-        resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001", max_tokens=1024,
-            system="Summarize concisely. Capture: decisions, plans, personal details, action items.",
-            messages=[{"role": "user", "content": f"Summarize:\n{text[:10000]}"}],
+        # Try SDK for summarization
+        factory = get_provider_factory()
+        sdk_summary = await factory.execute(
+            prompt=f"Summarize:\n{text[:10000]}",
+            model=SUMMARY_MODEL,
+            system_prompt="Summarize concisely. Capture: decisions, plans, personal details, action items.",
+            max_tokens=1024,
         )
-        memory.add_summary(resp.content[0].text, half[0].get("timestamp", ""), half[-1].get("timestamp", ""), len(half))
+
+        if sdk_summary:
+            summary_text = sdk_summary["output"]
+        else:
+            resp = await client.messages.create(
+                model=LEGACY_MODEL_MAP[SUMMARY_MODEL],
+                max_tokens=1024,
+                system="Summarize concisely. Capture: decisions, plans, personal details, action items.",
+                messages=[{"role": "user", "content": f"Summarize:\n{text[:10000]}"}],
+            )
+            summary_text = resp.content[0].text  # type: ignore[union-attr]
+
+        memory.add_summary(
+            summary_text,
+            half[0].get("timestamp", ""),
+            half[-1].get("timestamp", ""),
+            len(half),
+        )
     except Exception as e:
         logger.error("Summarization failed: %s", e)
 

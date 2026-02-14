@@ -336,7 +336,7 @@ class CLISession:
                 if not result_text and raw_lines:
                     result_text = "\n".join(raw_lines)
 
-                elapsed = time.monotonic() - start_time
+                elapsed: float = time.monotonic() - start_time
                 return TaskResult(
                     status="success",
                     output=result_text.strip() or "(No response from CLI)",

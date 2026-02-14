@@ -423,11 +423,12 @@ async def handle_query_database(params: dict) -> str:
         if not sessions:
             return "No active CLI sessions."
         lines = [f"ACTIVE CLI SESSIONS ({len(sessions)}):"]
-        for ts, sess in sessions.items():
-            lines.append(
-                f"  thread: {ts} | alive: {sess.alive} "
-                f"| pid: {sess.process.pid if sess.process else 'none'}"
-            )
+        for ts, sess_list in sessions.items():
+            for i, s in enumerate(sess_list):
+                lines.append(
+                    f"  thread: {ts}[{i}] | alive: {s.alive} "
+                    f"| pid: {s.process.pid if s.process else 'none'}"
+                )
         return "\n".join(lines)
 
     elif table == "memory":

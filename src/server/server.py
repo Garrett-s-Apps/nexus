@@ -649,10 +649,11 @@ async def list_sessions():
 async def kill_session(thread_ts: str):
     """Terminate a specific CLI session by thread_ts."""
     from src.sessions.cli_pool import cli_pool
-    session = cli_pool._sessions.get(thread_ts)
-    if not session:
+    sessions = cli_pool._sessions.get(thread_ts)
+    if not sessions:
         return {"error": "Session not found", "thread_ts": thread_ts}
-    await session.kill()
+    for s in sessions:
+        await s.kill()
     del cli_pool._sessions[thread_ts]
     return {"ok": True, "thread_ts": thread_ts}
 

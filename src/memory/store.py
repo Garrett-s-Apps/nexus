@@ -245,21 +245,52 @@ class Memory:
         return {"id": task_id, "status": "queued"}
 
     def update_task(self, task_id, status=None, current_step=None, progress=None, error=None, cost=None):
-        updates, values = ["updated_at=?"], [datetime.now(UTC).isoformat()]
         _TASK_COLS = {"status", "completed_at", "current_step", "progress", "error", "cost", "updated_at"}
-        if status: updates.append("status=?"); values.append(status)
-        if status == "complete": updates.append("completed_at=?"); values.append(datetime.now(UTC).isoformat())
-        if current_step: updates.append("current_step=?"); values.append(current_step)
-        if progress: updates.append("progress=?"); values.append(json.dumps(progress))
-        if error: updates.append("error=?"); values.append(error)
-        if cost is not None: updates.append("cost=?"); values.append(cost)
-        # Validate column names are from the known set
-        cols_used = {u.split("=")[0] for u in updates}
-        if not cols_used <= _TASK_COLS:
-            raise ValueError(f"Invalid columns: {cols_used - _TASK_COLS}")
+        updates_list = ["updated_at=?"]
+        values = [datetime.now(UTC).isoformat()]
+
+        if status:
+            if "status" not in _TASK_COLS:
+                raise ValueError("Invalid column: status")
+            updates_list.append("status=?")
+            values.append(status)
+
+        if status == "complete":
+            if "completed_at" not in _TASK_COLS:
+                raise ValueError("Invalid column: completed_at")
+            updates_list.append("completed_at=?")
+            values.append(datetime.now(UTC).isoformat())
+
+        if current_step:
+            if "current_step" not in _TASK_COLS:
+                raise ValueError("Invalid column: current_step")
+            updates_list.append("current_step=?")
+            values.append(current_step)
+
+        if progress:
+            if "progress" not in _TASK_COLS:
+                raise ValueError("Invalid column: progress")
+            updates_list.append("progress=?")
+            values.append(json.dumps(progress))
+
+        if error:
+            if "error" not in _TASK_COLS:
+                raise ValueError("Invalid column: error")
+            updates_list.append("error=?")
+            values.append(error)
+
+        if cost is not None:
+            if "cost" not in _TASK_COLS:
+                raise ValueError("Invalid column: cost")
+            updates_list.append("cost=?")
+            values.append(cost)
+
         values.append(task_id)
+        # Safe: all column names validated against _TASK_COLS whitelist above
+        query = f"UPDATE tasks SET {', '.join(updates_list)} WHERE id=?"  # noqa: S608
         with self._lock:
-            self._conn.cursor().execute(f"UPDATE tasks SET {','.join(updates)} WHERE id=?", values)  # noqa: S608
+            # Safe: all column names validated against _TASK_COLS whitelist above
+            self._conn.cursor().execute(query, values)  # noqa: S608
             self._conn.commit()
 
     def get_task(self, task_id):
@@ -304,13 +335,22 @@ class Memory:
 
     def update_directive(self, directive_id, **kwargs):
         _DIRECTIVE_COLS = {"status", "intent", "project_path", "updated_at"}
-        updates, values = ["updated_at=?"], [datetime.now(UTC).isoformat()]
+        updates_list = ["updated_at=?"]
+        values = [datetime.now(UTC).isoformat()]
+
         for k, v in kwargs.items():
+            if k not in _DIRECTIVE_COLS:
+                raise ValueError(f"Invalid column: {k}")
             if k in ("status", "intent", "project_path"):
-                updates.append(f"{k}=?"); values.append(v)
+                updates_list.append(f"{k}=?")
+                values.append(v)
+
         values.append(directive_id)
+        # Safe: all column names validated against _DIRECTIVE_COLS whitelist above
+        query = f"UPDATE directives SET {', '.join(updates_list)} WHERE id=?"  # noqa: S608
         with self._lock:
-            self._conn.cursor().execute(f"UPDATE directives SET {','.join(updates)} WHERE id=?", values)  # noqa: S608
+            # Safe: all column names validated against _DIRECTIVE_COLS whitelist above
+            self._conn.cursor().execute(query, values)  # noqa: S608
             self._conn.commit()
 
     # === V1: WORLD CONTEXT ===
@@ -415,6 +455,7 @@ class Memory:
         deps = json.loads(row[0])
         if not deps: return True
         ph = ",".join("?" for _ in deps)
+        # Safe: ph contains only "?" placeholders, no user input in query structure
         return self._conn.cursor().execute(f"SELECT COUNT(*) FROM task_board WHERE id IN ({ph}) AND status='complete'", deps).fetchone()[0] == len(deps)  # noqa: S608
 
     # === V1: AGENT STATE ===
@@ -433,8 +474,13 @@ class Memory:
         if status: updates.append("status=?"); values.append(status)
         if current_task is not None: updates.append("current_task=?"); values.append(current_task)
         if last_action: updates.append("last_action=?"); values.append(last_action)
+        # Validate all columns being updated
+        cols_used = {u.split("=")[0] for u in updates}
+        if not cols_used <= _AGENT_COLS:
+            raise ValueError(f"Invalid columns: {cols_used - _AGENT_COLS}")
         values.append(agent_id)
         with self._lock:
+            # Safe: all column names validated against _AGENT_COLS whitelist above
             self._conn.cursor().execute(f"UPDATE agent_state SET {','.join(updates)} WHERE agent_id=?", values)  # noqa: S608
             self._conn.commit()
 
@@ -491,10 +537,13 @@ class Memory:
         allowed = {"status", "pid", "port", "url", "last_health", "log_path"}
         updates, values = [], []
         for k, v in kwargs.items():
-            if k in allowed: updates.append(f"{k}=?"); values.append(v)
+            if k not in allowed:
+                raise ValueError(f"Invalid column: {k}")
+            updates.append(f"{k}=?"); values.append(v)
         if not updates: return
         values.append(service_id)
         with self._lock:
+            # Safe: all column names validated against allowed whitelist above
             self._conn.cursor().execute(f"UPDATE running_services SET {','.join(updates)} WHERE id=?", values)  # noqa: S608
             self._conn.commit()
 

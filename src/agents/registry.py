@@ -364,6 +364,17 @@ class AgentRegistry:
 
     def update_agent(self, agent_id: str, **kwargs) -> bool:
         conn = sqlite3.connect(self.db_path)
+        _AGENT_COLS = {
+            "name", "model", "provider", "layer", "description", "system_prompt",
+            "reports_to", "tools", "spawns_sdk",
+        }
+
+        # Validate all incoming columns first
+        for k in kwargs:
+            if k not in _AGENT_COLS:
+                conn.close()
+                raise ValueError(f"Invalid column: {k}")
+
         allowed_fields = {"name", "model", "provider", "layer", "description", "system_prompt", "reports_to"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields and v is not None}
 
@@ -376,15 +387,9 @@ class AgentRegistry:
             conn.close()
             return False
 
-        _AGENT_COLS = {
-            "name", "title", "role", "model", "specialty", "layer",
-            "reports_to", "status", "spawns_sdk",
-        }
-        if not set(updates.keys()) <= _AGENT_COLS:
-            bad = set(updates.keys()) - _AGENT_COLS
-            raise ValueError(f"Invalid columns: {bad}")
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [agent_id]
+        # Safe: all column names validated against _AGENT_COLS whitelist above
         conn.execute(f"UPDATE agents SET {set_clause} WHERE id = ?", values)  # noqa: S608
         self._log_change(conn, "updated", agent_id, f"Updated fields: {list(updates.keys())}")
         conn.commit()

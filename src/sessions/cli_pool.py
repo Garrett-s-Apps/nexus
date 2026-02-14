@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from collections.abc import Awaitable, Callable
@@ -25,6 +26,34 @@ from src.agents.task_result import TaskResult
 from src.config import CLI_DOCKER_ENABLED, CLI_DOCKER_IMAGE, get_key
 
 logger = logging.getLogger(__name__)
+
+# SEC-012: Dangerous CLI patterns to block
+DANGEROUS_PATTERNS = [
+    r'rm\s+-rf\s+/',
+    r'curl.*\|\s*bash',
+    r'wget.*\|\s*sh',
+    r'nc\s+-[le]',
+    r'eval\s*\(',
+]
+
+def sanitize_cli_message(message: str) -> str:
+    """Validate input before sending to CLI to prevent injection attacks.
+
+    Raises ValueError if message contains dangerous patterns or exceeds size limit.
+    Also strips control characters for safety.
+    """
+    # Check for dangerous patterns
+    for pattern in DANGEROUS_PATTERNS:
+        if re.search(pattern, message, re.IGNORECASE):
+            raise ValueError(f"Message contains dangerous pattern: {pattern}")
+
+    # Check message size (50KB limit)
+    if len(message) > 50000:
+        raise ValueError("Message too long (max 50KB)")
+
+    # Strip control characters except newline, carriage return, tab
+    message = ''.join(c for c in message if ord(c) >= 32 or c in '\n\r\t')
+    return message
 
 CLAUDE_CMD = "claude"
 DOCKER_CMD = "docker"
@@ -168,6 +197,17 @@ class CLISession:
         Calls on_progress with human-readable status (never raw JSON).
         Supports cancellation via cancel().
         """
+        # SEC-012: Sanitize input before sending to CLI
+        try:
+            message = sanitize_cli_message(message)
+        except ValueError as e:
+            logger.warning("CLI message rejected: %s", e)
+            return TaskResult(
+                status="error",
+                output=f"Invalid input: {e}",
+                error_type="validation_error",
+            )
+
         async with self._lock:
             if not await self.start():
                 return TaskResult(

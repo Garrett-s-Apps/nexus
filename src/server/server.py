@@ -21,6 +21,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 logger = logging.getLogger("nexus.server")
 from fastapi.responses import FileResponse, StreamingResponse
@@ -39,6 +41,36 @@ from src.security.auth_gate import (
     verify_session,
 )
 from src.security.jwt_auth import sign_response
+
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to enforce request size limits and prevent DoS attacks (SEC-014).
+
+    Rejects POST/PUT requests exceeding 10MB with 413 Payload Too Large.
+    """
+    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method in ("POST", "PUT"):
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    length = int(content_length)
+                    if length > self.MAX_BODY_SIZE:
+                        logger.warning(
+                            "Request size limit exceeded: %d bytes from %s",
+                            length,
+                            _get_client_ip(request),
+                        )
+                        return JSONResponse(
+                            {"error": f"Request too large (max {self.MAX_BODY_SIZE // (1024*1024)}MB)"},
+                            status_code=413,
+                        )
+                except (ValueError, TypeError):
+                    logger.warning("Invalid content-length header: %s", content_length)
+
+        return await call_next(request)
 
 
 def _register_background_jobs():
@@ -117,6 +149,10 @@ async def _start_slack():
 
 
 app = FastAPI(title="NEXUS", version="3.0.0", lifespan=lifespan)
+
+# SEC-014: Add request size limit middleware to prevent DoS
+app.add_middleware(RequestSizeLimitMiddleware)
+
 app.include_router(metrics_router)
 app.include_router(costwise_router)
 

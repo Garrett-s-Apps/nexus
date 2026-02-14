@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.sessions.cli_pool import CLISession, CLISessionPool
+from src.sessions.cli_pool import CLISession, CLISessionPool, sanitize_cli_message
 
 
 class TestCLISession:

@@ -104,7 +104,7 @@ class CLISession:
             if val:
                 clean_env[key] = val
         return await asyncio.create_subprocess_exec(
-            CLAUDE_CMD, "--dangerously-skip-permissions", "--model", "sonnet",
+            CLAUDE_CMD, "--model", "sonnet",
             "-p", "--verbose", "--output-format", "stream-json",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -124,9 +124,17 @@ class CLISession:
 
         return await asyncio.create_subprocess_exec(
             DOCKER_CMD, "run", "--rm", "-i",
-            "-v", f"{self.project_path}:/workspace",
+            "-v", f"{self.project_path}:/workspace:ro",
+            "-v", f"{self.project_path}/output:/workspace/output:rw",
             *env_args,
             "-e", f"NEXUS_CLI_TIMEOUT={DEFAULT_TIMEOUT}",
+            "--read-only",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=100m",
+            "--security-opt=no-new-privileges",
+            "--cap-drop=ALL",
+            "--memory=2g",
+            "--cpus=2",
+            "--pids-limit=100",
             CLI_DOCKER_IMAGE,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,

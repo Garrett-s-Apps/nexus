@@ -33,6 +33,9 @@ RUN echo '{"hasCompletedOnboarding":true,"primaryApiKey":"env"}' \
     > /home/nexus/.claude/settings.json \
     && chown nexus:nexus /home/nexus/.claude/settings.json
 
+# Security hardening: set read-only permissions on system files
+RUN chmod -R 555 /usr/local/lib/node_modules/@anthropic-ai
+
 USER nexus
 WORKDIR /workspace
 

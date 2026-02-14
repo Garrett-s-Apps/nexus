@@ -293,17 +293,26 @@ def get_model_for_budget(preferred_model: str, budget_remaining: float | None = 
 
 
 def get_org_summary() -> str:
+    """Display-only function that reads from AgentRegistry."""
+    from src.agents.registry import registry
+
+    agents = registry.get_active_agents()
+    layers_map: dict[str, list] = {}
+    for agent in agents:
+        layers_map.setdefault(agent.layer, []).append(agent)
+
     lines = ["NEXUS VIRTUAL COMPANY", "=" * 50, "CEO: Garrett Eaglin", ""]
-    for org_name in ["product", "engineering", "security", "documentation", "executive", "analytics", "salesforce"]:
-        members = ORGS.get(org_name, [])
-        if not members: continue
-        lines.append(f"--- {org_name.upper()} ---")
-        for aid in members:
-            cfg = ORG_CHART[aid]
-            model_short = {OPUS: "Opus", SONNET: "Sonnet", HAIKU: "Haiku", O3: "o3"}.get(str(cfg["model"]), "?")
-            indent = "  " if cfg["direct_reports"] else "    "
-            reports = f" (manages {len(cfg['direct_reports'])})" if cfg["direct_reports"] else ""
-            lines.append(f"{indent}{cfg['name']:12s} {cfg['title']:30s} [{model_short}]{reports}")
+    for layer_name in ["executive", "product", "engineering", "security", "documentation", "analytics", "salesforce"]:
+        if layer_name not in layers_map:
+            continue
+        lines.append(f"--- {layer_name.upper()} ---")
+        for agent in layers_map[layer_name]:
+            model_short = {OPUS: "Opus", SONNET: "Sonnet", HAIKU: "Haiku", O3: "o3"}.get(agent.model, "?")
+            direct_reports = registry.get_direct_reports(agent.id)
+            indent = "  " if direct_reports else "    "
+            reports = f" (manages {len(direct_reports)})" if direct_reports else ""
+            desc = agent.description.split('.')[0] if agent.description else agent.id
+            lines.append(f"{indent}{agent.name:12s} {desc:30s} [{model_short}]{reports}")
         lines.append("")
-    lines.append(f"Total headcount: {len(ORG_CHART)}")
+    lines.append(f"Total headcount: {len(agents)}")
     return "\n".join(lines)

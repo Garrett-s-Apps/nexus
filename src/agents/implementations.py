@@ -17,7 +17,7 @@ import uuid
 from datetime import UTC, datetime
 
 from src.agents.base import Agent
-from src.agents.org_chart import ORG_CHART
+from src.agents.registry import registry
 from src.memory.store import memory
 
 logger = logging.getLogger("nexus.agent")
@@ -52,9 +52,9 @@ def extract_json(text: str) -> dict | list | None:
 async def peer_consult(agent_a: Agent, agent_b_id: str, question: str,
                         directive_id: str) -> str:
     """Two agents consult on a question and reach a fast decision."""
-    agent_b_info = ORG_CHART.get(agent_b_id, {})
-    b_name = agent_b_info.get("name", agent_b_id)
-    b_role = agent_b_info.get("role", "colleague")
+    agent_b = registry.get_agent(agent_b_id)
+    b_name = agent_b.name if agent_b else agent_b_id
+    b_role = agent_b.description if agent_b else "colleague"
 
     prompt = f"""You are {agent_a.name} ({agent_a.title}).
 You're consulting with {b_name} ({b_role}) on this question:
@@ -550,8 +550,8 @@ def create_agent(agent_id: str) -> Agent:
 
 def create_all_agents() -> dict[str, Agent]:
     agents = {}
-    for agent_id in ORG_CHART:
-        agent = create_agent(agent_id)
-        agent.register()
-        agents[agent_id] = agent
+    for agent in registry.get_active_agents():
+        agent_obj = create_agent(agent.id)
+        agent_obj.register()
+        agents[agent.id] = agent_obj
     return agents

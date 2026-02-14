@@ -13,13 +13,12 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from src.agents.org_chart import (
-    ALL_AGENT_IDS,
     HAIKU,
     MODEL_COSTS,
     O3,
-    ORG_CHART,
     SONNET,
 )
+from src.agents.registry import registry
 from src.memory.store import memory
 
 logger = logging.getLogger("nexus.agent")
@@ -124,20 +123,20 @@ class Decision:
 class Agent(ABC):
 
     def __init__(self, agent_id: str):
-        config = ORG_CHART.get(agent_id)
-        if not config:
+        agent = registry.get_agent(agent_id)
+        if not agent:
             raise ValueError(f"Unknown agent: {agent_id}")
 
         self.agent_id = agent_id
-        self.name = config["name"]
-        self.title = config["title"]
-        self.role = config["role"]
-        self.model: str = config["model"]  # type: ignore[assignment]
-        self.reports_to = config["reports_to"]
-        self.direct_reports: list[str] = config["direct_reports"]  # type: ignore[assignment]
-        self.org = config["org"]
-        self.produces = config.get("produces", [])
-        self.specialty: str = config.get("specialty", "")  # type: ignore[assignment]
+        self.name = agent.name
+        self.title = f"{agent.layer.title()} - {agent.description.split('.')[0]}"
+        self.role = agent.description
+        self.model: str = agent.model  # type: ignore[assignment]
+        self.reports_to = agent.reports_to
+        self.direct_reports: list[str] = [a.id for a in registry.get_direct_reports(agent_id)]  # type: ignore[assignment]
+        self.org = agent.layer
+        self.produces: list[str] = []  # type: ignore[assignment]
+        self.specialty: str = agent.metadata.get("specialty", "")  # type: ignore[assignment]
 
         self._total_cost = 0.0
         self._last_context_id = 0
@@ -314,19 +313,29 @@ Respond ONLY with JSON:
                    model: str = SONNET, specialty: str = "") -> str:
         if not self.is_leader:
             return f"{self.name} cannot hire — not a leader."
-        if agent_id in ORG_CHART:
+        if registry.get_agent(agent_id):
             return f"Agent {agent_id} already exists."
 
-        new_agent = {
-            "name": name, "title": title, "role": role, "model": model,
-            "reports_to": self.agent_id, "direct_reports": [], "org": self.org,
-            "produces": [],
-        }
+        metadata = {}
         if specialty:
-            new_agent["specialty"] = specialty
+            metadata["specialty"] = specialty
 
-        ORG_CHART[agent_id] = new_agent
-        ALL_AGENT_IDS.append(agent_id)
+        new_agent = await registry.hire_agent(
+            agent_id=agent_id,
+            name=name,
+            model=model,
+            layer=self.org,
+            description=role,
+            system_prompt=f"{title}: {role}",
+            tools=[],
+            spawns_sdk=False,
+            reports_to=self.agent_id,
+            provider="anthropic",
+        )
+
+        if new_agent and specialty:
+            await registry.update_agent(agent_id, metadata=metadata)
+
         self.direct_reports.append(agent_id)
         memory.register_agent(agent_id, name, title, model)
         memory.emit_event(self.agent_id, "agent_hired", {

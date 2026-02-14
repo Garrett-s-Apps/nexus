@@ -367,42 +367,39 @@ class AgentRegistry:
             conn.close()
             return True
 
-    async def update_agent(self, agent_id: str, **kwargs) -> bool:
-        async with self._lock:
-            conn = sqlite3.connect(self.db_path)
-            _AGENT_COLS = {
-                "name", "model", "provider", "layer", "description", "system_prompt",
-                "reports_to", "tools", "spawns_sdk", "metadata",
-            }
+    def update_agent(self, agent_id: str, **kwargs) -> bool:
+        conn = sqlite3.connect(self.db_path)
+        _AGENT_COLS = {
+            "name", "model", "provider", "layer", "description", "system_prompt",
+            "reports_to", "tools", "spawns_sdk",
+        }
 
-            # Validate all incoming columns first
-            for k in kwargs:
-                if k not in _AGENT_COLS:
-                    conn.close()
-                    raise ValueError(f"Invalid column: {k}")
-
-            allowed_fields = {"name", "model", "provider", "layer", "description", "system_prompt", "reports_to"}
-            updates = {k: v for k, v in kwargs.items() if k in allowed_fields and v is not None}
-
-            if "tools" in kwargs:
-                updates["tools"] = json.dumps(kwargs["tools"])
-            if "spawns_sdk" in kwargs:
-                updates["spawns_sdk"] = 1 if kwargs["spawns_sdk"] else 0
-            if "metadata" in kwargs:
-                updates["metadata"] = json.dumps(kwargs["metadata"])
-
-            if not updates:
+        # Validate all incoming columns first
+        for k in kwargs:
+            if k not in _AGENT_COLS:
                 conn.close()
-                return False
+                raise ValueError(f"Invalid column: {k}")
 
-            set_clause = ", ".join(f"{k} = ?" for k in updates)
-            values = list(updates.values()) + [agent_id]
-            # Safe: all column names validated against _AGENT_COLS whitelist above
-            conn.execute(f"UPDATE agents SET {set_clause} WHERE id = ?", values)  # noqa: S608
-            self._log_change(conn, "updated", agent_id, f"Updated fields: {list(updates.keys())}")
-            conn.commit()
+        allowed_fields = {"name", "model", "provider", "layer", "description", "system_prompt", "reports_to"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed_fields and v is not None}
+
+        if "tools" in kwargs:
+            updates["tools"] = json.dumps(kwargs["tools"])
+        if "spawns_sdk" in kwargs:
+            updates["spawns_sdk"] = 1 if kwargs["spawns_sdk"] else 0
+
+        if not updates:
             conn.close()
-            return True
+            return False
+
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [agent_id]
+        # Safe: all column names validated against _AGENT_COLS whitelist above
+        conn.execute(f"UPDATE agents SET {set_clause} WHERE id = ?", values)  # noqa: S608
+        self._log_change(conn, "updated", agent_id, f"Updated fields: {list(updates.keys())}")
+        conn.commit()
+        conn.close()
+        return True
 
     def consolidate_agents(self, agent_ids: list[str], new_agent_id: str, new_name: str, new_description: str) -> Agent | None:
         agents = [a for aid in agent_ids if (a := self.get_agent(aid)) is not None]

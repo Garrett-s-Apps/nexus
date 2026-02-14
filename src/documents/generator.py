@@ -125,10 +125,11 @@ async def _gather_internal_context(message: str) -> str:
 
     if "costs" in sources:
         try:
-            from src.agents.org_chart import MODEL_COSTS, ORG_CHART
+            from src.agents.org_chart import MODEL_COSTS
+            from src.agents.registry import registry
             model_counts: dict[str, int] = {}
-            for cfg in ORG_CHART.values():
-                m = cfg["model"]
+            for agent in registry.get_active_agents():
+                m = agent.model
                 model_counts[str(m)] = model_counts.get(str(m), 0) + 1
             summary = "Model Distribution:\n"
             for model, count in sorted(model_counts.items()):

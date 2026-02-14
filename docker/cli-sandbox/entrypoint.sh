@@ -19,7 +19,6 @@ TIMEOUT="${NEXUS_CLI_TIMEOUT:-900}"
 
 # Build CLI args
 CLI_ARGS=(
-    "--dangerously-skip-permissions"
     "--model" "$MODEL"
     "-p"
     "--verbose"

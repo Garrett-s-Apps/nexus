@@ -221,16 +221,35 @@ async def retrieve_async(
         # Adaptive threshold — lower bar when data is sparse
         effective_threshold = max(0.25, threshold - 0.05) if len(all_chunks) < 50 else threshold
 
-        results = []
+        # PERF-001: Vectorized cosine similarity using numpy (10-50x speedup)
+        # Filter excluded sources before vectorization
+        filtered_chunks = []
         for chunk in all_chunks:
-            # Skip chunks from excluded sources (e.g. current thread)
-            if exclude_source_ids and chunk["source_id"] in exclude_source_ids:
-                continue
-            stored_vec = bytes_to_embedding(chunk["embedding"])
-            raw_score = cosine_similarity(query_embedding, stored_vec)
+            if not exclude_source_ids or chunk["source_id"] not in exclude_source_ids:
+                filtered_chunks.append(chunk)
 
+        if not filtered_chunks:
+            return []
+
+        # Load all embeddings as single matrix
+        import numpy as np
+        embeddings_matrix = np.array([
+            bytes_to_embedding(chunk["embedding"])
+            for chunk in filtered_chunks
+        ])
+
+        # Vectorized cosine similarity (one operation instead of loop)
+        query_norm = query_embedding / np.linalg.norm(query_embedding)
+        emb_norms = embeddings_matrix / np.linalg.norm(embeddings_matrix, axis=1, keepdims=True)
+        similarities = np.dot(emb_norms, query_norm)
+
+        # Filter by threshold and build results
+        results = []
+        for i, raw_score in enumerate(similarities):
             if raw_score < effective_threshold:
                 continue
+
+            chunk = filtered_chunks[i]
 
             # Weight by chunk type importance
             weight = CHUNK_WEIGHTS.get(chunk["chunk_type"], 1.0)
@@ -245,8 +264,8 @@ async def retrieve_async(
                 "content": chunk["content"],
                 "chunk_type": chunk["chunk_type"],
                 "source_id": chunk["source_id"],
-                "score": round(final_score, 4),
-                "raw_similarity": round(raw_score, 4),
+                "score": round(float(final_score), 4),
+                "raw_similarity": round(float(raw_score), 4),
                 "metadata": json.loads(chunk["metadata"]) if isinstance(chunk["metadata"], str) else chunk["metadata"],
             })
 

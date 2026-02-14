@@ -20,7 +20,8 @@ from datetime import datetime, timedelta
 
 from src.agents.base import Agent, Decision, allm_call
 from src.agents.implementations import create_agent, create_all_agents, extract_json
-from src.agents.org_chart import HAIKU, ORG_CHART, SONNET
+from src.agents.org_chart import HAIKU, SONNET
+from src.agents.registry import registry
 from src.memory.store import memory
 from src.ml import feedback as ml_feedback
 from src.ml.router import predict_best_agent
@@ -553,7 +554,7 @@ class ReasoningEngine:
                     duration_sec=time.time() - start_time,
                     defect_count=len(defects),
                     qa_cycles=self._qa_cycles.get(directive_id, 0),
-                    model=ORG_CHART.get(agent_id, {}).get("model", ""),
+                    model=registry.get_agent(agent_id).model if registry.get_agent(agent_id) else "",
                 )
             except Exception as ml_err:
                 logger.debug("ML feedback recording failed: %s", ml_err)
@@ -568,16 +569,15 @@ class ReasoningEngine:
             })
 
             # ML: persist circuit breaker event
-            from src.agents.registry import registry
             registry.record_circuit_event(
                 agent_id=agent_id,
                 event_type="trip",
-                reason=f"failure_count={breaker.failure_count}, model={ORG_CHART.get(agent_id, {}).get('model', '')}, task_type={getattr(decision, 'action', '')[:100]}",
+                reason=f"failure_count={breaker.failure_count}, model={registry.get_agent(agent_id).model if registry.get_agent(agent_id) else ''}, task_type={getattr(decision, 'action', '')[:100]}",
             )
 
             # Attempt escalation to higher-tier agent
-            agent_config = ORG_CHART.get(agent_id, {})
-            current_model = agent_config.get("model", "sonnet")
+            agent_obj = registry.get_agent(agent_id)
+            current_model = agent_obj.model if agent_obj else "sonnet"
             upgrade_model = escalation_chain.get_upgrade_model(current_model)
 
             if upgrade_model:
@@ -636,7 +636,7 @@ class ReasoningEngine:
                     outcome="failed",
                     specialty=getattr(agent, 'specialty', ''),
                     duration_sec=time.time() - start_time,
-                    model=ORG_CHART.get(agent_id, {}).get("model", ""),
+                    model=registry.get_agent(agent_id).model if registry.get_agent(agent_id) else "",
                 )
             except Exception as ml_err:
                 logger.debug("ML feedback recording failed: %s", ml_err)
@@ -737,11 +737,11 @@ Each object: {{"id":"snake","name":"Male name","title":"Title","role":"desc","re
 
     async def _h_fire(self, msg, intent, d):
         target = intent.get("target", "").lower()
-        for aid, cfg in list(ORG_CHART.items()):
-            if cfg["name"].lower() == target or aid == target:
-                name = cfg["name"]
-                self.agents.pop(aid, None)
-                ORG_CHART.pop(aid, None)
+        for agent in registry.get_active_agents():
+            if agent.name.lower() == target or agent.id == target:
+                name = agent.name
+                self.agents.pop(agent.id, None)
+                await registry.fire_agent(agent.id, reason="Fired by CEO")
                 memory.emit_event("ceo", "fired", {"agent": name})
                 return f"{name} has been let go."
         return f"Couldn't find '{target}'."

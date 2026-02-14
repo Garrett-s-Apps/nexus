@@ -593,11 +593,33 @@ async def start_slack_listener():
                 # Engineering work — use the existing CLI flow
                 directive_text = intake_result.tool_input.get("directive_text", text) if intake_result.tool_input else text
 
+                # Update status: directive accepted
+                if thinking_msg:
+                    try:
+                        await web_client.chat_update(
+                            channel=channel_id, ts=thinking_msg,
+                            text=f":rocket: *Directive accepted:* _{directive_text[:120]}_\n:brain: Gathering intelligence...")
+                    except Exception:
+                        pass
+
                 # Build ML intelligence briefing + RAG context
                 ml_briefing = await asyncio.to_thread(_build_ml_briefing, directive_text)
                 rag_context = await asyncio.to_thread(
                     build_rag_context, directive_text, 8000, {f"thread:{thread_ts}"},
                 )
+
+                # Update status: briefing complete, agent starting
+                briefing_summary = ""
+                if ml_briefing and "similar directive" in ml_briefing.lower():
+                    briefing_summary = "\n:mag: Found similar past work"
+                if thinking_msg:
+                    try:
+                        await web_client.chat_update(
+                            channel=channel_id, ts=thinking_msg,
+                            text=f":robot_face: *Working:* _{directive_text[:120]}_"
+                            f"{briefing_summary}\n:hammer_and_wrench: Agent executing...")
+                    except Exception:
+                        pass
 
                 # Send to CLI pool (existing retry logic)
                 max_attempts = 3
@@ -620,6 +642,13 @@ async def start_slack_listener():
                                 "pid": session.process.pid if session.process else None,
                                 "attempt": attempt + 1,
                             })
+                            if is_retry and thinking_msg:
+                                try:
+                                    await web_client.chat_update(
+                                        channel=channel_id, ts=thinking_msg,
+                                        text=f":arrows_counterclockwise: *Retrying (attempt {attempt + 1}/{max_attempts}):* _{directive_text[:100]}_")
+                                except Exception:
+                                    pass
                             cli_result = await session.send(cli_message)
                             response = cli_result.output if cli_result.succeeded else None
                             if response and _is_garbage_response(response):

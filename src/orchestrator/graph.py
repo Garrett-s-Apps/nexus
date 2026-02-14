@@ -241,6 +241,104 @@ async def executive_consensus_node(state: NexusState) -> dict:
     }
 
 
+
+
+async def spec_generation_node(state: NexusState) -> dict:
+    """CPO generates formal specification from strategic brief and requirements."""
+    import os
+
+    # Load spec template
+    template_path = os.path.join(state.project_path, "templates", "SPEC-TEMPLATE.md")
+    if not os.path.exists(template_path):
+        template_path = os.path.join(os.path.dirname(__file__), "..", "..", "templates", "SPEC-TEMPLATE.md")
+
+    spec_template = ""
+    if os.path.exists(template_path):
+        with open(template_path) as f:
+            spec_template = f.read()
+
+    result = await run_planning_agent(
+        "cpo",
+        AGENTS["cpo"],
+        f"""Generate a formal specification document for this project.
+
+Strategic brief from CEO: {state.strategic_brief}
+Requirements: {state.cpo_requirements}
+Acceptance criteria: {state.cpo_acceptance_criteria}
+Timeline: {state.cro_timeline}
+Budget: {state.cfo_budget_allocation}
+
+Use this template structure:
+{spec_template}
+
+Fill out ALL applicable sections with precise, unambiguous language optimized for LLM consumption.
+Focus on:
+1. Clear, measurable acceptance criteria
+2. Explicit security requirements
+3. Performance targets with numbers
+4. Complete API contracts and data models
+5. Test strategy with coverage targets
+
+Output a complete, implementation-ready specification document.""",
+    )
+
+    # Store spec in memory.db and save to file
+    spec_content = result.output
+    spec_dir = os.path.join(state.project_path, ".claude", "specs")
+    os.makedirs(spec_dir, exist_ok=True)
+
+    spec_filename = f"{state.session_id}.md"
+    spec_path = os.path.join(spec_dir, spec_filename)
+
+    with open(spec_path, "w") as f:
+        f.write(spec_content)
+
+    logger.info("Spec generated and saved to %s", spec_path)
+
+    return {
+        "formal_spec": spec_content,
+        "spec_file_path": spec_path,
+        "current_phase": "spec_approval",
+        "cost": _update_cost(state.cost, result),
+    }
+
+
+async def spec_approval_node(state: NexusState) -> dict:
+    """CEO reviews and approves the specification (agent-to-agent, no user prompt)."""
+    result = await run_planning_agent(
+        "ceo",
+        AGENTS["ceo"],
+        f"""Review this formal specification for completeness and clarity.
+
+SPECIFICATION:
+{state.formal_spec}
+
+Evaluate:
+1. Is the objective clear and measurable?
+2. Are requirements complete and unambiguous?
+3. Are acceptance criteria testable and specific?
+4. Is the technical design sufficient for implementation?
+5. Are security considerations comprehensive?
+6. Are performance targets realistic and measurable?
+
+This is an AGENT-TO-AGENT approval. DO NOT ask for user approval.
+You have authority to approve or reject this spec.
+
+If the spec is complete and clear, respond with: APPROVED
+If the spec needs refinement, respond with: REJECTED and list specific issues to address.
+
+Maximum 2 refinement loops allowed.""",
+    )
+
+    approved = "APPROVED" in result.output.upper() and "REJECTED" not in result.output.upper()
+
+    return {
+        "spec_approved": approved,
+        "spec_loop_count": state.spec_loop_count + 1,
+        "ceo_approved": approved,
+        "cost": _update_cost(state.cost, result),
+    }
+
 async def vp_engineering_node(state: NexusState) -> dict:
     """VP Eng translates strategy into technical design."""
     result = await run_planning_agent(
@@ -313,8 +411,11 @@ async def decomposition_node(state: NexusState) -> dict:
 Your domain: {AGENTS[em_name]['name']}
 
 Break down the work in YOUR domain into specific, implementable tasks.
+Specify dependencies between tasks: if task B requires task A to be done first,
+list A's id in B's "dependencies" array.
+
 Output as a JSON array:
-[{{"id": "unique_id", "description": "what to do", "assigned_agent": "agent_key", "language": "python", "dependencies": []}}]
+[{{"id": "unique_id", "description": "what to do", "assigned_agent": "agent_key", "language": "python", "dependencies": ["id_of_prerequisite_task"]}}]
 
 If you cannot produce JSON, output a bullet list with one task per line.""",
         )
@@ -352,8 +453,15 @@ async def implementation_node(state: NexusState) -> dict:
     retry_counts = dict(state.retry_counts)
     defect_ids = list(state.defect_ids)
 
+    completed_ids = {t.id for t in state.workstreams if t.status == "completed"}
+
     for fork_group in state.parallel_forks:
-        parallel_tasks = [t for t in state.workstreams if t.id in fork_group and t.status != "completed"]
+        parallel_tasks = [
+            t for t in state.workstreams
+            if t.id in fork_group
+            and t.status != "completed"
+            and not (set(t.blocked_by) - completed_ids)  # all deps must be complete
+        ]
 
         coros = []
         task_index = []
@@ -587,6 +695,10 @@ async def quality_gate_node(state: NexusState) -> dict:
     checks = [lint_ran, lint_passed, tests_ran, security_ran, security_ok, no_any_violations, no_failed_tasks]
     quality_score = round((sum(checks) / len(checks)) * 100, 1)
 
+    # Architect and QA gate checks (enforced at graph level, tracked here)
+    gate_details["architect_approved"] = state.architect_approved
+    gate_details["qa_verified"] = state.qa_verified
+
     all_passed = lint_passed and no_any_violations and security_ok and lint_ran and tests_ran and security_ran
 
     if not all_passed:
@@ -654,6 +766,123 @@ If rejected, respond with REJECTED and specific feedback on what to fix.""",
         "pr_approved": all_approved,
         "pr_loop_count": state.pr_loop_count + 1,
         "cost": _update_cost_multi(state.cost, [r for r in results if isinstance(r, TaskResult)]),
+    }
+
+
+
+async def qa_verification_node(state: NexusState) -> dict:
+    """QA agent verifies all quality criteria before architect review.
+
+    Checks: all tests pass, coverage >80%, no security issues.
+    Agent decision only — no user prompts.
+    If failed: escalates to Tech Lead agent for review.
+    """
+    issues = []
+
+    # Check test results
+    tests_ran = bool(state.test_results)
+    if not tests_ran:
+        issues.append('Tests did not run')
+
+    # Check security scan
+    security_clean = (
+        bool(state.security_scan_results)
+        and 'CRITICAL' not in str(state.security_scan_results)
+        and 'HIGH' not in str(state.security_scan_results)
+    )
+    if not security_clean:
+        issues.append('Security scan has critical/high findings or did not run')
+
+    # Check lint
+    lint_passed = state.lint_results.get('passed', False) if state.lint_results else False
+    if not lint_passed:
+        issues.append('Linting did not pass')
+
+    # Check no type:any violations
+    if state.any_type_violations > 0:
+        issues.append(f'{state.any_type_violations} type:any violation(s)')
+
+    # Check no failed tasks
+    if state.failed_tasks:
+        issues.append(f'{len(state.failed_tasks)} failed task(s)')
+
+    # QA agent makes the decision
+    if issues:
+        # Escalate to Tech Lead for review
+        result = await run_planning_agent(
+            'tech_lead',
+            AGENTS['tech_lead'],
+            f"""QA verification FAILED. Review these issues and decide if we can proceed:
+
+Issues found:
+{chr(10).join(f'- {i}' for i in issues)}
+
+Quality score: {state.quality_score}/100
+Test results: {state.test_results}
+Security scan: {state.security_scan_results}
+
+If the issues are minor and acceptable, respond with PROCEED.
+If the issues are blocking, respond with BLOCK and explain why.""",
+        )
+
+        # Tech Lead can override minor issues
+        tech_lead_approves = 'PROCEED' in result.output.upper() and 'BLOCK' not in result.output.upper()
+
+        return {
+            'qa_verified': tech_lead_approves,
+            'cost': _update_cost(state.cost, result),
+        }
+
+    return {'qa_verified': True}
+
+
+async def architect_approval_node(state: NexusState) -> dict:
+    """Architect agent reviews all changes for final approval.
+
+    Input: pr_reviews, test_results, security_scan_results, technical_design
+    Output: architect_approved (bool), architect_feedback (str)
+    Blocking: If not approved, returns to implementation.
+    Agent-to-agent only — no user prompts.
+    """
+    result = await run_planning_agent(
+        'chief_architect',
+        AGENTS['chief_architect'],
+        f"""You are the ARCHITECT — final authority on all code changes.
+Your decision is FINAL. No user override. Review everything and decide.
+
+TECHNICAL DESIGN:
+{state.technical_design or 'No design document'}
+
+PR REVIEWS:
+{chr(10).join(f'[{r.reviewer}] {r.status}: {r.feedback[:300]}' for r in state.pr_reviews) if state.pr_reviews else 'No PR reviews'}
+
+TEST RESULTS:
+{state.test_results or 'No test results'}
+
+SECURITY SCAN:
+{state.security_scan_results or 'No security scan'}
+
+QA VERIFIED: {state.qa_verified}
+QUALITY SCORE: {state.quality_score}/100
+
+Evaluate:
+1. Architecture soundness — does implementation match the approved design?
+2. Security — are all scan findings addressed?
+3. Performance — any bottlenecks in the implementation?
+4. Quality — is the code production-ready?
+
+If ALL criteria pass, respond: APPROVED followed by a brief assessment.
+If ANY criteria fail, respond: REJECTED followed by specific required changes.
+
+Be decisive. Your word is final.""",
+    )
+
+    approved = 'APPROVED' in result.output.upper() and 'REJECTED' not in result.output.upper()
+
+    return {
+        'architect_approved': approved,
+        'architect_feedback': result.output,
+        'cost': _update_cost(state.cost, result),
     }
 
 
@@ -733,11 +962,21 @@ This is a DEMO, not a request for review. Be confident and direct.""",
 
 def route_after_executive_consensus(state: NexusState) -> str:
     if state.executive_consensus:
-        return "vp_engineering"
+        return "spec_generation"
     if state.executive_loop_count >= 3:
         logger.warning("Executive consensus not reached after 3 loops, proceeding anyway")
-        return "vp_engineering"
+        return "spec_generation"
     return "ceo"
+
+
+def route_after_spec_approval(state: NexusState) -> str:
+    """Route after CEO spec approval (agent-to-agent)."""
+    if state.spec_approved:
+        return "vp_engineering"
+    if state.spec_loop_count >= 2:
+        logger.warning("Spec not approved after 2 loops, proceeding with warnings")
+        return "vp_engineering"
+    return "spec_generation"
 
 
 def route_after_tech_review(state: NexusState) -> str:
@@ -760,14 +999,28 @@ def route_after_quality_gate(state: NexusState) -> str:
 
 def route_after_pr_review(state: NexusState) -> str:
     if state.pr_approved:
-        return "demo"
+        return 'qa_verification'
     if state.pr_loop_count >= 3:
         if state.quality_score < 70:
-            logger.warning("PR not approved after 3 loops with quality %s/100, escalating", state.quality_score)
-            return "escalation"
-        logger.warning("PR not approved after 3 loops, proceeding to demo with warnings")
-        return "demo"
-    return "implementation"
+            logger.warning('PR not approved after 3 loops with quality %s/100, escalating', state.quality_score)
+            return 'escalation'
+        logger.warning('PR not approved after 3 loops, proceeding to qa_verification with warnings')
+        return 'qa_verification'
+    return 'implementation'
+
+
+def route_after_qa_verification(state: NexusState) -> str:
+    """Route after QA verification. Proceed to architect or back to implementation."""
+    if state.qa_verified:
+        return 'architect_approval'
+    return 'implementation'
+
+
+def route_after_architect_approval(state: NexusState) -> str:
+    """Route after architect approval. Proceed to demo or back to implementation."""
+    if state.architect_approved:
+        return 'demo'
+    return 'implementation'
 
 
 def route_after_escalation(state: NexusState) -> str:
@@ -802,6 +1055,8 @@ def build_nexus_graph() -> StateGraph:
     graph.add_node("cfo", cfo_node)
     graph.add_node("cro", cro_node)
     graph.add_node("executive_consensus", executive_consensus_node)
+    graph.add_node("spec_generation", spec_generation_node)
+    graph.add_node("spec_approval", spec_approval_node)
     graph.add_node("vp_engineering", vp_engineering_node)
     graph.add_node("tech_lead_review", tech_lead_review_node)
     graph.add_node("decomposition", decomposition_node)
@@ -812,6 +1067,8 @@ def build_nexus_graph() -> StateGraph:
     graph.add_node("visual_qa", visual_qa_node)
     graph.add_node("quality_gate", quality_gate_node)
     graph.add_node("pr_review", pr_review_node)
+    graph.add_node("qa_verification", qa_verification_node)
+    graph.add_node("architect_approval", architect_approval_node)
     graph.add_node("demo", demo_node)
     graph.add_node("escalation", escalation_node)
 
@@ -832,11 +1089,21 @@ def build_nexus_graph() -> StateGraph:
     )
     graph.add_edge("cro", "executive_consensus")
 
-    # Executive consensus → either loop back or proceed
+    # Executive consensus → either loop back or proceed to spec generation
     graph.add_conditional_edges(
         "executive_consensus",
         route_after_executive_consensus,
-        {"ceo": "ceo", "vp_engineering": "vp_engineering"},
+        {"ceo": "ceo", "spec_generation": "spec_generation"},
+    )
+
+    # Spec generation → Spec approval
+    graph.add_edge("spec_generation", "spec_approval")
+
+    # Spec approval → either loop back to spec generation or proceed to VP Eng
+    graph.add_conditional_edges(
+        "spec_approval",
+        route_after_spec_approval,
+        {"spec_generation": "spec_generation", "vp_engineering": "vp_engineering"},
     )
 
     # VP Eng → Tech Lead Review
@@ -871,11 +1138,25 @@ def build_nexus_graph() -> StateGraph:
         {"pr_review": "pr_review", "implementation": "implementation", "escalation": "escalation"},
     )
 
-    # PR Review → Demo, back to Implementation, or Escalation
+    # PR Review → QA Verification, back to Implementation, or Escalation
     graph.add_conditional_edges(
         "pr_review",
         route_after_pr_review,
-        {"demo": "demo", "implementation": "implementation", "escalation": "escalation"},
+        {"qa_verification": "qa_verification", "implementation": "implementation", "escalation": "escalation"},
+    )
+
+    # QA Verification → Architect Approval or back to Implementation
+    graph.add_conditional_edges(
+        "qa_verification",
+        route_after_qa_verification,
+        {"architect_approval": "architect_approval", "implementation": "implementation"},
+    )
+
+    # Architect Approval → Demo or back to Implementation
+    graph.add_conditional_edges(
+        "architect_approval",
+        route_after_architect_approval,
+        {"demo": "demo", "implementation": "implementation"},
     )
 
     # Escalation → Demo (always proceed after escalation)
@@ -974,14 +1255,25 @@ def _parse_tasks(text: str, em_source: str) -> list[WorkstreamTask]:
             raw = json.loads(text[start:end])
             tasks = []
             for i, item in enumerate(raw):
+                task_id = item.get("id", f"{em_source}_{i + 1}")
+                deps = item.get("dependencies", []) or []
                 tasks.append(
                     WorkstreamTask(
-                        id=item.get("id", f"{em_source}_{i + 1}"),
+                        id=task_id,
                         description=item.get("description", ""),
                         assigned_agent=item.get("assigned_agent", _infer_agent(item.get("description", ""), em_source)),
                         language=item.get("language") or _infer_language(item.get("description", "")),
+                        blocked_by=deps,
                     )
                 )
+            # Build forward edges (blocks) from blocked_by
+            id_set = {t.id for t in tasks}
+            for t in tasks:
+                for dep_id in t.blocked_by:
+                    if dep_id in id_set:
+                        dep_task = next(x for x in tasks if x.id == dep_id)
+                        if t.id not in dep_task.blocks:
+                            dep_task.blocks.append(t.id)
             if tasks:
                 return tasks
     except (json.JSONDecodeError, KeyError, TypeError):
@@ -1033,25 +1325,54 @@ def _infer_language(task_text: str) -> str | None:
 
 
 def _identify_parallel_groups(tasks: list[WorkstreamTask]) -> list[list[str]]:
-    """Group tasks by dependency depth for parallel execution.
+    """Group tasks by dependency depth for parallel execution using topological sort.
 
-    Level 0: tasks with no dependencies → run in parallel
-    Level 1: tasks depending on level 0 → run after level 0 completes
+    Level 0: tasks with no dependencies -> run in parallel
+    Level 1: tasks depending on level 0 -> run after level 0 completes
     etc.
+
+    Uses actual blocked_by fields from tasks. Falls back to EM-based grouping
+    when no explicit dependencies exist.
     """
     if not tasks:
         return []
 
-    # Build dependency graph from task descriptions (heuristic: tasks from same EM
-    # with sequential IDs may depend on prior tasks if they reference them)
-    # For now, group by EM source so each EM's tasks run sequentially
+    # Check if any tasks have explicit dependencies
+    has_deps = any(t.blocked_by for t in tasks)
+
+    if has_deps:
+        # Topological sort using Kahn's algorithm
+        all_ids = {t.id for t in tasks}
+        task_deps: dict[str, set[str]] = {}
+        for t in tasks:
+            # Only consider deps within this task set
+            task_deps[t.id] = set(t.blocked_by) & all_ids
+
+        remaining = dict(task_deps)
+        levels: list[list[str]] = []
+        placed: set[str] = set()
+
+        while remaining:
+            level = [tid for tid, deps in remaining.items() if not (deps - placed)]
+            if not level:
+                # Cycle detected -- place all remaining in final level
+                logger.warning("Cycle detected in task dependencies: %s", list(remaining.keys()))
+                levels.append(list(remaining.keys()))
+                break
+            levels.append(level)
+            placed.update(level)
+            for tid in level:
+                del remaining[tid]
+
+        return levels if levels else [[t.id for t in tasks]]
+
+    # Fallback: group by EM source so each EM's tasks run sequentially
     # but different EMs run in parallel
     em_groups: dict[str, list[str]] = {}
     for t in tasks:
         prefix = t.id.rsplit("_", 1)[0] if "_" in t.id else "default"
         em_groups.setdefault(prefix, []).append(t.id)
 
-    # Build levels: first task from each EM at level 0, second at level 1, etc.
     max_depth = max(len(v) for v in em_groups.values()) if em_groups else 1
     levels = []
     for depth in range(max_depth):

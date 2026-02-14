@@ -23,6 +23,8 @@ class WorkstreamTask(BaseModel):
     result: str | None = None
     token_cost: float = 0.0
     attempts: int = 0
+    blocks: list[str] = Field(default_factory=list)
+    blocked_by: list[str] = Field(default_factory=list)
 
 
 class PRReview(BaseModel):
@@ -63,6 +65,12 @@ class NexusState(BaseModel):
     executive_consensus: bool = False
     executive_loop_count: int = 0
 
+    # --- Spec-Driven Development (SDD) ---
+    formal_spec: str | None = None
+    spec_approved: bool = False
+    spec_loop_count: int = 0
+    spec_file_path: str | None = None
+
     # --- Technical Planning ---
     technical_design: str | None = None
     architecture_decisions: list[str] = Field(default_factory=list)
@@ -95,6 +103,11 @@ class NexusState(BaseModel):
     pr_approved: bool = False
     pr_loop_count: int = 0
 
+    # --- Approval Gates ---
+    architect_approved: bool = False
+    architect_feedback: str = ""
+    qa_verified: bool = False
+
     # --- Demo ---
     demo_summary: str | None = None
     demo_screenshots: list[str] = Field(default_factory=list)
@@ -114,6 +127,8 @@ class NexusState(BaseModel):
     current_phase: Literal[
         "intake",
         "executive_planning",
+        "spec_generation",
+        "spec_approval",
         "technical_planning",
         "decomposition",
         "implementation",

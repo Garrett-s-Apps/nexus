@@ -101,7 +101,8 @@ class Memory:
         c.execute("""CREATE TABLE IF NOT EXISTS task_board (
             id TEXT PRIMARY KEY, directive_id TEXT, title TEXT NOT NULL,
             description TEXT DEFAULT '', status TEXT DEFAULT 'available',
-            claimed_by TEXT, depends_on TEXT DEFAULT '[]', output TEXT DEFAULT '',
+            claimed_by TEXT, depends_on TEXT DEFAULT '[]', blocks TEXT DEFAULT '[]',
+            output TEXT DEFAULT '',
             priority INTEGER DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
             FOREIGN KEY (directive_id) REFERENCES directives(id))""")
 
@@ -148,6 +149,12 @@ class Memory:
         c.execute("CREATE INDEX IF NOT EXISTS idx_world_ctx_directive ON world_context(directive_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_task_board_status ON task_board(status)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_agent_status ON agent_state(status)")
+
+        # Migration: add blocks column to task_board if it doesn't exist
+        try:
+            c.execute("SELECT blocks FROM task_board LIMIT 1")
+        except sqlite3.OperationalError:
+            c.execute("ALTER TABLE task_board ADD COLUMN blocks TEXT DEFAULT '[]'")
 
         self._conn.commit()
 
@@ -409,12 +416,12 @@ class Memory:
         row = c.fetchone(); return dict(row) if row else None
 
     # === V1: TASK BOARD ===
-    def create_board_task(self, task_id, directive_id, title, description="", depends_on=None, priority=0):
+    def create_board_task(self, task_id, directive_id, title, description="", depends_on=None, blocks=None, priority=0):
         now = datetime.now(UTC).isoformat()
         with self._lock:
             self._conn.cursor().execute(
-                "INSERT INTO task_board (id,directive_id,title,description,status,depends_on,priority,created_at,updated_at) VALUES (?,?,?,?,'available',?,?,?,?)",
-                (task_id, directive_id, title, description, json.dumps(depends_on or []), priority, now, now))
+                "INSERT INTO task_board (id,directive_id,title,description,status,depends_on,blocks,priority,created_at,updated_at) VALUES (?,?,?,?,'available',?,?,?,?,?)",
+                (task_id, directive_id, title, description, json.dumps(depends_on or []), json.dumps(blocks or []), priority, now, now))
             self._conn.commit()
         self.emit_event("system", "task_created", {"id": task_id, "title": title})
         return {"id": task_id, "title": title, "status": "available"}
@@ -476,6 +483,184 @@ class Memory:
         ph = ",".join("?" for _ in deps)
         # Safe: ph contains only "?" placeholders, no user input in query structure
         return self._conn.cursor().execute(f"SELECT COUNT(*) FROM task_board WHERE id IN ({ph}) AND status='complete'", deps).fetchone()[0] == len(deps)  # noqa: S608
+
+    def add_task_dependency(self, task_id: str, blocks: list[str] | None = None, blocked_by: list[str] | None = None):
+        """Add dependency relationships to a task board entry.
+
+        Args:
+            task_id: The task to update.
+            blocks: Task IDs that this task blocks (forward edges).
+            blocked_by: Task IDs that block this task (stored in depends_on).
+        """
+        with self._lock:
+            c = self._conn.cursor()
+            now = datetime.now(UTC).isoformat()
+
+            if blocked_by is not None:
+                row = c.execute("SELECT depends_on FROM task_board WHERE id=?", (task_id,)).fetchone()
+                if row:
+                    existing = json.loads(row[0]) if row[0] else []
+                    merged = list(dict.fromkeys(existing + blocked_by))
+                    c.execute("UPDATE task_board SET depends_on=?,updated_at=? WHERE id=?",
+                              (json.dumps(merged), now, task_id))
+
+            if blocks is not None:
+                row = c.execute("SELECT blocks FROM task_board WHERE id=?", (task_id,)).fetchone()
+                if row:
+                    existing = json.loads(row["blocks"]) if row["blocks"] else []
+                    merged = list(dict.fromkeys(existing + blocks))
+                    c.execute("UPDATE task_board SET blocks=?,updated_at=? WHERE id=?",
+                              (json.dumps(merged), now, task_id))
+
+                # Also update the reverse side: add task_id to each blocked task's depends_on
+                for blocked_id in blocks:
+                    dep_row = c.execute("SELECT depends_on FROM task_board WHERE id=?", (blocked_id,)).fetchone()
+                    if dep_row:
+                        existing_deps = json.loads(dep_row[0]) if dep_row[0] else []
+                        if task_id not in existing_deps:
+                            existing_deps.append(task_id)
+                            c.execute("UPDATE task_board SET depends_on=?,updated_at=? WHERE id=?",
+                                      (json.dumps(existing_deps), now, blocked_id))
+
+            self._conn.commit()
+
+    def get_available_board_tasks(self, directive_id: str | None = None) -> list[dict]:
+        """Return only tasks where all blocked_by dependencies are completed.
+
+        Results are ordered by topological depth (tasks with no deps first).
+        """
+        c = self._conn.cursor()
+        if directive_id:
+            c.execute("SELECT * FROM task_board WHERE directive_id=? AND status='available' ORDER BY priority DESC,created_at",
+                      (directive_id,))
+        else:
+            c.execute("SELECT * FROM task_board WHERE status='available' ORDER BY priority DESC,created_at")
+
+        all_tasks = [dict(r) for r in c.fetchall()]
+
+        # Filter to only tasks whose dependencies are all complete
+        available = []
+        for task in all_tasks:
+            deps = json.loads(task.get("depends_on", "[]"))
+            if not deps:
+                available.append(task)
+                continue
+            ph = ",".join("?" for _ in deps)
+            # Safe: ph contains only "?" placeholders
+            count = c.execute(
+                f"SELECT COUNT(*) FROM task_board WHERE id IN ({ph}) AND status='complete'", deps  # noqa: S608
+            ).fetchone()[0]
+            if count == len(deps):
+                available.append(task)
+
+        return available
+
+    def get_task_tree(self, root_task_id: str) -> dict:
+        """Return a dependency tree rooted at root_task_id for visualization.
+
+        Returns a nested dict: {id, title, status, children: [...]}.
+        """
+        row = self._conn.cursor().execute("SELECT * FROM task_board WHERE id=?", (root_task_id,)).fetchone()
+        if not row:
+            return {}
+
+        task = dict(row)
+        blocks_ids = json.loads(task.get("blocks", "[]"))
+        children = []
+        for child_id in blocks_ids:
+            children.append(self.get_task_tree(child_id))
+
+        return {
+            "id": task["id"],
+            "title": task["title"],
+            "status": task["status"],
+            "children": children,
+        }
+
+    def get_execution_order(self, directive_id: str) -> list[list[str]]:
+        """Return tasks grouped into execution levels using topological sort.
+
+        Returns: [[no-deps], [depends-on-level-0], [depends-on-level-1], ...]
+        Each level can execute in parallel. Handles cycles by logging a warning
+        and placing cyclic tasks in the last level.
+        """
+        c = self._conn.cursor()
+        c.execute("SELECT id, depends_on, status FROM task_board WHERE directive_id=?", (directive_id,))
+        rows = [dict(r) for r in c.fetchall()]
+
+        if not rows:
+            return []
+
+        # Build adjacency: task_id -> set of dependency IDs
+        task_deps: dict[str, set[str]] = {}
+        all_ids = set()
+        for row in rows:
+            tid = row["id"]
+            all_ids.add(tid)
+            deps = json.loads(row.get("depends_on", "[]"))
+            # Only include deps that are in this directive's task set
+            task_deps[tid] = set(deps) & all_ids
+
+        # Kahn's algorithm for topological sort into levels
+        remaining = dict(task_deps)
+        levels: list[list[str]] = []
+        placed: set[str] = set()
+
+        while remaining:
+            # Find all tasks with no unresolved dependencies
+            level = [tid for tid, deps in remaining.items() if not (deps - placed)]
+            if not level:
+                # Cycle detected — place all remaining tasks in final level
+                logger.warning(
+                    "Cycle detected in task dependencies for directive %s: %s",
+                    directive_id, list(remaining.keys()),
+                )
+                levels.append(list(remaining.keys()))
+                break
+            levels.append(level)
+            placed.update(level)
+            for tid in level:
+                del remaining[tid]
+
+        return levels
+
+    def export_task_dag_mermaid(self, directive_id: str) -> str:
+        """Export the task DAG as a Mermaid graph string.
+
+        Returns a Mermaid flowchart string showing task dependencies.
+        """
+        c = self._conn.cursor()
+        c.execute("SELECT id, title, status, depends_on FROM task_board WHERE directive_id=?", (directive_id,))
+        rows = [dict(r) for r in c.fetchall()]
+
+        if not rows:
+            return "graph TD\n  empty[No tasks]"
+
+        lines = ["graph TD"]
+        status_styles = {
+            "complete": ":::done",
+            "in_progress": ":::active",
+            "claimed": ":::active",
+            "failed": ":::failed",
+            "available": "",
+        }
+
+        for row in rows:
+            tid = row["id"]
+            title = row["title"].replace('"', "'")
+            style = status_styles.get(row["status"], "")
+            lines.append(f'  {tid}["{title}"]{style}')
+
+            deps = json.loads(row.get("depends_on", "[]"))
+            for dep_id in deps:
+                lines.append(f"  {dep_id} --> {tid}")
+
+        lines.append("")
+        lines.append("  classDef done fill:#90EE90,stroke:#333")
+        lines.append("  classDef active fill:#87CEEB,stroke:#333")
+        lines.append("  classDef failed fill:#FFB6C1,stroke:#333")
+
+        return "\n".join(lines)
 
     # === V1: AGENT STATE ===
     def register_agent(self, agent_id, name, role, model="haiku"):

@@ -440,6 +440,96 @@ JSON ONLY.""", max_tokens=1500)
 
 
 # ---------------------------------------------------------------------------
+# Architect — final authority on all code changes (ARCH-010)
+# ---------------------------------------------------------------------------
+class ArchitectAgent(Agent):
+    """Final authority on all code changes. Reviews for architecture compliance.
+
+    The Architect agent has veto power over ANY change. This is an agent-to-agent
+    approval gate — no user prompts involved.
+    """
+
+    async def do_work(self, decision, directive_id):
+        directive = memory.get_directive(directive_id)
+        if not directive:
+            return "No directive"
+        return await self.review_changes({"directive_id": directive_id})
+
+    async def review_changes(self, context: dict) -> dict:
+        """Review all changes for architecture soundness, security, performance, quality.
+
+        Returns: {approved: bool, feedback: str, required_changes: list}
+        """
+        directive_id = context.get("directive_id", "")
+        directive = memory.get_directive(directive_id) if directive_id else None
+
+        # Gather all context for review
+        code_entries = memory.get_context_for_directive(directive_id) if directive_id else []
+        code_summaries = []
+        for e in code_entries[-10:]:
+            if e["type"] in ("code", "defect_fix"):
+                code_summaries.append(f"[{e['author']}] {str(e['content'])[:500]}")
+
+        arch_context = memory.get_latest_context(directive_id, "architecture") if directive_id else None
+        qa_reviews = [e for e in code_entries if e["type"] == "qa_review"]
+
+        review_prompt = f"""You are the Chief Architect with FINAL AUTHORITY on all code changes.
+Review the following for architecture compliance. Be decisive.
+
+DIRECTIVE: {directive['text'] if directive else 'Unknown'}
+{f"ARCHITECTURE: {arch_context['content'][:1500]}" if arch_context else "No architecture doc found."}
+
+CODE CHANGES:
+{chr(10).join(code_summaries) if code_summaries else "No code changes found."}
+
+QA RESULTS:
+{chr(10).join(str(e['content'])[:300] for e in qa_reviews[-3:]) if qa_reviews else "No QA results."}
+
+Evaluate:
+1. Architecture soundness — does the code follow the approved design?
+2. Security — any vulnerabilities or trust boundary violations?
+3. Performance — any obvious bottlenecks or anti-patterns?
+4. Quality — maintainability, readability, error handling?
+
+JSON response:
+{{"approved": true/false, "feedback": "brief overall assessment", "required_changes": ["change1", "change2"]}}
+If approved, required_changes should be empty.
+JSON ONLY."""
+
+        response = await self.think(review_prompt, max_tokens=1500)
+        data = extract_json(response)
+
+        if data and isinstance(data, dict):
+            approved = bool(data.get("approved", False))
+            feedback = data.get("feedback", "No feedback provided")
+            required_changes = data.get("required_changes", [])
+
+            memory.post_context(
+                self.agent_id,
+                "architect_review",
+                json.dumps({
+                    "approved": approved,
+                    "feedback": feedback,
+                    "required_changes": required_changes,
+                }),
+                directive_id,
+            )
+
+            return {
+                "approved": approved,
+                "feedback": feedback,
+                "required_changes": required_changes,
+            }
+
+        # Parse failure — reject to be safe
+        return {
+            "approved": False,
+            "feedback": "Architect review could not be parsed. Rejecting for safety.",
+            "required_changes": ["Retry architect review"],
+        }
+
+
+# ---------------------------------------------------------------------------
 # Code Reviewer — reviews code quality, not bugs (that's QA)
 # ---------------------------------------------------------------------------
 class CodeReviewAgent(Agent):
@@ -519,6 +609,7 @@ AGENT_CLASSES = {
     "pm_2": PMAgent,
     "vp_engineering": VPEngineeringAgent,
     "chief_architect": ChiefArchitectAgent,
+    "architect": ArchitectAgent,
     "eng_lead": StubAgent,
     "fe_engineer_1": EngineerAgent,
     "fe_engineer_2": EngineerAgent,

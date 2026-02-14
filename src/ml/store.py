@@ -8,6 +8,7 @@ Stores:
 - Trained model artifacts (serialized sklearn pipelines)
 
 All tables live in ~/.nexus/ml.db to keep ML data separate from core state.
+Connection Pooling: AsyncSQLitePool with 6 connections for parallel ML operations
 """
 
 import json
@@ -16,9 +17,11 @@ import pickle
 import sqlite3
 import threading
 import time
+from typing import Optional
 
 from src.config import NEXUS_DIR
 from src.db.sqlite_store import connect_encrypted
+from src.db.pool import AsyncSQLitePool
 
 ML_DB_PATH = os.path.join(NEXUS_DIR, "ml.db")
 
@@ -30,6 +33,7 @@ class MLStore:
         self.db_path = db_path
         self._conn: sqlite3.Connection | None = None
         self._lock = threading.Lock()
+        self._pool: Optional[AsyncSQLitePool] = None
 
     @property
     def _db(self) -> sqlite3.Connection:
@@ -42,6 +46,21 @@ class MLStore:
         self._conn = connect_encrypted(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._create_tables()
+
+    async def init_pool(self, pool_size: int = 6):
+        """Initialize async connection pool for parallel ML operations.
+
+        Args:
+            pool_size: Number of connections to maintain (default 6).
+        """
+        self._pool = AsyncSQLitePool(self.db_path, pool_size=pool_size)
+        await self._pool.init()
+
+    async def close_pool(self):
+        """Close the connection pool."""
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
 
     def _create_tables(self):
         c = self._db.cursor()

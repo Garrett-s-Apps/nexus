@@ -6,16 +6,20 @@ Two layers:
 2. WORLD STATE — directives, shared context, task board, agent state, events, services (v1.0, new)
 
 Storage: SQLite at ~/.nexus/memory.db
+Connection Pooling: AsyncSQLitePool with 8 connections for high concurrency
 """
 
+import asyncio
 import json
 import os
 import sqlite3
 import threading
 from datetime import UTC, datetime, timedelta
+from typing import Optional
 
 from src.config import MEMORY_DB_PATH
 from src.db.sqlite_store import connect_encrypted
+from src.db.pool import AsyncSQLitePool
 
 DB_PATH = MEMORY_DB_PATH
 
@@ -25,12 +29,28 @@ class Memory:
         self.db_path = DB_PATH
         self._conn = None
         self._lock = threading.Lock()
+        self._pool: Optional[AsyncSQLitePool] = None
 
     def init(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._conn = connect_encrypted(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._create_tables()
+
+    async def init_pool(self, pool_size: int = 8):
+        """Initialize async connection pool for high-concurrency operations.
+
+        Args:
+            pool_size: Number of connections to maintain (default 8).
+        """
+        self._pool = AsyncSQLitePool(self.db_path, pool_size=pool_size)
+        await self._pool.init()
+
+    async def close_pool(self):
+        """Close the connection pool."""
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
 
     def _create_tables(self):
         c = self._conn.cursor()

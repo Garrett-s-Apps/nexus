@@ -17,6 +17,7 @@ Usage:
     nexus execute-priority <sev>   Execute findings by severity
     nexus execute-category <cat>   Execute findings by category
     nexus execute-item <item_id>   Execute a single finding
+    nexus dashboard                Start progress visualization dashboard
     nexus stop                     Stop the server
 """
 
@@ -384,6 +385,15 @@ def main():
     elif command == "execute-item" and len(sys.argv) >= 3:
         item_id = sys.argv[2].upper()
         _execute_findings(filter_type="item", filter_value=item_id)
+
+    elif command == "dashboard":
+        from src.dashboard.server import run_dashboard
+        print("Starting NEXUS Dashboard on http://127.0.0.1:8080")
+        print("Press Ctrl+C to stop")
+        try:
+            run_dashboard(host="127.0.0.1", port=8080, debug=False)
+        except KeyboardInterrupt:
+            print("\nDashboard stopped.")
 
     elif command == "slack-webhook":
         if len(sys.argv) < 3:

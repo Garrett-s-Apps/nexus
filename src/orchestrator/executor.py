@@ -19,9 +19,22 @@ import os
 
 import anthropic
 
+from src.agents.provider_factory import get_provider_factory
 from src.config import get_key as _load_key
 
 logger = logging.getLogger("nexus.executor")
+
+# Model configuration (no longer hardcoded!)
+PLANNING_MODEL = os.environ.get("NEXUS_PLANNING_MODEL", "sonnet")
+IMPLEMENTATION_MODEL = os.environ.get("NEXUS_IMPLEMENTATION_MODEL", "sonnet")
+QA_MODEL = os.environ.get("NEXUS_QA_MODEL", "haiku")
+
+# Legacy model IDs (used when SDK providers disabled)
+LEGACY_MODEL_MAP = {
+    "opus": "claude-opus-4-20250514",
+    "sonnet": "claude-sonnet-4-20250514",
+    "haiku": "claude-haiku-4-5-20251001",
+}
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
@@ -47,9 +60,55 @@ async def execute_directive(directive: str, project_path: str, session_id: str =
     # ============================================
     _log("PLAN", "VP Engineering is designing the build...")
 
-    plan_response = await client.messages.create(
-        model="claude-sonnet-4-20250514",
+    # Try SDK provider first (if enabled)
+    factory = get_provider_factory()
+    sdk_result = await factory.execute(
+        prompt=f"""Directive: {directive}
+
+Create a build plan as JSON:
+{{
+    "summary": "one line description of what we're building",
+    "tech_stack": "languages and frameworks",
+    "files": [
+        {{
+            "path": "relative/path/to/file.ext",
+            "purpose": "what this file does",
+            "language": "python|typescript|html|etc"
+        }}
+    ],
+    "build_order": ["file paths in order they should be created"],
+    "test_strategy": "how to verify it works"
+}}
+
+Only return the JSON.""",
+        model=PLANNING_MODEL,
+        system_prompt=f"""You are the VP of Engineering at Nexus, an autonomous software org.
+The CEO has given a directive. Create a technical plan.
+
+Project directory: {project_path}
+You must output valid JSON only.
+
+IMPORTANT: Be practical. Prefer fewer files. Use existing patterns in the project if possible.
+If this is a web app, prefer a single HTML file with inline JS/CSS unless complexity demands otherwise.""",
         max_tokens=4096,
+    )
+
+    if sdk_result:
+        # SDK path
+        plan_text = sdk_result["output"]
+        from src.cost.tracker import cost_tracker
+        cost_tracker.record(
+            sdk_result["model"],
+            "vp_engineering",
+            sdk_result["tokens_in"],
+            sdk_result["tokens_out"],
+        )
+        total_cost += sdk_result["cost_usd"]
+    else:
+        # Legacy path
+        plan_response = await client.messages.create(
+            model=LEGACY_MODEL_MAP[PLANNING_MODEL],
+            max_tokens=4096,
         system=f"""You are the VP of Engineering at Nexus, an autonomous software org.
 The CEO has given a directive. Create a technical plan.
 
@@ -76,13 +135,22 @@ Create a build plan as JSON:
 }}
 
 Only return the JSON."""}],
-    )
+        )
 
-    plan_text = plan_response.content[0].text.strip()  # type: ignore[union-attr]
-    if plan_response.usage:
-        from src.cost.tracker import cost_tracker
-        cost_tracker.record("sonnet", "vp_engineering", plan_response.usage.input_tokens, plan_response.usage.output_tokens)
-        total_cost += cost_tracker.calculate_cost("sonnet", plan_response.usage.input_tokens, plan_response.usage.output_tokens)
+        plan_text = plan_response.content[0].text.strip()  # type: ignore[union-attr]
+        if plan_response.usage:
+            from src.cost.tracker import cost_tracker
+            cost_tracker.record(
+                PLANNING_MODEL,
+                "vp_engineering",
+                plan_response.usage.input_tokens,
+                plan_response.usage.output_tokens,
+            )
+            total_cost += cost_tracker.calculate_cost(
+                PLANNING_MODEL,
+                plan_response.usage.input_tokens,
+                plan_response.usage.output_tokens,
+            )
 
     # Parse the plan
     try:
@@ -131,9 +199,49 @@ Only return the JSON."""}],
                 content_preview = wc[:2000] if len(wc) > 2000 else wc
                 context_str += f"\n--- {wp} ---\n{content_preview}\n"
 
-        impl_response = await client.messages.create(
-            model="claude-sonnet-4-20250514",
+        # Try SDK provider first
+        sdk_impl_result = await factory.execute(
+            prompt=f"""Write this file:
+
+Path: {file_path}
+Purpose: {file_info.get('purpose', '')}
+Language: {file_info.get('language', '')}
+
+Overall project: {plan.get('summary', directive)}
+Tech stack: {plan.get('tech_stack', '')}
+{context_str}
+
+Write the complete file contents now.""",
+            model=IMPLEMENTATION_MODEL,
+            system_prompt=f"""You are a senior engineer at Nexus. Write production-quality code.
+Project: {project_path}
+
+RULES:
+- Write COMPLETE, working code. No placeholders, no TODOs, no "implement this".
+- Handle all error states.
+- No hardcoded secrets.
+- Include helpful comments that explain WHY, not WHAT.
+- If this is a web UI, make it look professional — not a prototype.
+
+Output ONLY the file contents. No markdown fences, no explanation, just the raw code.""",
             max_tokens=8192,
+        )
+
+        if sdk_impl_result:
+            # SDK path
+            file_content = sdk_impl_result["output"]
+            cost_tracker.record(
+                sdk_impl_result["model"],
+                "implementation",
+                sdk_impl_result["tokens_in"],
+                sdk_impl_result["tokens_out"],
+            )
+            total_cost += sdk_impl_result["cost_usd"]
+        else:
+            # Legacy path
+            impl_response = await client.messages.create(
+                model=LEGACY_MODEL_MAP[IMPLEMENTATION_MODEL],
+                max_tokens=8192,
             system=f"""You are a senior engineer at Nexus. Write production-quality code.
 Project: {project_path}
 
@@ -156,18 +264,33 @@ Tech stack: {plan.get('tech_stack', '')}
 {context_str}
 
 Write the complete file contents now."""}],
-        )
+            )
 
-        file_content = impl_response.content[0].text  # type: ignore[union-attr]
-        # Strip markdown fences if the model wrapped it
+            file_content = impl_response.content[0].text  # type: ignore[union-attr]
+            # Strip markdown fences if the model wrapped it
+            if file_content.startswith("```"):
+                file_content = file_content.split("\n", 1)[1]
+            if file_content.rstrip().endswith("```"):
+                file_content = file_content.rstrip().rsplit("```", 1)[0]
+
+            if impl_response.usage:
+                cost_tracker.record(
+                    IMPLEMENTATION_MODEL,
+                    "implementation",
+                    impl_response.usage.input_tokens,
+                    impl_response.usage.output_tokens,
+                )
+                total_cost += cost_tracker.calculate_cost(
+                    IMPLEMENTATION_MODEL,
+                    impl_response.usage.input_tokens,
+                    impl_response.usage.output_tokens,
+                )
+
+        # Common code path - strip markdown fences from SDK output too
         if file_content.startswith("```"):
             file_content = file_content.split("\n", 1)[1]
         if file_content.rstrip().endswith("```"):
             file_content = file_content.rstrip().rsplit("```", 1)[0]
-
-        if impl_response.usage:
-            cost_tracker.record("sonnet", "implementation", impl_response.usage.input_tokens, impl_response.usage.output_tokens)
-            total_cost += cost_tracker.calculate_cost("sonnet", impl_response.usage.input_tokens, impl_response.usage.output_tokens)
 
         # Write the file (canonicalize to block path traversal from LLM output)
         full_path = os.path.realpath(os.path.join(project_path, file_path))
@@ -194,9 +317,35 @@ Write the complete file contents now."""}],
     for fp, fc in written_context.items():
         all_code += f"\n\n=== {fp} ===\n{fc}"
 
-    qa_response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
+    # Try SDK provider for QA
+    sdk_qa_result = await factory.execute(
+        prompt=f"""Quick review of these files:\n{all_code[:15000]}
+
+Report:
+1. Any critical bugs? (YES/NO + details)
+2. Any security issues? (YES/NO + details)
+3. Will this run without errors? (YES/NO + details)
+4. Overall verdict: SHIP IT or NEEDS FIXES""",
+        model=QA_MODEL,
+        system_prompt="You are a QA lead. Review code quickly. Focus on critical issues only: crashes, security holes, broken imports. Skip style nitpicks. Be brief.",
         max_tokens=1024,
+    )
+
+    if sdk_qa_result:
+        # SDK path
+        qa_result = sdk_qa_result["output"]
+        cost_tracker.record(
+            sdk_qa_result["model"],
+            "qa_lead",
+            sdk_qa_result["tokens_in"],
+            sdk_qa_result["tokens_out"],
+        )
+        total_cost += sdk_qa_result["cost_usd"]
+    else:
+        # Legacy path
+        qa_response = await client.messages.create(
+            model=LEGACY_MODEL_MAP[QA_MODEL],
+            max_tokens=1024,
         system="You are a QA lead. Review code quickly. Focus on critical issues only: crashes, security holes, broken imports. Skip style nitpicks. Be brief.",
         messages=[{"role": "user", "content": f"""Quick review of these files:\n{all_code[:15000]}
 
@@ -205,12 +354,21 @@ Report:
 2. Any security issues? (YES/NO + details)
 3. Will this run without errors? (YES/NO + details)
 4. Overall verdict: SHIP IT or NEEDS FIXES"""}],
-    )
+        )
 
-    qa_result = qa_response.content[0].text  # type: ignore[union-attr]
-    if qa_response.usage:
-        cost_tracker.record("haiku", "qa_lead", qa_response.usage.input_tokens, qa_response.usage.output_tokens)
-        total_cost += cost_tracker.calculate_cost("haiku", qa_response.usage.input_tokens, qa_response.usage.output_tokens)
+        qa_result = qa_response.content[0].text  # type: ignore[union-attr]
+        if qa_response.usage:
+            cost_tracker.record(
+                QA_MODEL,
+                "qa_lead",
+                qa_response.usage.input_tokens,
+                qa_response.usage.output_tokens,
+            )
+            total_cost += cost_tracker.calculate_cost(
+                QA_MODEL,
+                qa_response.usage.input_tokens,
+                qa_response.usage.output_tokens,
+            )
 
     _log("QA", "Review complete")
 

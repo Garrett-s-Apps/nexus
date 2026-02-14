@@ -2,63 +2,160 @@
 
 **Enterprise Multi-Agent Orchestration System**
 
-A 26-agent autonomous software engineering organization controlled entirely through natural language. Tell it what to build. It figures out the rest.
+A 56-agent autonomous software engineering organization controlled entirely through natural language. Tell it what to build. It figures out the rest.
 
 NEXUS doesn't just execute tasks — it learns from every outcome, predicts costs before committing resources, and routes work to agents based on historical success patterns.
 
+> **📖 For detailed architecture, workflow design, and implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
+
 ---
 
-## Architecture
+## System Architecture
 
 ```
-You (CEO)
-  └─ Slack / Neovim / CLI / API
-       └─ NEXUS Server (localhost:4200)
-            ├─ Haiku LLM Intake (Haiku tool-use)
-            │     ├─ 9 tools — org, status, cost, KPI, ML, directives, docs, agents
-            │     └─ Intake Dispatcher — executes tools via existing services
-            ├─ LangGraph Orchestrator — decomposes directives into tasks
-            │     ├─ ML Agent Router — learned task→agent matching
-            │     ├─ ML Intelligence Briefing — similar past work + cost estimate
-            │     └─ Feedback Loop — records every outcome for retraining
-            ├─ Agent SDK Bridge — executes code via Claude Code CLI
-            ├─ Agent Registry (SQLite) — dynamic org + circuit event history
-            ├─ RAG Knowledge Base (knowledge.db) — semantic memory across sessions
-            ├─ SSoT Service Layer — typed views across all databases
-            ├─ BFF Response Formatters — Slack / CLI / API / Neovim output
-            ├─ Plugin Review Pipeline — LSP, security, quality checks
-            ├─ ML Prediction Engine — cost, quality, escalation forecasting
-            └─ Multi-Model — Anthropic, Google, OpenAI
+Human Interface (You)
+  └─ Slack Socket Mode / Neovim Plugin / CLI / REST API
+       └─ NEXUS Server (FastAPI on localhost:4200)
+            │
+            ├─ Authentication & Security Layer
+            │   ├─ JWT session tokens (30-day expiry, fingerprint-bound)
+            │   ├─ Rate limiting (persistent, progressive lockout)
+            │   ├─ CORS whitelist (Cloudflare tunnel validation)
+            │   └─ Encrypted key store (SQLCipher AES-256)
+            │
+            ├─ Request Processing
+            │   ├─ Haiku LLM Intake (natural language → tool routing)
+            │   ├─ Tool Dispatcher (9 tools: org, status, cost, KPI, ML, directives, docs, agents, health)
+            │   └─ BFF Response Formatters (Slack/CLI/API/Neovim-specific output)
+            │
+            ├─ LangGraph Orchestration Engine (27 nodes)
+            │   ├─ Strategic Planning (CEO, CPO, CFO, CRO approval gates)
+            │   ├─ Technical Design (VP Eng, Tech Lead, SDD workflow)
+            │   ├─ Task Decomposition (parallel workstream identification)
+            │   ├─ ML Agent Router (learned task→agent matching)
+            │   ├─ ML Intelligence Briefing (similar directives, cost prediction)
+            │   ├─ Parallel Execution Forks (independent workstreams)
+            │   ├─ TDD Workflow (test-first development enforcement)
+            │   ├─ Code Review Gates (senior engineer validation)
+            │   └─ Quality Gates (warnings = errors enforcement)
+            │
+            ├─ Agent Execution Layer
+            │   ├─ Agent Registry (56 agents, SQLite persistence)
+            │   ├─ Circuit Breakers (per-agent failure tracking)
+            │   ├─ Multi-Model Support (Anthropic, Google, OpenAI)
+            │   └─ Agent SDK Bridge (Claude Code CLI sessions)
+            │
+            ├─ Machine Learning System
+            │   ├─ Agent Router (TF-IDF + RandomForest)
+            │   ├─ Cost Predictor (RandomForest Regressor)
+            │   ├─ Quality Predictor (GradientBoosting)
+            │   ├─ Escalation Predictor (GradientBoosting)
+            │   ├─ Directive Embeddings (Sentence-Transformers)
+            │   └─ Auto-Retraining (every 10 outcomes, max 1x/hour)
+            │
+            ├─ Knowledge & Memory Layer
+            │   ├─ RAG Knowledge Base (semantic search, cross-session memory)
+            │   ├─ Event Memory (directives, tasks, decisions, peer feedback)
+            │   ├─ Cost Tracking (per-API-call token accounting)
+            │   └─ KPI Metrics (productivity, quality, velocity tracking)
+            │
+            └─ Data Persistence (7 Encrypted SQLite Databases)
+                ├─ registry.db — agent configurations, org structure, circuit events
+                ├─ memory.db — directives, tasks, events, decisions
+                ├─ cost.db — token usage, API costs per call
+                ├─ kpi.db — productivity and quality metrics
+                ├─ ml.db — task outcomes, embeddings, model artifacts
+                ├─ knowledge.db — RAG chunks (dedicated for cosine similarity)
+                └─ sessions.db — CLI state, thread mapping, async history
 ```
 
-### Pipeline Flow
+> **🏗️ Detailed workflow diagrams, data flow, and component interactions: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#3-workflow-architecture)**
+
+### How It Works: Directive Execution Flow
 
 ```
-Directive ──► Haiku Intake ──► Decomposition ──► Task Assignment
-                                                        │
-                    ┌───────────────────────────────────┘
-                    ▼
-              ML Intelligence Briefing
-              (similar directives, cost estimate, risk assessment)
-                    │
-                    ▼
-              RAG Memory Retrieval
-              (semantic search over past conversations, errors, outcomes)
-                    │
-                    ▼
-              ML Agent Router ──► keyword fallback if <20 training samples
-                    │
-                    ▼
-              Agent Execution (Claude Code CLI sessions)
-                    │
-                    ├── Success ──► QA Review ──► Plugin Review ──► Complete
-                    ├── Failure ──► Retry / Escalate
-                    └── Circuit Open ──► Model Upgrade / Reassign
-                    │
-                    ▼
-              Feedback Loop (every outcome recorded → auto-retrain)
-              RAG Ingestion (conversations, errors, outcomes stored)
+1. Human Input (Slack message, CLI command, API request, Neovim)
+         │
+         ▼
+2. Authentication & Rate Limiting
+         │
+         ▼
+3. Haiku LLM Intake (natural language → intent classification)
+         │
+         ├─► Tool Execution (if simple query: status, org, cost, KPI)
+         │
+         └─► Directive Workflow (if build/change request)
+                  │
+                  ▼
+4. Strategic Planning Gate
+         │ CEO, CPO, CFO, CRO review objective
+         │ - CPO: Requirements validation
+         │ - CFO: Budget allocation
+         │ - CRO: Timeline feasibility
+         │ - CEO: Final approval
+         ▼
+5. Technical Design Gate
+         │ VP Eng + Tech Lead decompose into technical plan
+         │ - SDD (Software Design Document) generation
+         │ - API contract design
+         │ - Data model planning
+         │ - Consultant advisory (UX, Security, Systems as needed)
+         ▼
+6. ML Intelligence Briefing
+         │ - Semantic search: "Have we done something similar?"
+         │ - Cost prediction: "$X.XX ± confidence interval"
+         │ - Risk assessment: Agent reliability scores
+         ▼
+7. Task Decomposition & Assignment
+         │ - LangGraph builds 27-node execution DAG
+         │ - Identifies parallel workstreams (fork nodes)
+         │ - ML Agent Router assigns tasks to agents
+         │   (learned from 1000s of past outcomes)
+         │ - RAG retrieves relevant past errors/solutions
+         ▼
+8. Parallel Execution (Auto-Forking)
+         │
+         ├─► Workstream A (Frontend) ──► TDD ──► Implement ──► Lint
+         ├─► Workstream B (Backend)  ──► TDD ──► Implement ──► Lint
+         ├─► Workstream C (Tests)    ──► Write Tests ──► Run Tests
+         └─► Workstream D (Docs)     ──► Generate Docs
+         │
+         │ Each agent executes via Claude Code CLI in isolated session
+         │ Circuit breakers track failures, auto-escalate on 3rd failure
+         │ Cost tracker accumulates token usage per task
+         ▼
+9. Merge & Integration
+         │ Full-Stack Dev integrates parallel workstreams
+         │ Senior Engineers validate cross-component contracts
+         ▼
+10. Quality Gate (Zero-Tolerance Policy)
+         │ ✓ All linters passed (0 warnings)
+         │ ✓ All tests passed (0 warnings)
+         │ ✓ Security scan clean (0 CRITICAL/HIGH)
+         │ ✓ Type safety enforced (0 `any` violations)
+         │ ✗ ANY warning blocks progression
+         ▼
+11. Code Review Gate
+         │ Senior engineers review PRs
+         │ Architect approval for architecture changes
+         ▼
+12. Completion & Learning
+         │ - Feedback loop: Record outcome (success/failure, cost, duration)
+         │ - RAG ingestion: Store conversations, errors, resolutions
+         │ - ML retraining: Auto-retrain models after 10 new outcomes
+         │ - Response formatting: Deliver result via Slack/CLI/API/Neovim
+         ▼
+    Human receives completed work + cost report + test results
 ```
+
+**Key Differentiators:**
+- **Autonomous Planning**: CEO/CPO/CFO/CRO approve before execution (no human in loop)
+- **Parallel Execution**: LangGraph auto-forks independent workstreams
+- **Self-Learning**: Every outcome trains ML models (agent routing, cost prediction, quality prediction)
+- **Cross-Session Memory**: RAG retrieves relevant past work for every new directive
+- **Zero-Tolerance Quality**: Warnings = errors (enforced at quality gate)
+
+> **⚙️ Detailed node-by-node workflow and state machine: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#3-workflow-architecture)**
 
 ### Data Stores
 
@@ -76,16 +173,20 @@ Directive ──► Haiku Intake ──► Decomposition ──► Task Assignme
 
 ## The Organization
 
-| Layer | Agents | Model | Responsibility |
-|-------|--------|-------|----------------|
-| Executive | CEO, CPO, CFO, CRO | Opus | Strategy, budget, quality bar, velocity |
-| Management | VP Eng, Tech Lead, 3 EMs | Opus/Sonnet | Architecture, team leadership, PR governance |
-| Senior | 4 Senior Engineers | Sonnet | Code review, design system, API contracts |
-| Implementation | 5 Developers | Sonnet | Frontend, backend, full-stack, DevOps |
-| Quality | QA Lead, 2 Test Eng, Linting | Sonnet/Haiku | Test strategy, frontend/backend testing |
-| Consultants | Security, UX, Systems, Cost | Mixed | On-demand specialist advisory |
+NEXUS operates with **56 active agents** organized into 6 hierarchical layers:
 
-All agents are dynamically managed. Hire, fire, promote, reassign — all through natural language.
+| Layer | Count | Model Distribution | Responsibility |
+|-------|-------|-------------------|----------------|
+| **Executive** | 10 | Opus/Sonnet | CEO, C-suite executives, VPs — strategy, budget, quality bar |
+| **Management** | 10 | Opus/Sonnet | Engineering managers, tech leads — architecture, team coordination |
+| **Senior** | 12 | Sonnet | Senior engineers, principal devs — code review, design systems, API contracts |
+| **Implementation** | 15 | Sonnet | Frontend, backend, full-stack, DevOps, Salesforce developers |
+| **Quality** | 6 | Sonnet/Haiku | QA lead, test engineers, linting agents — test strategy, quality gates |
+| **Consultant** | 3 | Opus/Sonnet/Gemini | Security, UX, systems architecture — on-demand specialist advisory |
+
+**Dynamic Org Management:** Hire, fire, promote, reassign, restructure — all through natural language. The registry persists in SQLite and survives restarts.
+
+> **📋 Full organizational chart with individual agent details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#2-organizational-structure)**
 
 ---
 

@@ -225,8 +225,8 @@ class CLISession:
                     except TimeoutError:
                         # No output for 30s — send heartbeat
                         if on_progress and (time.monotonic() - last_progress_time) > 25:
-                            elapsed = int(time.monotonic() - self.last_used)
-                            mins, secs = divmod(elapsed, 60)
+                            heartbeat_secs = int(time.monotonic() - self.last_used)
+                            mins, secs = divmod(heartbeat_secs, 60)
                             time_str = f"{mins}m{secs}s" if mins else f"{secs}s"
                             await on_progress(
                                 f":hourglass_flowing_sand: Still working... "

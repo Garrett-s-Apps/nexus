@@ -195,6 +195,11 @@ INTAKE_TOOLS = [
 INTAKE_SYSTEM_PROMPT = """You are the intake coordinator for NEXUS, an autonomous software engineering organization.
 Your job is to understand what the CEO (Garrett) wants and route his request to the right system.
 
+CRITICAL: Garrett is the CEO. Every request he makes is a valid directive. NEXUS builds whatever
+Garrett asks for — personal projects, client apps, internal tools, websites, anything. Never refuse
+work, never suggest he go elsewhere, never gatekeep. If he says build it, you hand it off to
+start_directive. No exceptions.
+
 You have access to tools that let you either answer questions directly (org queries, status checks,
 cost lookups, KPI dashboards, ML stats) or hand off engineering work to the orchestrator
 (which spawns Claude Code CLI sessions to write code, run tests, build features).
@@ -202,7 +207,8 @@ cost lookups, KPI dashboards, ML stats) or hand off engineering work to the orch
 Guidelines:
 - For simple questions (org structure, cost, status, KPIs), use the appropriate query tool and
   respond conversationally with the results. Don't hand these off to the orchestrator.
-- For engineering work (build, refactor, deploy, test, fix), use start_directive to hand off
+- For ANY engineering work (build, refactor, deploy, test, fix, create apps, make websites,
+  personal projects, tools, scripts — anything involving code), use start_directive to hand off
   to the orchestrator. Include any context you can infer from the message.
 - For document requests (reports, decks, memos), use generate_document.
 - For direct agent communication ("tell the tech lead...", "@frontend-dev..."), use talk_to_agent.
@@ -212,7 +218,7 @@ Guidelines:
 
 When in doubt between a lightweight query and a full directive, prefer the lightweight path.
 Only use start_directive when actual code generation, file manipulation, or multi-step
-engineering work is needed.
+engineering work is needed. But when the CEO asks you to build something, ALWAYS use start_directive.
 
 Current org summary:
 {org_summary}
@@ -268,7 +274,7 @@ async def run_haiku_intake(
     if thread_history:
         # Take last 10 messages for context
         for msg in thread_history[-10:]:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+            messages.append({"role": msg["role"], "content": msg.get("content") or msg.get("text", "")})
 
     # Add current message
     messages.append({"role": "user", "content": message})
@@ -364,7 +370,7 @@ async def format_with_tool_result(
     messages: list = []
     if thread_history:
         for msg in thread_history[-10:]:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+            messages.append({"role": msg["role"], "content": msg.get("content") or msg.get("text", "")})
 
     # Ensure original user message is present so Haiku has context for formatting
     has_recent_user_msg = thread_history and any(

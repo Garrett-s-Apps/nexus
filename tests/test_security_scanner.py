@@ -1,15 +1,12 @@
 """Tests for NEXUS Security Scanner — secret detection, SAST patterns, and audit reports."""
 
-import os
 import pytest
 
 from src.security.scanner import (
-    scan_secrets,
-    scan_sast,
-    run_full_audit,
     generate_audit_summary,
-    SECRET_PATTERNS,
-    SAST_PATTERNS,
+    run_full_audit,
+    scan_sast,
+    scan_secrets,
 )
 
 

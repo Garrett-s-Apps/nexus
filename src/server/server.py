@@ -9,15 +9,22 @@ FastAPI on localhost:4200.
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
+import re
+import sqlite3
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
 
 from fastapi import FastAPI, Request
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 logger = logging.getLogger("nexus.server")
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -25,6 +32,11 @@ from src.agents.org_chart import get_org_summary
 from src.cost.api_routes import router as costwise_router
 from src.memory.store import memory
 from src.observability.api_routes import router as metrics_router
+from src.security.audit_log import (
+    log_auth_attempt,
+    log_rate_limit_violation,
+    log_session_event,
+)
 from src.security.auth_gate import (
     AUTH_COOKIE,
     SESSION_TTL,
@@ -34,6 +46,36 @@ from src.security.auth_gate import (
     verify_session,
 )
 from src.security.jwt_auth import sign_response
+
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to enforce request size limits and prevent DoS attacks (SEC-014).
+
+    Rejects POST/PUT requests exceeding 10MB with 413 Payload Too Large.
+    """
+    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method in ("POST", "PUT"):
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    length = int(content_length)
+                    if length > self.MAX_BODY_SIZE:
+                        logger.warning(
+                            "Request size limit exceeded: %d bytes from %s",
+                            length,
+                            _get_client_ip(request),
+                        )
+                        return JSONResponse(
+                            {"error": f"Request too large (max {self.MAX_BODY_SIZE // (1024*1024)}MB)"},
+                            status_code=413,
+                        )
+                except (ValueError, TypeError):
+                    logger.warning("Invalid content-length header: %s", content_length)
+
+        return await call_next(request)
 
 
 def _register_background_jobs():
@@ -112,6 +154,10 @@ async def _start_slack():
 
 
 app = FastAPI(title="NEXUS", version="3.0.0", lifespan=lifespan)
+
+# SEC-014: Add request size limit middleware to prevent DoS
+app.add_middleware(RequestSizeLimitMiddleware)
+
 app.include_router(metrics_router)
 app.include_router(costwise_router)
 
@@ -123,22 +169,53 @@ _ALLOWED_ORIGINS = [
     "https://nexus-dashboard-black-nine.vercel.app",
 ]
 
+# Load allowed tunnel IDs from environment (comma-separated list)
+# Example: ALLOWED_TUNNEL_IDS=abc123,def456,ghi789
+_ALLOWED_TUNNEL_IDS = [
+    tid.strip()
+    for tid in os.environ.get("ALLOWED_TUNNEL_IDS", "").split(",")
+    if tid.strip()
+]
+
 
 def _origin_allowed(origin: str) -> bool:
-    """Allow listed origins plus any *.trycloudflare.com tunnel."""
-    return origin in _ALLOWED_ORIGINS or (
-        origin.endswith(".trycloudflare.com") and origin.startswith("https://")
-    )
+    """
+    Allow listed origins plus explicitly whitelisted Cloudflare tunnels.
+
+    SEC-007 fix: Replaces wildcard regex with explicit tunnel ID whitelist.
+    Only allows *.trycloudflare.com origins where the tunnel ID is in the whitelist.
+    """
+    # Allow explicitly configured origins
+    if origin in _ALLOWED_ORIGINS:
+        return True
+
+    # Validate Cloudflare tunnel origins with explicit tunnel ID whitelist
+    if origin.startswith("https://") and origin.endswith(".trycloudflare.com"):
+        match = re.match(r'^https://([a-z0-9-]+)\.trycloudflare\.com$', origin)
+        if match:
+            tunnel_id = match.group(1)
+            return tunnel_id in _ALLOWED_TUNNEL_IDS
+
+    return False
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"https://.*\.trycloudflare\.com",
-    allow_origins=_ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Nexus-JWT"],
-)
+@app.middleware("http")
+async def cors_middleware(request: Request, call_next):
+    """
+    Custom CORS middleware with explicit tunnel ID validation (SEC-007).
+    Replaces vulnerable wildcard CORS configuration.
+    """
+    origin = request.headers.get("origin", "")
+    response = await call_next(request)
+
+    if _origin_allowed(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-Nexus-JWT"
+        response.headers["Access-Control-Max-Age"] = "3600"
+
+    return response
 
 
 @app.middleware("http")
@@ -171,6 +248,23 @@ async def jwt_signing_middleware(request: Request, call_next):
         media_type=response.media_type,
     )
 
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """
+    Add security headers to all responses (SEC-010).
+
+    Protects against MIME sniffing, clickjacking, XSS, and other
+    common web vulnerabilities.
+    """
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none';"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 
 _PUBLIC_PATHS = {
@@ -208,8 +302,11 @@ async def auth_gate_middleware(request: Request, call_next):
 
     user_agent = request.headers.get("user-agent", "")
     client_ip = _get_client_ip(request)
+    accept_language = request.headers.get("accept-language", "")
+    accept_encoding = request.headers.get("accept-encoding", "")
+    ssl_session_id = request.scope.get("ssl_session_id", "")
 
-    if not verify_session(session_id, user_agent=user_agent, client_ip=client_ip):
+    if not verify_session(session_id, user_agent=user_agent, client_ip=client_ip, accept_language=accept_language, accept_encoding=accept_encoding, ssl_session_id=ssl_session_id):
         from starlette.responses import JSONResponse
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
@@ -220,39 +317,194 @@ async def auth_gate_middleware(request: Request, call_next):
 # Auth endpoints
 # ---------------------------------------------------------------------------
 
-# Rate limiting for login attempts
-_login_attempts: dict[str, list[float]] = {}
-_MAX_LOGIN_ATTEMPTS = 5
-_RATE_LIMIT_WINDOW = 60  # seconds
+# SEC-005: Persistent rate limiting with progressive delays
+RATE_LIMIT_DB = Path("~/.nexus/rate_limits.db").expanduser()
+
+# Progressive lockout thresholds
+_RATE_LIMITS = [
+    (5, 60),          # 5 attempts → 1 minute
+    (10, 600),        # 10 attempts → 10 minutes
+    (15, 3600),       # 15 attempts → 1 hour
+    (20, float('inf')) # 20 attempts → permanent
+]
 
 
-def _cleanup_old_attempts():
-    """Remove attempts older than the rate limit window."""
-    import time
-    cutoff = time.time() - _RATE_LIMIT_WINDOW
-    for ip in list(_login_attempts.keys()):
-        _login_attempts[ip] = [ts for ts in _login_attempts[ip] if ts > cutoff]
-        if not _login_attempts[ip]:
-            del _login_attempts[ip]
+def _init_rate_limit_db():
+    """Initialize the rate limit database with required schema."""
+    RATE_LIMIT_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(RATE_LIMIT_DB)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            ip TEXT PRIMARY KEY,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            first_attempt_at REAL NOT NULL,
+            last_attempt_at REAL NOT NULL,
+            locked_until REAL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS security_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL NOT NULL,
+            ip TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            details TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
 
-def _check_rate_limit(ip: str) -> bool:
-    """Check if IP has exceeded rate limit. Returns True if allowed, False if rate limited."""
-    import time
-    _cleanup_old_attempts()
+def _get_real_client_ip(request: Request) -> str:
+    """
+    Extract and validate client IP, preventing header spoofing.
 
-    attempts = _login_attempts.get(ip, [])
-    if len(attempts) >= _MAX_LOGIN_ATTEMPTS:
-        return False
+    SEC-005: Only trust X-Forwarded-For from known trusted proxies.
+    Validates IP format to prevent injection attacks.
+    """
+    trusted_proxies = {"127.0.0.1", "::1"}
 
-    _login_attempts.setdefault(ip, []).append(time.time())
-    return True
+    # Only trust X-Forwarded-For if request comes from trusted proxy
+    if request.client and request.client.host in trusted_proxies:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            ip_str = forwarded.split(",")[0].strip()
+            try:
+                # Validate IP format
+                ipaddress.ip_address(ip_str)
+                return ip_str  # type: ignore[no-any-return]
+            except ValueError:
+                logger.warning("Invalid IP in X-Forwarded-For: %s", ip_str)
+
+    # Fallback to direct connection IP
+    return request.client.host if request.client else "127.0.0.1"
+
+
+def _log_security_event(ip: str, event_type: str, details: str = ""):
+    """Log security events for audit trail (legacy function, delegates to audit_log)."""
+    try:
+        conn = sqlite3.connect(RATE_LIMIT_DB)
+        conn.execute(
+            "INSERT INTO security_events (timestamp, ip, event_type, details) VALUES (?, ?, ?, ?)",
+            (time.time(), ip, event_type, details)
+        )
+        conn.commit()
+        conn.close()
+        logger.warning("Security event [%s] from %s: %s", event_type, ip, details)
+    except Exception as e:
+        logger.error("Failed to log security event: %s", e)
+
+
+def _check_rate_limit_persistent(ip: str) -> tuple[bool, str]:
+    """
+    Check persistent rate limit with progressive delays.
+
+    Returns:
+        (allowed: bool, reason: str)
+    """
+    _init_rate_limit_db()
+
+    conn = sqlite3.connect(RATE_LIMIT_DB)
+    cursor = conn.cursor()
+
+    now = time.time()
+
+    # Get current attempt record
+    row = cursor.execute(
+        "SELECT attempt_count, locked_until FROM login_attempts WHERE ip = ?",
+        (ip,)
+    ).fetchone()
+
+    if row:
+        attempt_count, locked_until = row
+
+        # Check if currently locked
+        if locked_until and now < locked_until:
+            conn.close()
+            remaining = int(locked_until - now)
+            if locked_until == float('inf'):
+                _log_security_event(ip, "RATE_LIMIT_PERMANENT", f"Permanently blocked after {attempt_count} attempts")
+                return False, "permanently blocked"
+            else:
+                _log_security_event(ip, "RATE_LIMIT_ACTIVE", f"Locked for {remaining}s (attempt {attempt_count})")
+                return False, f"locked for {remaining} seconds"
+
+    conn.close()
+    return True, "allowed"
+
+
+def _record_failed_login(ip: str):
+    """
+    Record a failed login attempt and apply progressive lockout.
+    """
+    _init_rate_limit_db()
+
+    conn = sqlite3.connect(RATE_LIMIT_DB)
+    cursor = conn.cursor()
+
+    now = time.time()
+
+    # Get or create attempt record
+    row = cursor.execute(
+        "SELECT attempt_count, first_attempt_at FROM login_attempts WHERE ip = ?",
+        (ip,)
+    ).fetchone()
+
+    if row:
+        attempt_count = row[0] + 1
+        first_attempt_at = row[1]
+    else:
+        attempt_count = 1
+        first_attempt_at = now
+
+    # Determine lockout duration based on progressive thresholds
+    locked_until = None
+    for threshold, duration in _RATE_LIMITS:
+        if attempt_count >= threshold:
+            if duration == float('inf'):
+                locked_until = float('inf')
+                _log_security_event(ip, "PERMANENT_LOCKOUT", f"Permanently locked after {attempt_count} attempts")
+                # Log to audit log (SEC-015)
+                log_rate_limit_violation(
+                    user_ip=ip,
+                    attempt_count=attempt_count,
+                    lockout_duration=None,
+                    details={"lockout_type": "permanent"},
+                )
+            else:
+                locked_until = now + duration
+                _log_security_event(ip, "PROGRESSIVE_LOCKOUT", f"Locked for {duration}s after {attempt_count} attempts")
+                # Log to audit log (SEC-015)
+                log_rate_limit_violation(
+                    user_ip=ip,
+                    attempt_count=attempt_count,
+                    lockout_duration=int(duration),
+                    details={"lockout_type": "progressive"},
+                )
+
+    # Upsert attempt record
+    cursor.execute("""
+        INSERT INTO login_attempts (ip, attempt_count, first_attempt_at, last_attempt_at, locked_until)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(ip) DO UPDATE SET
+            attempt_count = ?,
+            last_attempt_at = ?,
+            locked_until = ?
+    """, (ip, attempt_count, first_attempt_at, now, locked_until,
+          attempt_count, now, locked_until))
+
+    conn.commit()
+    conn.close()
 
 
 def _clear_rate_limits():
     """Clear all rate limit tracking. Used for testing."""
-    global _login_attempts
-    _login_attempts = {}
+    if RATE_LIMIT_DB.exists():
+        conn = sqlite3.connect(RATE_LIMIT_DB)
+        conn.execute("DELETE FROM login_attempts")
+        conn.execute("DELETE FROM security_events")
+        conn.commit()
+        conn.close()
 
 
 class LoginRequest(BaseModel):
@@ -261,22 +513,61 @@ class LoginRequest(BaseModel):
 
 @app.post("/auth/login")
 async def auth_login(req: LoginRequest, request: Request):
-    """Verify passphrase and set httponly session cookie."""
-    client_ip = _get_client_ip(request)
+    """
+    Verify passphrase and set httponly session cookie.
 
-    if not _check_rate_limit(client_ip):
+    SEC-005: Uses persistent rate limiting with progressive delays.
+    SEC-015: Logs authentication attempts and events.
+    """
+    # SEC-005: Use validated IP extraction
+    client_ip = _get_real_client_ip(request)
+
+    # SEC-005: Check persistent rate limit
+    allowed, reason = _check_rate_limit_persistent(client_ip)
+    if not allowed:
         from starlette.responses import JSONResponse
+        # Log rate limit rejection (SEC-015)
+        log_rate_limit_violation(
+            user_ip=client_ip,
+            attempt_count=0,
+            details={"reason": reason},
+        )
         return JSONResponse(
-            {"error": "too many attempts, try again later"},
+            {"error": f"rate limited: {reason}"},
             status_code=429
         )
 
+    # Verify passphrase
+    user_agent = request.headers.get("user-agent", "")
     if not verify_passphrase(req.passphrase):
+        # SEC-005: Record failed attempt with progressive lockout
+        _record_failed_login(client_ip)
+        # SEC-015: Log failed authentication
+        log_auth_attempt(
+            success=False,
+            user_ip=client_ip,
+            user_agent=user_agent,
+            failure_reason="invalid_passphrase",
+        )
         from starlette.responses import JSONResponse
         return JSONResponse({"error": "invalid passphrase"}, status_code=403)
 
-    user_agent = request.headers.get("user-agent", "")
-    session_id = create_session(user_agent=user_agent, client_ip=client_ip)
+    # Successful login - create session
+    accept_language = request.headers.get("accept-language", "")
+    accept_encoding = request.headers.get("accept-encoding", "")
+    ssl_session_id = request.scope.get("ssl_session_id", "")
+    session_id = create_session(user_agent=user_agent, client_ip=client_ip, accept_language=accept_language, accept_encoding=accept_encoding, ssl_session_id=ssl_session_id)
+
+    # SEC-005: Log successful authentication (legacy)
+    _log_security_event(client_ip, "LOGIN_SUCCESS", f"user-agent: {user_agent}")
+
+    # SEC-015: Log successful authentication
+    log_auth_attempt(
+        success=True,
+        user_ip=client_ip,
+        user_agent=user_agent,
+        details={"session_created": True},
+    )
 
     from starlette.responses import JSONResponse
     resp = JSONResponse({"ok": True, "token": session_id})
@@ -298,16 +589,27 @@ async def auth_check(request: Request):
     session_id = request.cookies.get(AUTH_COOKIE)
     user_agent = request.headers.get("user-agent", "")
     client_ip = _get_client_ip(request)
-    valid = verify_session(session_id, user_agent=user_agent, client_ip=client_ip)
+    accept_language = request.headers.get("accept-language", "")
+    accept_encoding = request.headers.get("accept-encoding", "")
+    ssl_session_id = request.scope.get("ssl_session_id", "")
+    valid = verify_session(session_id, user_agent=user_agent, client_ip=client_ip, accept_language=accept_language, accept_encoding=accept_encoding, ssl_session_id=ssl_session_id)
     return {"authenticated": valid}
 
 
 @app.post("/auth/logout")
 async def auth_logout(request: Request):
-    """Destroy the session and clear the cookie."""
+    """Destroy the session and clear the cookie (SEC-015)."""
     session_id = request.cookies.get(AUTH_COOKIE)
+    client_ip = _get_client_ip(request)
     if session_id:
         invalidate_session(session_id)
+        # Log logout (SEC-015)
+        log_session_event(
+            event="destroyed",
+            session_id=session_id,
+            user_ip=client_ip,
+            details={"reason": "logout_endpoint"},
+        )
     from starlette.responses import JSONResponse
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(AUTH_COOKIE, path="/")
@@ -324,6 +626,21 @@ async def handle_message(req: MessageRequest):
     from src.orchestrator.engine import engine
     response = await engine.handle_message(req.message, req.source)
     return {"response": response}
+
+
+class MetaRequest(BaseModel):
+    directive: str
+    services: list[str] = []
+
+
+@app.post("/meta")
+async def meta_orchestrate(req: MetaRequest):
+    """ARCH-014: Meta-orchestration for multi-service directives."""
+    from src.orchestrator.meta_orchestrator import MetaOrchestrator
+
+    meta = MetaOrchestrator(services=req.services if req.services else None)
+    result = await meta.orchestrate_multi_service(req.directive)
+    return result
 
 
 @app.get("/events")
@@ -385,7 +702,7 @@ async def get_services():
 
 @app.get("/health")
 async def health():
-    from datetime import UTC, datetime
+    from datetime import UTC
 
     from starlette.responses import JSONResponse
 
@@ -505,7 +822,6 @@ async def health():
 @app.get("/health/detail")
 async def health_detail():
     """Detailed health check with per-subsystem diagnostics."""
-    from datetime import datetime
 
     from starlette.responses import JSONResponse
 

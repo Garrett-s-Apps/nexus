@@ -16,8 +16,9 @@ import re
 import uuid
 from datetime import UTC, datetime
 
+from src.agents.analyzer import AnalyzerAgent
 from src.agents.base import Agent
-from src.agents.org_chart import ORG_CHART
+from src.agents.registry import registry
 from src.memory.store import memory
 
 logger = logging.getLogger("nexus.agent")
@@ -52,9 +53,9 @@ def extract_json(text: str) -> dict | list | None:
 async def peer_consult(agent_a: Agent, agent_b_id: str, question: str,
                         directive_id: str) -> str:
     """Two agents consult on a question and reach a fast decision."""
-    agent_b_info = ORG_CHART.get(agent_b_id, {})
-    b_name = agent_b_info.get("name", agent_b_id)
-    b_role = agent_b_info.get("role", "colleague")
+    agent_b = registry.get_agent(agent_b_id)
+    b_name = agent_b.name if agent_b else agent_b_id
+    b_role = agent_b.description if agent_b else "colleague"
 
     prompt = f"""You are {agent_a.name} ({agent_a.title}).
 You're consulting with {b_name} ({b_role}) on this question:
@@ -440,6 +441,156 @@ JSON ONLY.""", max_tokens=1500)
 
 
 # ---------------------------------------------------------------------------
+# Architect — final authority on all code changes (ARCH-010)
+# ---------------------------------------------------------------------------
+class ArchitectAgent(Agent):
+    """Final authority on all code changes. Reviews for architecture compliance.
+
+    The Architect agent has veto power over ANY change. This is an agent-to-agent
+    approval gate — no user prompts involved.
+    """
+
+    async def do_work(self, decision, directive_id):
+        directive = memory.get_directive(directive_id)
+        if not directive:
+            return "No directive"
+        return await self.review_changes({"directive_id": directive_id})
+
+    async def review_changes(self, context: dict) -> dict:
+        """Review all changes for architecture soundness, security, performance, quality.
+
+        Returns: {approved: bool, feedback: str, required_changes: list}
+        """
+        directive_id = context.get("directive_id", "")
+        directive = memory.get_directive(directive_id) if directive_id else None
+
+        # Gather all context for review
+        code_entries = memory.get_context_for_directive(directive_id) if directive_id else []
+        code_summaries = []
+        for e in code_entries[-10:]:
+            if e["type"] in ("code", "defect_fix"):
+                code_summaries.append(f"[{e['author']}] {str(e['content'])[:500]}")
+
+        arch_context = memory.get_latest_context(directive_id, "architecture") if directive_id else None
+        qa_reviews = [e for e in code_entries if e["type"] == "qa_review"]
+
+        review_prompt = f"""You are the Chief Architect with FINAL AUTHORITY on all code changes.
+Review the following for architecture compliance. Be decisive.
+
+DIRECTIVE: {directive['text'] if directive else 'Unknown'}
+{f"ARCHITECTURE: {arch_context['content'][:1500]}" if arch_context else "No architecture doc found."}
+
+CODE CHANGES:
+{chr(10).join(code_summaries) if code_summaries else "No code changes found."}
+
+QA RESULTS:
+{chr(10).join(str(e['content'])[:300] for e in qa_reviews[-3:]) if qa_reviews else "No QA results."}
+
+Evaluate:
+1. Architecture soundness — does the code follow the approved design?
+2. Security — any vulnerabilities or trust boundary violations?
+3. Performance — any obvious bottlenecks or anti-patterns?
+4. Quality — maintainability, readability, error handling?
+
+JSON response:
+{{"approved": true/false, "feedback": "brief overall assessment", "required_changes": ["change1", "change2"]}}
+If approved, required_changes should be empty.
+JSON ONLY."""
+
+        response = await self.think(review_prompt, max_tokens=1500)
+        data = extract_json(response)
+
+        if data and isinstance(data, dict):
+            approved = bool(data.get("approved", False))
+            feedback = data.get("feedback", "No feedback provided")
+            required_changes = data.get("required_changes", [])
+
+            memory.post_context(
+                self.agent_id,
+                "architect_review",
+                json.dumps({
+                    "approved": approved,
+                    "feedback": feedback,
+                    "required_changes": required_changes,
+                }),
+                directive_id,
+            )
+
+            return {
+                "approved": approved,
+                "feedback": feedback,
+                "required_changes": required_changes,
+            }
+
+        # Parse failure — reject to be safe
+        return {
+            "approved": False,
+            "feedback": "Architect review could not be parsed. Rejecting for safety.",
+            "required_changes": ["Retry architect review"],
+        }
+
+
+# ---------------------------------------------------------------------------
+# AI Team Agent — ML/AI specialist requiring dual approval (ARCH-013)
+# ---------------------------------------------------------------------------
+class AITeamAgent(Agent):
+    """AI/ML specialist requiring dual approval from orchestrator + architect."""
+
+    specializations = ["ml-engineer", "ai-engineer", "data-engineer"]
+
+    async def execute_with_approval(self, task: dict, orchestrator_approval: bool, architect_approval: bool) -> dict:
+        """Execute ML/AI task only with dual approval.
+
+        Args:
+            task: Task specification
+            orchestrator_approval: VP Engineering approval
+            architect_approval: Architect approval
+
+        Returns:
+            Task result dict
+
+        Raises:
+            PermissionError: If dual approval not granted
+        """
+        if not (orchestrator_approval and architect_approval):
+            raise PermissionError(
+                "AI Team requires dual approval: "
+                f"orchestrator={orchestrator_approval}, architect={architect_approval}"
+            )
+
+        # Log invocation to audit trail
+        logger.info(
+            "[%s] AI Team task approved and executing: %s",
+            self.agent_id,
+            task.get("description", "unknown")[:100]
+        )
+
+        # Record approval in memory
+        memory.post_context(
+            self.agent_id,
+            "ai_team_execution",
+            json.dumps({
+                "task": task.get("id", ""),
+                "description": task.get("description", "")[:200],
+                "orchestrator_approval": orchestrator_approval,
+                "architect_approval": architect_approval,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }),
+            task.get("directive_id", ""),
+        )
+
+        # Execute ML/AI task (would contain actual implementation)
+        return {
+            "status": "completed",
+            "output": f"AI Team executed task: {task.get('description', '')}",
+            "approvals": {
+                "orchestrator": orchestrator_approval,
+                "architect": architect_approval,
+            }
+        }
+
+
+# ---------------------------------------------------------------------------
 # Code Reviewer — reviews code quality, not bugs (that's QA)
 # ---------------------------------------------------------------------------
 class CodeReviewAgent(Agent):
@@ -519,6 +670,7 @@ AGENT_CLASSES = {
     "pm_2": PMAgent,
     "vp_engineering": VPEngineeringAgent,
     "chief_architect": ChiefArchitectAgent,
+    "architect": ArchitectAgent,
     "eng_lead": StubAgent,
     "fe_engineer_1": EngineerAgent,
     "fe_engineer_2": EngineerAgent,
@@ -540,6 +692,10 @@ AGENT_CLASSES = {
     "director_analytics": StubAgent,
     "sr_data_analyst": StubAgent,
     "data_analyst": StubAgent,
+    "analyzer": AnalyzerAgent,
+    "ml_engineer": AITeamAgent,
+    "ai_engineer": AITeamAgent,
+    "data_engineer": AITeamAgent,
 }
 
 
@@ -550,8 +706,32 @@ def create_agent(agent_id: str) -> Agent:
 
 def create_all_agents() -> dict[str, Agent]:
     agents = {}
-    for agent_id in ORG_CHART:
-        agent = create_agent(agent_id)
-        agent.register()
-        agents[agent_id] = agent
+    for agent in registry.get_active_agents():
+        agent_obj = create_agent(agent.id)
+        agent_obj.register()
+        agents[agent.id] = agent_obj
     return agents
+
+
+def get_agent_for_category(category: str) -> str | None:
+    """Get the appropriate agent type for a finding category.
+
+    Args:
+        category: Finding category (SEC, PERF, ARCH, CODE, etc.)
+
+    Returns:
+        Agent type string or None if no agent available
+    """
+    # Map categories to agent types
+    category_to_agent_type = {
+        "SEC": "engineer",  # Security fixes
+        "PERF": "engineer",  # Performance optimization
+        "ARCH": "architect",  # Architecture improvements
+        "CODE": "code_reviewer",  # Code quality fixes
+        "UX": "engineer",  # UX improvements
+        "DATA": "engineer",  # Data integrity fixes
+        "MAINT": "engineer",  # Maintainability improvements
+        "COMP": "engineer",  # Compliance fixes
+    }
+
+    return category_to_agent_type.get(category.upper())

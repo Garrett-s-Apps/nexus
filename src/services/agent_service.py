@@ -66,11 +66,48 @@ class AgentService:
     def list_agent_profiles(self) -> list[AgentProfile]:
         """Get profiles for all active agents."""
         agents = registry.get_active_agents()
+
+        # Batch load performance and reliability data to avoid N+1 queries
+        agent_ids = [a.id for a in agents]
+
+        # Batch load all stats at once
+        try:
+            success_stats = ml_store.get_agent_success_rates_batch(agent_ids)
+        except Exception:
+            success_stats = {}
+
+        try:
+            reliability_stats = registry.get_agent_reliability_batch(agent_ids)
+        except Exception:
+            reliability_stats = {}
+
         profiles = []
         for agent in agents:
-            profile = self.get_agent_profile(agent.id)
-            if profile:
-                profiles.append(profile)
+            profile = AgentProfile(
+                agent_id=agent.id,
+                name=agent.name,
+                model=agent.model,
+                layer=agent.layer,
+                status=agent.status,
+                tools=agent.tools,
+            )
+
+            # Performance stats from batch query
+            if agent.id in success_stats:
+                success_data = success_stats[agent.id]
+                profile.success_rate = success_data.get("success_rate", 0.0)
+                profile.total_tasks = success_data.get("total_tasks", 0)
+                profile.avg_cost = success_data.get("avg_cost", 0.0)
+                profile.avg_defects = success_data.get("avg_defects", 0.0)
+
+            # Circuit breaker stats from batch query
+            if agent.id in reliability_stats:
+                reliability = reliability_stats[agent.id]
+                profile.circuit_trips = reliability.get("circuit_trips", 0)
+                profile.recoveries = reliability.get("recoveries", 0)
+
+            profiles.append(profile)
+
         return profiles
 
 

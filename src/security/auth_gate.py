@@ -18,9 +18,14 @@ import hmac
 import logging
 import os
 import secrets
+import stat
+import tempfile
 import time
 
 from src.config import get_key
+from src.security.audit_log import (
+    log_session_event,
+)
 
 logger = logging.getLogger("nexus.auth_gate")
 
@@ -47,31 +52,59 @@ def _get_passphrase() -> str:
     if not key:
         key = secrets.token_urlsafe(24)
         _persist_key(key)
-        logger.info("Generated dashboard passphrase (check ~/.nexus/.env.keys)")
     return key
 
 
 def _persist_key(key: str):
-    """Append the generated key to the env file with restricted permissions."""
-    from src.config import KEYS_PATH
+    """Persist the generated key using atomic file creation with restricted permissions."""
+    from src.config import KEYS_PATH, NEXUS_DIR
+
     try:
-        fd = os.open(KEYS_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "a") as f:
-            f.write(f"\nNEXUS_DASHBOARD_KEY={key}\n")
-        os.chmod(KEYS_PATH, 0o600)
+        os.makedirs(NEXUS_DIR, mode=0o700, exist_ok=True)
+
+        fd, temp_path = tempfile.mkstemp(dir=NEXUS_DIR, prefix='.env.keys.', text=True)
+        try:
+            with os.fdopen(fd, 'w') as f:
+                os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+                f.write(f"NEXUS_DASHBOARD_KEY={key}\n")
+                f.flush()
+                os.fsync(fd)
+            os.replace(temp_path, KEYS_PATH)
+            logger.info("Dashboard passphrase generated and secured")
+        except OSError as e:
+            logger.error("CRITICAL: Could not persist dashboard key: %s", e)
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise
     except OSError as e:
-        logger.warning("Could not persist dashboard key: %s", e)
+        logger.error("CRITICAL: Could not persist dashboard key: %s", e)
+        raise
 
 
-def _compute_fingerprint(user_agent: str, client_ip: str) -> str:
-    """Hash client identity so sessions can't transfer between browsers/IPs."""
-    raw = f"{user_agent}|{client_ip}".encode()
-    return hashlib.sha256(raw).hexdigest()[:16]
+def _compute_fingerprint(user_agent: str, client_ip: str, accept_language: str = "", accept_encoding: str = "", ssl_session_id: str = "") -> str:
+    """Hash client identity with multi-factor validation to prevent session theft.
+
+    Factors included:
+    - User-Agent: browser/client type
+    - Client IP: network origin
+    - Accept-Language: language preferences
+    - Accept-Encoding: compression support
+    - SSL Session ID: TLS session binding
+    """
+    factors = [
+        user_agent,
+        client_ip,
+        accept_language,
+        accept_encoding,
+        ssl_session_id,
+    ]
+    raw = "|".join(factors).encode()
+    return hashlib.sha256(raw).hexdigest()[:32]
 
 
-def create_session(user_agent: str = "", client_ip: str = "") -> str:
+def create_session(user_agent: str = "", client_ip: str = "", accept_language: str = "", accept_encoding: str = "", ssl_session_id: str = "") -> str:
     """Create a new session token bound to the client fingerprint."""
-    fingerprint = _compute_fingerprint(user_agent, client_ip)
+    fingerprint = _compute_fingerprint(user_agent, client_ip, accept_language, accept_encoding, ssl_session_id)
     token = secrets.token_urlsafe(32)
     # Sign token+fingerprint together so neither can be swapped independently
     msg = f"{token}:{fingerprint}".encode()
@@ -81,6 +114,14 @@ def create_session(user_agent: str = "", client_ip: str = "") -> str:
         "expiry": time.time() + SESSION_TTL,
         "fingerprint": fingerprint,
     }
+    # Log session creation (SEC-015)
+    log_session_event(
+        event="created",
+        session_id=session_id,
+        user_ip=client_ip,
+        user_agent=user_agent,
+        details={"ttl_seconds": SESSION_TTL},
+    )
     return session_id
 
 
@@ -88,6 +129,9 @@ def verify_session(
     session_id: str | None,
     user_agent: str = "",
     client_ip: str = "",
+    accept_language: str = "",
+    accept_encoding: str = "",
+    ssl_session_id: str = "",
 ) -> bool:
     """Verify a session cookie is valid, not expired, and from the same client."""
     if not session_id:
@@ -105,9 +149,17 @@ def verify_session(
         return False
 
     # Verify fingerprint matches the requesting client
-    fingerprint = _compute_fingerprint(user_agent, client_ip)
+    fingerprint = _compute_fingerprint(user_agent, client_ip, accept_language, accept_encoding, ssl_session_id)
     if not hmac.compare_digest(fingerprint, session["fingerprint"]):
         logger.warning("Session fingerprint mismatch — possible token theft")
+        # Log session theft detection (SEC-015)
+        log_session_event(
+            event="theft_detected",
+            session_id=session_id,
+            user_ip=client_ip,
+            user_agent=user_agent,
+            details={"reason": "fingerprint_mismatch"},
+        )
         _sessions.pop(session_id, None)
         return False
 
@@ -133,3 +185,9 @@ def verify_passphrase(attempt: str) -> bool:
 def invalidate_session(session_id: str):
     """Explicitly destroy a session (logout)."""
     _sessions.pop(session_id, None)
+    # Log session destruction (SEC-015)
+    log_session_event(
+        event="destroyed",
+        session_id=session_id,
+        details={"reason": "logout"},
+    )

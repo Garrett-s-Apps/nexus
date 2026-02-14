@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 
-from src.ml.rag import build_rag_context, rag_status
+from src.ml.rag import build_rag_context_async, rag_status
 
 
 @dataclass
@@ -24,9 +24,9 @@ class KnowledgeService:
             ready=status.get("ready", False),
         )
 
-    def get_context(self, query: str, exclude_source_ids: set[str] | None = None) -> str:
+    async def get_context(self, query: str, exclude_source_ids: set[str] | None = None) -> str:
         """Get RAG context for a query."""
-        return build_rag_context(query, exclude_source_ids=exclude_source_ids)
+        return await build_rag_context_async(query, exclude_source_ids=exclude_source_ids)
 
 
 knowledge_service = KnowledgeService()

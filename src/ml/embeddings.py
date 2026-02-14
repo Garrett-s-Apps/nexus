@@ -8,8 +8,10 @@ TF-IDF if sentence-transformers isn't available.
 Embeddings are stored in ml.db and retrieved via cosine similarity.
 """
 
+import asyncio
 import logging
 import pickle
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -19,6 +21,7 @@ logger = logging.getLogger("nexus.ml.embeddings")
 _model: Any = None
 _fallback_vectorizer: Any = None
 _embedding_dim: int = 384  # all-MiniLM-L6-v2 output dim
+_embedding_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="embedding")
 
 
 def _get_model():
@@ -83,6 +86,64 @@ def encode_batch(texts: list[str]) -> np.ndarray:
         return np.array(embeddings, dtype=np.float32)
 
     return np.array([encode(t) for t in texts], dtype=np.float32)
+
+
+async def encode_async(text: str) -> np.ndarray:
+    """Async encode a single text string into a dense embedding vector.
+
+    Runs the encoding in a thread pool to avoid blocking the event loop.
+    Prevents 50-100ms blocking periods during sentence-transformer inference.
+    """
+    loop = asyncio.get_event_loop()
+
+    model = _get_model()
+    if model is not None:
+        # Run model.encode in thread pool
+        embedding = await loop.run_in_executor(
+            _embedding_executor,
+            lambda: model.encode(text, show_progress_bar=False),
+        )
+        return np.array(embedding, dtype=np.float32)
+
+    # TF-IDF fallback — returns sparse, we densify + pad/truncate to fixed dim
+    vectorizer = _get_fallback_vectorizer()
+    if vectorizer is not None:
+        # Run vectorizer in thread pool
+        def _vectorize(txt: str) -> np.ndarray:
+            try:
+                vec = vectorizer.transform([txt]).toarray()[0]
+            except Exception:
+                # Vectorizer not fitted yet — fit on this text and return
+                vec = vectorizer.fit_transform([txt]).toarray()[0]
+            result = np.zeros(_embedding_dim, dtype=np.float32)
+            result[:min(len(vec), _embedding_dim)] = vec[:_embedding_dim]
+            return result
+
+        return await loop.run_in_executor(_embedding_executor, _vectorize, text)
+
+    # Last resort: hash-based pseudo-embedding
+    return _hash_embedding(text)
+
+
+async def encode_batch_async(texts: list[str]) -> np.ndarray:
+    """Async encode multiple texts into embedding vectors.
+
+    Runs batch encoding in thread pool to prevent event loop blocking.
+    """
+    loop = asyncio.get_event_loop()
+
+    model = _get_model()
+    if model is not None:
+        # Run model.encode in thread pool
+        embeddings = await loop.run_in_executor(
+            _embedding_executor,
+            lambda: model.encode(texts, show_progress_bar=False, batch_size=32),
+        )
+        return np.array(embeddings, dtype=np.float32)
+
+    # Fallback: encode each text async
+    results = await asyncio.gather(*[encode_async(t) for t in texts])
+    return np.array(results, dtype=np.float32)
 
 
 def embedding_to_bytes(embedding: np.ndarray) -> bytes:

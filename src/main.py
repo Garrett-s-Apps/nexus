@@ -40,7 +40,16 @@ def main():
     print(get_org_summary())
     print()
 
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # SEC-014: Add request size limits, concurrency limits, and timeouts
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        limit_concurrency=1000,
+        limit_max_requests=10000,
+        timeout_keep_alive=5,
+    )
 
 
 if __name__ == "__main__":

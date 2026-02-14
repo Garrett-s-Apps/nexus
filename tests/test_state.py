@@ -1,7 +1,6 @@
 """Tests for NEXUS State models — NexusState, WorkstreamTask, PRReview, CostSnapshot."""
 
-import pytest
-from src.orchestrator.state import NexusState, WorkstreamTask, PRReview, CostSnapshot
+from src.orchestrator.state import CostSnapshot, NexusState, PRReview, WorkstreamTask
 
 
 class TestNexusState:

@@ -13,19 +13,19 @@ about decomposition, agent assignment, and budget estimation.
 
 import logging
 
-from src.ml.feedback import find_similar_directives
+from src.ml.feedback import find_similar_directives_async as find_similar_directives
 from src.ml.predictor import predict_cost
 from src.ml.store import ml_store
 
 logger = logging.getLogger("nexus.ml.similarity")
 
 
-def analyze_new_directive(directive_text: str) -> dict:
+async def analyze_new_directive(directive_text: str) -> dict:
     """Analyze a new directive against historical data.
 
     Returns a briefing with similar past work, cost estimate, and risk factors.
     """
-    similar = find_similar_directives(directive_text, top_k=3)
+    similar = await find_similar_directives(directive_text, top_k=3)
     cost_estimate = predict_cost(directive_text)
 
     # Compute average metrics from similar directives

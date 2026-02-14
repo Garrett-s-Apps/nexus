@@ -11,12 +11,13 @@ The ORG_CHART.md auto-regenerates after every change.
 
 import json
 import os
-import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Any
 
 import yaml  # type: ignore[import-untyped]
+
+from src.db.sqlite_store import SQLiteStore
 
 DB_PATH = os.path.expanduser("~/.nexus/registry.db")
 YAML_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "config", "agents.yaml")
@@ -111,19 +112,17 @@ DEFAULT_REPORTING = {
 }
 
 
-class AgentRegistry:
-    """Mutable agent registry backed by SQLite."""
+class AgentRegistry(SQLiteStore):
+    """Mutable agent registry backed by SQLite with thread safety."""
 
     def __init__(self, db_path: str = DB_PATH):
-        self.db_path = db_path
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        super().__init__(db_path)
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_db()
         self._changelog: list[dict] = []
 
     def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn = self._db()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS agents (
                 id TEXT PRIMARY KEY,
@@ -164,12 +163,10 @@ class AgentRegistry:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_circuit_agent ON circuit_events(agent_id)")
         conn.commit()
-        conn.close()
 
     def is_initialized(self) -> bool:
-        conn = sqlite3.connect(self.db_path)
+        conn = self._db()
         count = conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
-        conn.close()
         return bool(count > 0)
 
     def load_from_yaml(self):
@@ -177,7 +174,7 @@ class AgentRegistry:
         with open(yaml_path) as f:
             config = yaml.safe_load(f)
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._db()
         now = time.time()
 
         for agent_id, agent_data in config["agents"].items():
@@ -205,33 +202,45 @@ class AgentRegistry:
 
         self._log_change(conn, "initialized", None, "Loaded initial org from agents.yaml")
         conn.commit()
-        conn.close()
 
     # ============================================
     # READ OPERATIONS
     # ============================================
 
     def get_agent(self, agent_id: str) -> Agent | None:
-        conn = sqlite3.connect(self.db_path)
+        conn = self._db()
         row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
-        conn.close()
         if row:
             return Agent.from_row(row)
         return None
 
+    def get_agents_batch(self, agent_ids: list[str]) -> dict[str, Agent]:
+        """Batch load agents by IDs. Returns dict mapping agent_id -> Agent."""
+        if not agent_ids:
+            return {}
+        conn = self._db()
+        ph = ",".join("?" for _ in agent_ids)
+        # Safe: ph contains only "?" placeholders, no user input in query structure
+        rows = conn.execute(f"SELECT * FROM agents WHERE id IN ({ph})", agent_ids).fetchall()  # noqa: S608
+        return {row[0]: Agent.from_row(row) for row in rows}
+
     def get_active_agents(self) -> list[Agent]:
-        conn = sqlite3.connect(self.db_path)
+        conn = self._db()
         rows = conn.execute(
             "SELECT * FROM agents WHERE status = 'active' OR status = 'temporary'"
         ).fetchall()
-        conn.close()
 
         agents = []
         now = time.time()
         for row in rows:
             agent = Agent.from_row(row)
             if agent.status == "temporary" and agent.temp_expiry and agent.temp_expiry < now:
-                self.fire_agent(agent.id, reason="Temporary contract expired")
+                # Fire agent without awaiting (fire_agent can be sync or async)
+                import asyncio
+                try:
+                    asyncio.create_task(self.fire_agent(agent.id, reason="Temporary contract expired"))
+                except RuntimeError:
+                    pass  # No event loop running, skip cleanup
                 continue
             agents.append(agent)
         return agents
@@ -244,36 +253,40 @@ class AgentRegistry:
         return [a for a in self.get_active_agents() if a.layer == layer]
 
     def get_direct_reports(self, manager_id: str) -> list[Agent]:
-        return [a for a in self.get_active_agents() if a.reports_to == manager_id]
+        """Get direct reports using a targeted SQL query instead of filtering all agents."""
+        conn = self._db()
+        rows = conn.execute(
+            "SELECT * FROM agents WHERE reports_to = ? AND status IN ('active', 'temporary')",
+            (manager_id,)
+        ).fetchall()
+        return [Agent.from_row(row) for row in rows]
 
     def get_agent_by_name(self, name: str) -> Agent | None:
-        conn = sqlite3.connect(self.db_path)
+        conn = self._db()
         row = conn.execute(
             "SELECT * FROM agents WHERE LOWER(name) = LOWER(?) AND status IN ('active', 'temporary')",
             (name,),
         ).fetchone()
-        conn.close()
         if row:
             return Agent.from_row(row)
         return None
 
     def search_agents(self, query: str) -> list[Agent]:
         q = f"%{query.lower()}%"
-        conn = sqlite3.connect(self.db_path)
+        conn = self._db()
         rows = conn.execute(
             """SELECT * FROM agents
                WHERE status IN ('active', 'temporary')
                AND (LOWER(id) LIKE ? OR LOWER(name) LIKE ? OR LOWER(description) LIKE ?)""",
             (q, q, q),
         ).fetchall()
-        conn.close()
         return [Agent.from_row(r) for r in rows]
 
     # ============================================
     # WRITE OPERATIONS (Org Changes)
     # ============================================
 
-    def hire_agent(
+    async def hire_agent(
         self,
         agent_id: str,
         name: str,
@@ -288,111 +301,118 @@ class AgentRegistry:
         temporary: bool = False,
         temp_duration_hours: float | None = None,
     ) -> Agent:
-        now = time.time()
-        temp_expiry = None
-        if temporary and temp_duration_hours:
-            temp_expiry = now + (temp_duration_hours * 3600)
+        async with self._lock:
+            now = time.time()
+            temp_expiry = None
+            if temporary and temp_duration_hours:
+                temp_expiry = now + (temp_duration_hours * 3600)
 
-        conn = sqlite3.connect(self.db_path)
-        conn.execute(
-            """INSERT INTO agents
-               (id, name, model, provider, layer, description, system_prompt,
-                tools, spawns_sdk, reports_to, status, hired_at, temp_expiry, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                agent_id,
-                name,
-                model,
-                provider,
-                layer,
-                description,
-                system_prompt,
-                json.dumps(tools or []),
-                1 if spawns_sdk else 0,
-                reports_to,
-                "temporary" if temporary else "active",
-                now,
-                temp_expiry,
-                json.dumps({}),
-            ),
-        )
-        self._log_change(conn, "hired", agent_id, f"Hired {name} ({model}) in {layer} layer, reports to {reports_to}")
-        conn.commit()
-        conn.close()
+            conn = self._db()
+            conn.execute(
+                """INSERT INTO agents
+                   (id, name, model, provider, layer, description, system_prompt,
+                    tools, spawns_sdk, reports_to, status, hired_at, temp_expiry, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    agent_id,
+                    name,
+                    model,
+                    provider,
+                    layer,
+                    description,
+                    system_prompt,
+                    json.dumps(tools or []),
+                    1 if spawns_sdk else 0,
+                    reports_to,
+                    "temporary" if temporary else "active",
+                    now,
+                    temp_expiry,
+                    json.dumps({}),
+                ),
+            )
+            self._log_change(conn, "hired", agent_id, f"Hired {name} ({model}) in {layer} layer, reports to {reports_to}")
+            conn.commit()
 
-        return self.get_agent(agent_id)  # type: ignore[return-value]
+            return self.get_agent(agent_id)  # type: ignore[return-value]
 
-    def fire_agent(self, agent_id: str, reason: str = "") -> bool:
-        conn = sqlite3.connect(self.db_path)
-        agent = self.get_agent(agent_id)
-        if not agent or agent.status not in ("active", "temporary"):
-            conn.close()
-            return False
+    async def fire_agent(self, agent_id: str, reason: str = "") -> bool:
+        async with self._lock:
+            conn = self._db()
+            agent = self.get_agent(agent_id)
+            if not agent or agent.status not in ("active", "temporary"):
+                return False
 
-        conn.execute(
-            "UPDATE agents SET status = 'fired', fired_at = ? WHERE id = ?",
-            (time.time(), agent_id),
-        )
+            conn.execute(
+                "UPDATE agents SET status = 'fired', fired_at = ? WHERE id = ?",
+                (time.time(), agent_id),
+            )
 
-        orphans = conn.execute(
-            "SELECT id FROM agents WHERE reports_to = ? AND status IN ('active', 'temporary')",
-            (agent_id,),
-        ).fetchall()
+            orphans = conn.execute(
+                "SELECT id FROM agents WHERE reports_to = ? AND status IN ('active', 'temporary')",
+                (agent_id,),
+            ).fetchall()
 
-        if orphans and agent.reports_to:
-            for orphan in orphans:
-                conn.execute(
-                    "UPDATE agents SET reports_to = ? WHERE id = ?",
-                    (agent.reports_to, orphan[0]),
-                )
+            if orphans and agent.reports_to:
+                for orphan in orphans:
+                    conn.execute(
+                        "UPDATE agents SET reports_to = ? WHERE id = ?",
+                        (agent.reports_to, orphan[0]),
+                    )
 
-        self._log_change(conn, "fired", agent_id, f"Fired {agent.name}. Reason: {reason}")
-        conn.commit()
-        conn.close()
-        return True
+            self._log_change(conn, "fired", agent_id, f"Fired {agent.name}. Reason: {reason}")
+            conn.commit()
+            return True
 
-    def reassign_agent(self, agent_id: str, new_manager_id: str) -> bool:
-        conn = sqlite3.connect(self.db_path)
-        conn.execute(
-            "UPDATE agents SET reports_to = ? WHERE id = ? AND status IN ('active', 'temporary')",
-            (new_manager_id, agent_id),
-        )
-        self._log_change(conn, "reassigned", agent_id, f"Now reports to {new_manager_id}")
-        conn.commit()
-        conn.close()
-        return True
+    async def reassign_agent(self, agent_id: str, new_manager_id: str) -> bool:
+        async with self._lock:
+            conn = self._db()
+            conn.execute(
+                "UPDATE agents SET reports_to = ? WHERE id = ? AND status IN ('active', 'temporary')",
+                (new_manager_id, agent_id),
+            )
+            self._log_change(conn, "reassigned", agent_id, f"Now reports to {new_manager_id}")
+            conn.commit()
+            return True
 
-    def update_agent(self, agent_id: str, **kwargs) -> bool:
-        conn = sqlite3.connect(self.db_path)
-        allowed_fields = {"name", "model", "provider", "layer", "description", "system_prompt", "reports_to"}
-        updates = {k: v for k, v in kwargs.items() if k in allowed_fields and v is not None}
+    async def update_agent(self, agent_id: str, **kwargs) -> bool:
+        async with self._lock:
+            conn = self._db()
+            _AGENT_COLS = {
+                "name", "model", "provider", "layer", "description", "system_prompt",
+                "reports_to", "tools", "spawns_sdk", "metadata",
+            }
 
-        if "tools" in kwargs:
-            updates["tools"] = json.dumps(kwargs["tools"])
-        if "spawns_sdk" in kwargs:
-            updates["spawns_sdk"] = 1 if kwargs["spawns_sdk"] else 0
+            # Validate all incoming columns first
+            for k in kwargs:
+                if k not in _AGENT_COLS:
+                    raise ValueError(f"Invalid column: {k}")
 
-        if not updates:
-            conn.close()
-            return False
+            allowed_fields = {"name", "model", "provider", "layer", "description", "system_prompt", "reports_to"}
+            updates = {k: v for k, v in kwargs.items() if k in allowed_fields and v is not None}
 
-        _AGENT_COLS = {
-            "name", "title", "role", "model", "specialty", "layer",
-            "reports_to", "status", "spawns_sdk",
-        }
-        if not set(updates.keys()) <= _AGENT_COLS:
-            bad = set(updates.keys()) - _AGENT_COLS
-            raise ValueError(f"Invalid columns: {bad}")
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
-        values = list(updates.values()) + [agent_id]
-        conn.execute(f"UPDATE agents SET {set_clause} WHERE id = ?", values)  # noqa: S608
-        self._log_change(conn, "updated", agent_id, f"Updated fields: {list(updates.keys())}")
-        conn.commit()
-        conn.close()
-        return True
+            if "tools" in kwargs:
+                updates["tools"] = json.dumps(kwargs["tools"])
+            if "spawns_sdk" in kwargs:
+                updates["spawns_sdk"] = 1 if kwargs["spawns_sdk"] else 0
+            if "metadata" in kwargs:
+                updates["metadata"] = json.dumps(kwargs["metadata"])
 
-    def consolidate_agents(self, agent_ids: list[str], new_agent_id: str, new_name: str, new_description: str) -> Agent | None:
-        agents = [a for aid in agent_ids if (a := self.get_agent(aid)) is not None]
+            if not updates:
+                return False
+
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            values = list(updates.values()) + [agent_id]
+            # Safe: all column names validated against _AGENT_COLS whitelist above
+            conn.execute(f"UPDATE agents SET {set_clause} WHERE id = ?", values)  # noqa: S608
+            self._log_change(conn, "updated", agent_id, f"Updated fields: {list(updates.keys())}")
+            conn.commit()
+            return True
+
+    async def consolidate_agents(self, agent_ids: list[str], new_agent_id: str, new_name: str, new_description: str) -> Agent | None:
+        """Consolidate multiple agents using batch queries instead of N+1 pattern."""
+        # Batch fetch all agents in one query
+        agents_dict = self.get_agents_batch(agent_ids)
+        agents = list(agents_dict.values())
         if not agents:
             return None
 
@@ -411,17 +431,17 @@ class AgentRegistry:
         reports_to = agents[0].reports_to
 
         for aid in agent_ids:
-            self.fire_agent(aid, reason=f"Consolidated into {new_name}")
+            await self.fire_agent(aid, reason=f"Consolidated into {new_name}")
 
-        all_orphans = []
-        conn = sqlite3.connect(self.db_path)
-        for aid in agent_ids:
-            orphans = conn.execute(
-                "SELECT id FROM agents WHERE reports_to = ? AND status IN ('active', 'temporary')",
-                (aid,),
-            ).fetchall()
-            all_orphans.extend([o[0] for o in orphans])
-        conn.close()
+        # Batch fetch all orphans in one query
+        conn = self._db()
+        ph = ",".join("?" for _ in agent_ids)
+        # Safe: ph contains only "?" placeholders, no user input in query structure
+        orphan_rows = conn.execute(
+            f"SELECT id FROM agents WHERE reports_to IN ({ph}) AND status IN ('active', 'temporary')",  # noqa: S608
+            agent_ids
+        ).fetchall()
+        all_orphans = [row[0] for row in orphan_rows]
 
         new_agent = self.hire_agent(
             agent_id=new_agent_id,
@@ -436,15 +456,15 @@ class AgentRegistry:
         )
 
         for orphan_id in all_orphans:
-            self.reassign_agent(orphan_id, new_agent_id)
+            await self.reassign_agent(orphan_id, new_agent_id)
 
-        return new_agent
+        return await new_agent
 
-    def promote_agent(self, agent_id: str, new_model: str) -> bool:
-        return self.update_agent(agent_id, model=new_model)
+    async def promote_agent(self, agent_id: str, new_model: str) -> bool:
+        return await self.update_agent(agent_id, model=new_model)
 
-    def demote_agent(self, agent_id: str, new_model: str) -> bool:
-        return self.update_agent(agent_id, model=new_model)
+    async def demote_agent(self, agent_id: str, new_model: str) -> bool:
+        return await self.update_agent(agent_id, model=new_model)
 
     # ============================================
     # ORG INTROSPECTION (for CEO questions)
@@ -467,27 +487,43 @@ class AgentRegistry:
         return "\n".join(lines)
 
     def get_reporting_tree(self, root_id: str = "ceo", indent: int = 0) -> str:
-        agent = self.get_agent(root_id)
-        if not agent or agent.status not in ("active", "temporary"):
-            return ""
+        """Build reporting tree with a single query instead of N+1 pattern."""
+        # Fetch entire org tree in one query
+        conn = self._db()
+        rows = conn.execute(
+            "SELECT * FROM agents WHERE status IN ('active', 'temporary')"
+        ).fetchall()
 
-        prefix = "  " * indent
-        status_tag = " (temp)" if agent.status == "temporary" else ""
-        line = f"{prefix}{agent.name} [{agent.model}]{status_tag}\n"
+        # Build lookup maps
+        agents_by_id = {row[0]: Agent.from_row(row) for row in rows}
+        reports_by_manager: dict[str, list[Agent]] = {}
+        for agent in agents_by_id.values():
+            if agent.reports_to:
+                reports_by_manager.setdefault(agent.reports_to, []).append(agent)
 
-        reports = self.get_direct_reports(root_id)
-        for report in reports:
-            line += self.get_reporting_tree(report.id, indent + 1)
+        # Recursive tree builder using in-memory maps
+        def build_tree(agent_id: str, depth: int) -> str:
+            agent = agents_by_id.get(agent_id)
+            if not agent:
+                return ""
 
-        return line
+            prefix = "  " * depth
+            status_tag = " (temp)" if agent.status == "temporary" else ""
+            result = f"{prefix}{agent.name} [{agent.model}]{status_tag}\n"
+
+            for report in reports_by_manager.get(agent_id, []):
+                result += build_tree(report.id, depth + 1)
+
+            return result
+
+        return build_tree(root_id, indent)
 
     def get_changelog(self, limit: int = 20) -> list[dict]:
-        conn = sqlite3.connect(self.db_path)
+        conn = self._db()
         rows = conn.execute(
             "SELECT timestamp, action, agent_id, details FROM org_changelog ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
-        conn.close()
         return [
             {"timestamp": r[0], "action": r[1], "agent_id": r[2], "details": r[3]}
             for r in rows
@@ -509,17 +545,16 @@ class AgentRegistry:
 
     def record_circuit_event(self, agent_id: str, event_type: str, reason: str = ""):
         """Record a circuit breaker event for reliability tracking."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._db()
         conn.execute(
             "INSERT INTO circuit_events (agent_id, event_type, reason, timestamp) VALUES (?, ?, ?, ?)",
             (agent_id, event_type, reason, time.time()),
         )
         conn.commit()
-        conn.close()
 
     def get_agent_reliability(self, agent_id: str, window_hours: int = 24) -> dict:
         """Get agent reliability metrics from circuit breaker events."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._db()
         cutoff = time.time() - (window_hours * 3600)
 
         trips = conn.execute(
@@ -532,14 +567,56 @@ class AgentRegistry:
             (agent_id, cutoff),
         ).fetchone()[0]
 
-        conn.close()
-
         return {
             "agent_id": agent_id,
             "circuit_trips": trips,
             "recoveries": recoveries,
             "window_hours": window_hours,
         }
+
+    def get_agent_reliability_batch(self, agent_ids: list[str], window_hours: int = 24) -> dict[str, dict]:
+        """Batch load agent reliability metrics. Returns dict mapping agent_id -> stats."""
+        if not agent_ids:
+            return {}
+
+        conn = self._db()
+        cutoff = time.time() - (window_hours * 3600)
+        ph = ",".join("?" for _ in agent_ids)
+
+        # Get all stats in a single query using GROUP BY
+        # Safe: ph contains only "?" placeholders, no user input in query structure
+        rows = conn.execute(
+            f"""SELECT
+                agent_id,
+                SUM(CASE WHEN event_type='trip' THEN 1 ELSE 0 END) as trips,
+                SUM(CASE WHEN event_type='recovery' THEN 1 ELSE 0 END) as recoveries
+            FROM circuit_events
+            WHERE agent_id IN ({ph}) AND timestamp >= ?
+            GROUP BY agent_id""",  # noqa: S608
+            (*agent_ids, cutoff)
+        ).fetchall()
+
+        result = {}
+        for row in rows:
+            agent_id = row[0]
+            result[agent_id] = {
+                "agent_id": agent_id,
+                "circuit_trips": row[1],
+                "recoveries": row[2],
+                "window_hours": window_hours,
+            }
+
+        # Fill in missing agents with zero stats
+        for agent_id in agent_ids:
+            if agent_id not in result:
+                result[agent_id] = {
+                    "agent_id": agent_id,
+                    "circuit_trips": 0,
+                    "recoveries": 0,
+                    "window_hours": window_hours,
+                }
+
+        return result
 
 
 # Singleton

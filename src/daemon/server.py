@@ -140,8 +140,11 @@ async def auth_gate_middleware(request: Request, call_next):
     client_ip = forwarded.split(",")[0].strip() if forwarded else (
         request.client.host if request.client else "127.0.0.1"
     )
+    accept_language = request.headers.get("accept-language", "")
+    accept_encoding = request.headers.get("accept-encoding", "")
+    ssl_session_id = request.scope.get("ssl_session_id", "")
 
-    if not verify_session(session_id, user_agent=user_agent, client_ip=client_ip):
+    if not verify_session(session_id, user_agent=user_agent, client_ip=client_ip, accept_language=accept_language, accept_encoding=accept_encoding, ssl_session_id=ssl_session_id):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     return await call_next(request)

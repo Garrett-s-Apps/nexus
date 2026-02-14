@@ -11,6 +11,8 @@ import time
 
 import aiosqlite
 
+from src.db.sqlite_store import aconnect_encrypted
+
 DB_PATH = os.path.expanduser("~/.nexus/sessions.db")
 
 
@@ -25,9 +27,7 @@ class SessionStore:
     async def init(self):
         if self._initialized:
             return
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("PRAGMA journal_mode=WAL")
-            await db.execute("PRAGMA busy_timeout=5000")
+        async with aconnect_encrypted(self.db_path) as db:
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
@@ -78,7 +78,7 @@ class SessionStore:
     ) -> dict:
         await self.init()
         now = time.time()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aconnect_encrypted(self.db_path) as db:
             await db.execute(
                 """INSERT INTO sessions (id, directive, source, project_path, status, created_at, updated_at)
                    VALUES (?, ?, ?, ?, 'running', ?, ?)""",
@@ -96,7 +96,7 @@ class SessionStore:
     async def update_status(self, session_id: str, status: str, error: str | None = None):
         await self.init()
         now = time.time()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aconnect_encrypted(self.db_path) as db:
             if status == "complete":
                 await db.execute(
                     "UPDATE sessions SET status = ?, updated_at = ?, completed_at = ?, error = ? WHERE id = ?",
@@ -118,7 +118,7 @@ class SessionStore:
         cost: float = 0.0,
     ):
         await self.init()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aconnect_encrypted(self.db_path) as db:
             await db.execute(
                 """INSERT INTO session_messages (session_id, role, agent, content, cost, timestamp)
                    VALUES (?, ?, ?, ?, ?, ?)""",
@@ -134,7 +134,7 @@ class SessionStore:
     async def save_state(self, session_id: str, state: dict):
         await self.init()
         state_json = json.dumps(state, default=str)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aconnect_encrypted(self.db_path) as db:
             await db.execute(
                 """INSERT OR REPLACE INTO session_state (session_id, state_json, updated_at)
                    VALUES (?, ?, ?)""",
@@ -144,7 +144,7 @@ class SessionStore:
 
     async def get_session(self, session_id: str) -> dict | None:
         await self.init()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aconnect_encrypted(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             row = list(await db.execute_fetchall(
                 "SELECT * FROM sessions WHERE id = ?", (session_id,)
@@ -170,7 +170,7 @@ class SessionStore:
 
     async def get_recent_sessions(self, limit: int = 20) -> list[dict]:
         await self.init()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aconnect_encrypted(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             rows = await db.execute_fetchall(
                 "SELECT id, directive, source, status, created_at, total_cost FROM sessions ORDER BY created_at DESC LIMIT ?",
@@ -180,7 +180,7 @@ class SessionStore:
 
     async def get_session_messages(self, session_id: str) -> list[dict]:
         await self.init()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aconnect_encrypted(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             rows = await db.execute_fetchall(
                 "SELECT * FROM session_messages WHERE session_id = ? ORDER BY timestamp",
@@ -190,7 +190,7 @@ class SessionStore:
 
     async def get_total_cost(self) -> float:
         await self.init()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aconnect_encrypted(self.db_path) as db:
             result = list(await db.execute_fetchall(
                 "SELECT COALESCE(SUM(total_cost), 0) FROM sessions"
             ))

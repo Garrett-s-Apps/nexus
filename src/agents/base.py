@@ -6,27 +6,25 @@ decides if it should act based on its role, and executes work autonomously.
 Teams self-organize scrum-style. Leaders set direction and unblock.
 """
 
-import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
 from src.agents.org_chart import (
-    ALL_AGENT_IDS,
     HAIKU,
     MODEL_COSTS,
     O3,
-    ORG_CHART,
     SONNET,
 )
+from src.agents.registry import registry
 from src.memory.store import memory
 
 logger = logging.getLogger("nexus.agent")
 
 
 # ---------------------------------------------------------------------------
-# LLM Clients — Anthropic + OpenAI
+# LLM Clients — Anthropic (Async) + OpenAI
 # ---------------------------------------------------------------------------
 _anthropic_client = None
 _openai_client = None
@@ -36,10 +34,11 @@ from src.config import get_key as _load_key  # consolidated key loading
 
 
 def get_anthropic_client():
+    """Get async Anthropic client (non-blocking)."""
     global _anthropic_client
     if _anthropic_client is None:
-        from anthropic import Anthropic
-        _anthropic_client = Anthropic(api_key=_load_key("ANTHROPIC_API_KEY"))
+        from anthropic import AsyncAnthropic
+        _anthropic_client = AsyncAnthropic(api_key=_load_key("ANTHROPIC_API_KEY"))
     return _anthropic_client
 
 
@@ -51,12 +50,11 @@ def get_openai_client():
     return _openai_client
 
 
-def llm_call(prompt: str, model: str = HAIKU, system: str = "",
-             max_tokens: int = 4096) -> tuple[str, float]:
-    """Make an LLM call. Routes to Anthropic or OpenAI based on model.
+async def allm_call(prompt: str, model: str = HAIKU, system: str = "",
+                    max_tokens: int = 4096) -> tuple[str, float]:
+    """Make an async LLM call. Routes to Anthropic or OpenAI based on model.
 
-    DEPRECATED: This function still returns (text, cost) tuple for backward compatibility.
-    New code should use the Agent SDK bridge functions that return TaskResult.
+    Uses AsyncAnthropic for Claude models to avoid blocking via thread pool.
     """
     if model == O3:
         client = get_openai_client()
@@ -75,7 +73,7 @@ def llm_call(prompt: str, model: str = HAIKU, system: str = "",
         kwargs = {"model": model, "max_tokens": max_tokens, "messages": messages}
         if system:
             kwargs["system"] = system
-        response = client.messages.create(**kwargs)
+        response = await client.messages.create(**kwargs)
         text = response.content[0].text
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
@@ -83,12 +81,6 @@ def llm_call(prompt: str, model: str = HAIKU, system: str = "",
     rates = MODEL_COSTS.get(model, MODEL_COSTS[SONNET])
     cost = (input_tokens * rates["input"] + output_tokens * rates["output"]) / 1_000_000
     return text, cost
-
-
-async def allm_call(prompt: str, model: str = HAIKU, system: str = "",
-                    max_tokens: int = 4096) -> tuple[str, float]:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, llm_call, prompt, model, system, max_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -130,20 +122,20 @@ class Decision:
 class Agent(ABC):
 
     def __init__(self, agent_id: str):
-        config = ORG_CHART.get(agent_id)
-        if not config:
+        agent = registry.get_agent(agent_id)
+        if not agent:
             raise ValueError(f"Unknown agent: {agent_id}")
 
         self.agent_id = agent_id
-        self.name = config["name"]
-        self.title = config["title"]
-        self.role = config["role"]
-        self.model: str = config["model"]  # type: ignore[assignment]
-        self.reports_to = config["reports_to"]
-        self.direct_reports: list[str] = config["direct_reports"]  # type: ignore[assignment]
-        self.org = config["org"]
-        self.produces = config.get("produces", [])
-        self.specialty: str = config.get("specialty", "")  # type: ignore[assignment]
+        self.name = agent.name
+        self.title = f"{agent.layer.title()} - {agent.description.split('.')[0]}"
+        self.role = agent.description
+        self.model: str = agent.model  # type: ignore[assignment]
+        self.reports_to = agent.reports_to
+        self.direct_reports: list[str] = [a.id for a in registry.get_direct_reports(agent_id)]  # type: ignore[assignment]
+        self.org = agent.layer
+        self.produces: list[str] = []  # type: ignore[assignment]
+        self.specialty: str = agent.metadata.get("specialty", "")  # type: ignore[assignment]
 
         self._total_cost = 0.0
         self._last_context_id = 0
@@ -182,10 +174,13 @@ class Agent(ABC):
                 others += f"\n  - {a['name']} ({a['role']}): {a['last_action'][:60]}"
 
         team_status = ""
-        for report_id in self.direct_reports:
-            agent = memory.get_agent(report_id)
-            if agent:
-                team_status += f"\n  - {agent['name']}: {agent['status']} -- {agent['last_action'][:60]}"
+        if self.direct_reports:
+            # Batch load direct reports to avoid N+1 queries
+            agents_map = memory.get_agents_batch(self.direct_reports)
+            for report_id in self.direct_reports:
+                agent = agents_map.get(report_id)
+                if agent:
+                    team_status += f"\n  - {agent['name']}: {agent['status']} -- {agent['last_action'][:60]}"
 
         board_summary = ""
         if board:
@@ -320,19 +315,29 @@ Respond ONLY with JSON:
                    model: str = SONNET, specialty: str = "") -> str:
         if not self.is_leader:
             return f"{self.name} cannot hire — not a leader."
-        if agent_id in ORG_CHART:
+        if registry.get_agent(agent_id):
             return f"Agent {agent_id} already exists."
 
-        new_agent = {
-            "name": name, "title": title, "role": role, "model": model,
-            "reports_to": self.agent_id, "direct_reports": [], "org": self.org,
-            "produces": [],
-        }
+        metadata = {}
         if specialty:
-            new_agent["specialty"] = specialty
+            metadata["specialty"] = specialty
 
-        ORG_CHART[agent_id] = new_agent
-        ALL_AGENT_IDS.append(agent_id)
+        new_agent = await registry.hire_agent(
+            agent_id=agent_id,
+            name=name,
+            model=model,
+            layer=self.org,
+            description=role,
+            system_prompt=f"{title}: {role}",
+            tools=[],
+            spawns_sdk=False,
+            reports_to=self.agent_id,
+            provider="anthropic",
+        )
+
+        if new_agent and specialty:
+            await registry.update_agent(agent_id, metadata=metadata)
+
         self.direct_reports.append(agent_id)
         memory.register_agent(agent_id, name, title, model)
         memory.emit_event(self.agent_id, "agent_hired", {

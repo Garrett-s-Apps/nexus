@@ -598,10 +598,18 @@ async def auth_check(request: Request):
 
 @app.post("/auth/logout")
 async def auth_logout(request: Request):
-    """Destroy the session and clear the cookie."""
+    """Destroy the session and clear the cookie (SEC-015)."""
     session_id = request.cookies.get(AUTH_COOKIE)
+    client_ip = _get_client_ip(request)
     if session_id:
         invalidate_session(session_id)
+        # Log logout (SEC-015)
+        log_session_event(
+            event="destroyed",
+            session_id=session_id,
+            user_ip=client_ip,
+            details={"reason": "logout_endpoint"},
+        )
     from starlette.responses import JSONResponse
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(AUTH_COOKIE, path="/")

@@ -233,11 +233,11 @@ def log_rate_limit_violation(
     init_audit_db()
 
     # Determine severity based on severity of lockout
-    if lockout_duration == float('inf') or lockout_duration is None:
+    if lockout_duration == float('inf'):
         event_type = AuditEventType.RATE_LIMIT_PERMANENT
         severity = AuditSeverity.CRITICAL
         result = "permanent_lockout"
-    elif lockout_duration:
+    elif lockout_duration is not None and lockout_duration > 0:
         event_type = AuditEventType.RATE_LIMIT_LOCKOUT
         severity = AuditSeverity.WARNING
         result = f"locked_{lockout_duration}s"

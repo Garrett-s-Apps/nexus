@@ -17,8 +17,8 @@ KNOWLEDGE_DB_PATH = os.path.join(NEXUS_DIR, "knowledge.db")
 
 SLACK_CHANNEL_NAME = "garrett-nexus"
 
-# Docker isolation for CLI sessions
-CLI_DOCKER_ENABLED = os.environ.get("NEXUS_CLI_DOCKER", "0") == "1"
+# Docker isolation for CLI sessions (always on, disable with NEXUS_CLI_DOCKER=0)
+CLI_DOCKER_ENABLED = os.environ.get("NEXUS_CLI_DOCKER", "1") != "0"
 CLI_DOCKER_IMAGE = os.environ.get("NEXUS_CLI_DOCKER_IMAGE", "nexus-cli-sandbox")
 
 

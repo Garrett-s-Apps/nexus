@@ -6,17 +6,50 @@ Uses Gemini for content generation, then python-docx/python-pptx/reportlab/PIL
 to create the actual files.
 """
 
+import html
 import json
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime
+from pathlib import Path
 
 import google.genai as genai
 
 logger = logging.getLogger("nexus.documents")
 
 from src.config import get_key as _load_key  # consolidated key loading
+
+# Security: Define allowed output directory
+ALLOWED_OUTPUT_DIR = Path("~/.nexus/documents").expanduser()
+
+
+def sanitize_filename(name: str) -> str:
+    """Sanitize filename to prevent path traversal attacks.
+
+    Removes path separators, null bytes, and restricts to alphanumeric characters
+    plus dash and underscore. Limits length to 255 characters.
+    """
+    # Remove path traversal characters and null bytes
+    safe = re.sub(r'[/\\.\0]', '', name)
+    # Replace any non-alphanumeric (except dash/underscore) with underscore
+    safe = re.sub(r'[^a-zA-Z0-9_-]', '_', safe)
+    # Limit length to filesystem-safe maximum
+    return safe[:255]
+
+
+def sanitize_document_content(content: str) -> str:
+    """Sanitize document content to prevent injection attacks.
+
+    Escapes HTML/XML special characters and removes potentially dangerous
+    script tags or macro content.
+    """
+    # Escape HTML/XML special characters
+    content = html.escape(content)
+    # Remove script tags (case-insensitive, including content)
+    content = re.sub(r'<script.*?</script>', '', content, flags=re.IGNORECASE | re.DOTALL)
+    return content
 
 
 async def _classify_context_needs(message: str) -> list[str]:
@@ -638,11 +671,22 @@ def create_docx(title: str, request: str, output_dir: str | None = None) -> str:
     footer_para._element.append(instrText)
     footer_para._element.append(fldChar2)
 
-    output_dir = output_dir or tempfile.mkdtemp()
-    safe_title = title[:50].replace(" ", "_").replace("/", "_")
-    filepath = os.path.join(output_dir, f"{safe_title}.docx")
-    doc.save(filepath)
-    return filepath
+    # Security: Sanitize output directory and filename
+    if output_dir:
+        output_path = Path(output_dir).resolve()
+        # Verify output path is within allowed directory
+        try:
+            output_path.relative_to(ALLOWED_OUTPUT_DIR)
+        except ValueError:
+            raise ValueError(f"Output directory must be within {ALLOWED_OUTPUT_DIR}")
+    else:
+        output_path = ALLOWED_OUTPUT_DIR
+        output_path.mkdir(parents=True, exist_ok=True)
+
+    safe_title = sanitize_filename(title[:50])
+    filepath = output_path / f"{safe_title}.docx"
+    doc.save(str(filepath))
+    return str(filepath)
 
 
 # ============================================
@@ -937,11 +981,22 @@ def create_pptx(title: str, request: str, output_dir: str | None = None) -> str:
         if slide_data.get("notes"):
             slide.notes_slide.notes_text_frame.text = slide_data["notes"]
 
-    output_dir = output_dir or tempfile.mkdtemp()
-    safe_title = title[:50].replace(" ", "_").replace("/", "_")
-    filepath = os.path.join(output_dir, f"{safe_title}.pptx")
-    prs.save(filepath)
-    return filepath
+    # Security: Sanitize output directory and filename
+    if output_dir:
+        output_path = Path(output_dir).resolve()
+        # Verify output path is within allowed directory
+        try:
+            output_path.relative_to(ALLOWED_OUTPUT_DIR)
+        except ValueError:
+            raise ValueError(f"Output directory must be within {ALLOWED_OUTPUT_DIR}")
+    else:
+        output_path = ALLOWED_OUTPUT_DIR
+        output_path.mkdir(parents=True, exist_ok=True)
+
+    safe_title = sanitize_filename(title[:50])
+    filepath = output_path / f"{safe_title}.pptx"
+    prs.save(str(filepath))
+    return str(filepath)
 
 
 # ============================================
@@ -996,9 +1051,20 @@ def create_pdf(title: str, request: str, output_dir: str | None = None) -> str:
             "sections": [{"heading": "Content", "level": 1, "content": [{"type": "paragraph", "text": content}]}],
         }
 
-    output_dir = output_dir or tempfile.mkdtemp()
-    safe_title = title[:50].replace(" ", "_").replace("/", "_")
-    filepath = os.path.join(output_dir, f"{safe_title}.pdf")
+    # Security: Sanitize output directory and filename
+    if output_dir:
+        output_path = Path(output_dir).resolve()
+        # Verify output path is within allowed directory
+        try:
+            output_path.relative_to(ALLOWED_OUTPUT_DIR)
+        except ValueError:
+            raise ValueError(f"Output directory must be within {ALLOWED_OUTPUT_DIR}")
+    else:
+        output_path = ALLOWED_OUTPUT_DIR
+        output_path.mkdir(parents=True, exist_ok=True)
+
+    safe_title = sanitize_filename(title[:50])
+    filepath = str(output_path / f"{safe_title}.pdf")
 
     # Custom page template with header/footer
     def add_page_elements(canvas, doc):
@@ -1314,11 +1380,20 @@ def _try_gemini_image_generation(description: str, output_path: str) -> bool:
 def create_image(description: str, output_dir: str | None = None) -> str:
     """Generate an image: tries Gemini native generation first, falls back to PIL."""
 
-    output_dir = output_dir or os.path.expanduser("~/.nexus/documents/images")
-    os.makedirs(output_dir, exist_ok=True)
+    # Security: Sanitize output directory and filename
+    if output_dir:
+        output_path = Path(output_dir).resolve()
+        # Verify output path is within allowed directory
+        try:
+            output_path.relative_to(ALLOWED_OUTPUT_DIR)
+        except ValueError:
+            raise ValueError(f"Output directory must be within {ALLOWED_OUTPUT_DIR}")
+    else:
+        output_path = ALLOWED_OUTPUT_DIR / "images"
+        output_path.mkdir(parents=True, exist_ok=True)
 
-    safe_title = description[:50].replace(" ", "_").replace("/", "_").replace("\n", "_")
-    filepath = os.path.join(output_dir, f"{safe_title}.png")
+    safe_title = sanitize_filename(description[:50])
+    filepath = str(output_path / f"{safe_title}.png")
 
     # Try Gemini native image generation
     if _try_gemini_image_generation(description, filepath):
@@ -1551,8 +1626,9 @@ async def generate_document(message: str, doc_info: dict) -> dict:
         system="You extract concise titles. Return only the title text."
     ).strip().strip('"').strip("'")
 
-    output_dir = os.path.expanduser("~/.nexus/documents")
-    os.makedirs(output_dir, exist_ok=True)
+    # Security: Use sanitized output directory
+    output_dir = str(ALLOWED_OUTPUT_DIR)
+    ALLOWED_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Run document creation in a thread pool (they're sync)
     loop = asyncio.get_event_loop()

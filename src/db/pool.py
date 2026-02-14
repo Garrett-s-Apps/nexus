@@ -61,7 +61,7 @@ class AsyncSQLitePool:
 
     async def _create_connection(self) -> aiosqlite.Connection:
         """Create a new encrypted connection with standard pragmas."""
-        async with aconnect_encrypted(str(self.db_path)) as db:
+        async with aconnect_encrypted(str(self.db_path)) as _db:
             # aconnect_encrypted returns an already-open connection
             # We need to return it without closing, so we'll create manually
             pass

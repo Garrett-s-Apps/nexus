@@ -189,7 +189,7 @@ def send_approval_request(title: str, context: dict, approval_id: str) -> dict:
     try:
         result = client.chat_postMessage(channel=channel, blocks=blocks, text=title)
         logger.info("Approval request sent: %s", approval_id)
-        return result
+        return result  # type: ignore[no-any-return]
     except SlackApiError as e:
         logger.error("Failed to send approval request: %s", e.response['error'])
         raise

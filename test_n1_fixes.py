@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Test script to verify N+1 query pattern fixes."""
 
-import sys
 import os
+import sys
 import time
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from agents.registry import AgentRegistry
+
 
 def count_queries(func):
     """Decorator to count SQL queries executed."""
@@ -40,7 +41,7 @@ def count_queries(func):
 def test_get_direct_reports():
     """Test that get_direct_reports uses a single query."""
     print("Testing get_direct_reports() N+1 fix...")
-    registry = AgentRegistry(db_path="/tmp/test_n1_registry.db")
+    registry = AgentRegistry(db_path="/tmp/test_n1_registry.db")  # noqa: S108
 
     if not registry.is_initialized():
         registry.load_from_yaml()
@@ -58,7 +59,7 @@ def test_get_direct_reports():
 def test_get_reporting_tree():
     """Test that get_reporting_tree fetches all agents once."""
     print("\nTesting get_reporting_tree() N+1 fix...")
-    registry = AgentRegistry(db_path="/tmp/test_n1_registry2.db")
+    registry = AgentRegistry(db_path="/tmp/test_n1_registry2.db")  # noqa: S108
 
     if not registry.is_initialized():
         registry.load_from_yaml()
@@ -93,7 +94,7 @@ def test_get_reporting_tree():
 def test_consolidate_agents():
     """Test that consolidate_agents uses batch queries."""
     print("\nTesting consolidate_agents() N+1 fix...")
-    registry = AgentRegistry(db_path="/tmp/test_n1_registry3.db")
+    registry = AgentRegistry(db_path="/tmp/test_n1_registry3.db")  # noqa: S108
 
     if not registry.is_initialized():
         registry.load_from_yaml()
@@ -128,7 +129,7 @@ def performance_comparison():
     print("PERFORMANCE IMPACT ANALYSIS")
     print("="*60)
 
-    registry = AgentRegistry(db_path="/tmp/test_perf_registry.db")
+    registry = AgentRegistry(db_path="/tmp/test_perf_registry.db")  # noqa: S108
     if not registry.is_initialized():
         registry.load_from_yaml()
 
@@ -136,18 +137,18 @@ def performance_comparison():
     agent_count = len(agents)
 
     print(f"\nAgent count: {agent_count}")
-    print(f"\nOld N+1 pattern estimate:")
+    print("\nOld N+1 pattern estimate:")
     print(f"  get_reporting_tree: ~{agent_count} queries")
     print(f"  get_direct_reports (if called {agent_count}x): ~{agent_count * 2} queries")
 
-    print(f"\nNew batch pattern actual:")
+    print("\nNew batch pattern actual:")
     start = time.time()
-    tree = registry.get_reporting_tree("ceo")
+    registry.get_reporting_tree("ceo")
     elapsed = time.time() - start
     print(f"  get_reporting_tree: 1-2 queries, {elapsed*1000:.2f}ms")
 
     start = time.time()
-    reports = registry.get_direct_reports("vp_engineering")
+    registry.get_direct_reports("vp_engineering")
     elapsed = time.time() - start
     print(f"  get_direct_reports: 1 query, {elapsed*1000:.2f}ms")
 

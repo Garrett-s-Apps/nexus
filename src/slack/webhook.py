@@ -69,7 +69,7 @@ class SlackWebhookHandler:
         try:
             # Extract action information
             action = payload.get("actions", [{}])[0]
-            action_id = action.get("action_id")
+            action.get("action_id")
             value = action.get("value", "")
 
             if not value or ":" not in value:

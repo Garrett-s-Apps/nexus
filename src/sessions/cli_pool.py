@@ -164,7 +164,7 @@ class CLISession:
             *env_args,
             "-e", f"NEXUS_CLI_TIMEOUT={DEFAULT_TIMEOUT}",
             "--read-only",
-            "--tmpfs", "/tmp:rw,noexec,nosuid,size=100m",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=100m",  # noqa: S108 - Docker tmpfs mount
             "--security-opt=no-new-privileges",
             "--cap-drop=ALL",
             "--memory=2g",

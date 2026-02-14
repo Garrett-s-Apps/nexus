@@ -14,10 +14,11 @@ Tests cover:
 Uses httpx.AsyncClient with mocked dependencies to avoid starting the full engine.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 from contextlib import asynccontextmanager
-from httpx import AsyncClient, ASGITransport
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from httpx import ASGITransport, AsyncClient
 
 
 # Mock all heavy dependencies before importing the server
@@ -26,7 +27,7 @@ def mock_dependencies():
     """Mock heavy imports to prevent engine startup and module loading."""
     with patch("src.memory.store.memory") as mock_mem, \
          patch("src.orchestrator.engine.engine") as mock_engine, \
-         patch("src.observability.api_routes.router") as mock_router, \
+         patch("src.observability.api_routes.router"), \
          patch("src.agents.org_chart.get_org_summary") as mock_org, \
          patch("src.resilience.health_monitor.health_monitor") as mock_health, \
          patch("src.slack.listener.start_slack_listener") as mock_slack, \
@@ -73,7 +74,7 @@ async def client(mock_passphrase):
     """Create an async test client with a clean session store."""
     # Import after mocks are in place
     from src.security import auth_gate
-    from src.server.server import app, _clear_rate_limits
+    from src.server.server import _clear_rate_limits, app
 
     # Clear session store and rate limiter before each test
     auth_gate._sessions.clear()
@@ -259,7 +260,7 @@ async def test_session_fingerprint_validation(client):
 async def test_rate_limit_progressive_lockout(client):
     """Failed login attempts trigger progressive lockout delays."""
     # 5 failed attempts should trigger 1 minute lockout
-    for i in range(5):
+    for _i in range(5):
         response = await client.post("/auth/login", json={"passphrase": "wrong-pass"})
         assert response.status_code == 403
 
@@ -272,10 +273,10 @@ async def test_rate_limit_progressive_lockout(client):
 @pytest.mark.asyncio
 async def test_rate_limit_persistent_across_restarts(client):
     """Rate limits persist in SQLite database across server restarts."""
-    from src.server.server import _record_failed_login, _check_rate_limit_persistent
+    from src.server.server import _check_rate_limit_persistent, _record_failed_login
 
     # Simulate 10 failed attempts to trigger 10-minute lockout
-    for i in range(10):
+    for _i in range(10):
         _record_failed_login("192.168.1.100")
 
     # Check that the IP is locked
@@ -304,7 +305,8 @@ async def test_rate_limit_ip_validation(client):
 async def test_rate_limit_security_event_logging(client):
     """Failed login attempts are logged as security events."""
     import sqlite3
-    from src.server.server import RATE_LIMIT_DB, _record_failed_login, _init_rate_limit_db
+
+    from src.server.server import RATE_LIMIT_DB, _init_rate_limit_db, _record_failed_login
 
     # Initialize database
     _init_rate_limit_db()
@@ -328,7 +330,7 @@ async def test_rate_limit_security_event_logging(client):
 async def test_successful_login_clears_attempts(client):
     """Successful login after failed attempts allows access."""
     # First, make a few failed attempts
-    for i in range(3):
+    for _i in range(3):
         response = await client.post("/auth/login", json={"passphrase": "wrong-pass"})
         assert response.status_code == 403
 

@@ -26,11 +26,12 @@ Usage:
     nexus stop                     Stop the server
 """
 
-import os
-import sys
 import asyncio
-import aiohttp
+import os
 import re
+import sys
+
+import aiohttp
 
 SERVER_URL = "http://127.0.0.1:4200"
 
@@ -98,7 +99,7 @@ def validate_message_input(message: str, max_length: int = MAX_MESSAGE_LENGTH) -
     # Check for dangerous patterns
     for pattern in DANGEROUS_PATTERNS:
         if re.search(pattern, message, re.IGNORECASE):
-            raise ValueError(f"Message contains potentially dangerous pattern")
+            raise ValueError("Message contains potentially dangerous pattern")
 
     # Strip control characters except newline, carriage return, tab
     message = ''.join(c for c in message if ord(c) >= 32 or c in '\n\r\t')
@@ -121,7 +122,6 @@ async def call_server(method: str, path: str, json: dict = None):
 
 def _start_slack_webhook():
     """Start the Slack webhook server for interactive approvals."""
-    import threading
     from src.config import get_key
     from src.slack.webhook import create_webhook_app
 
@@ -157,7 +157,7 @@ def _stop_slack_webhook():
         # Find and kill process on webhook port
         port = int(os.environ.get("SLACK_APPROVAL_WEBHOOK_PORT", "3000"))
         result = subprocess.run(
-            ["lsof", "-ti", f":{port}"],
+            ["lsof", "-ti", f":{port}"],  # noqa: S607 - lsof is standard system binary
             capture_output=True,
             text=True,
             timeout=5
@@ -323,7 +323,7 @@ def main():
             print(f"Focus areas: {', '.join(focus_areas)}")
         print("This may take a minute...\n")
 
-        from src.agents.analyzer import AnalyzerAgent, load_analysis_state
+        from src.agents.analyzer import AnalyzerAgent
 
         async def _run_analysis():
             try:
@@ -350,12 +350,12 @@ def main():
             print("CODEBASE ANALYSIS COMPLETE")
             print("=" * 60)
             print(f"\nTotal findings: {summary['totalFindings']}")
-            print(f"\nBy severity:")
+            print("\nBy severity:")
             for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
                 count = summary["bySeverity"].get(sev, 0)
                 if count:
                     print(f"  {sev}: {count}")
-            print(f"\nBy category:")
+            print("\nBy category:")
             for cat, count in sorted(summary["byCategory"].items()):
                 print(f"  {cat}: {count}")
 
@@ -377,7 +377,7 @@ def main():
             print(f"Error: Analysis state file not found: {analysis_state_path}", file=sys.stderr)
             sys.exit(1)
 
-        print(f"Generating DOCX report...")
+        print("Generating DOCX report...")
         print(f"  Input: {analysis_state_path}")
         print(f"  Output: {output_path}")
 
@@ -440,12 +440,12 @@ def main():
             print("NEXUS SELF-ANALYSIS COMPLETE")
             print("=" * 60)
             print(f"\nTotal findings: {summary['totalFindings']}")
-            print(f"\nBy severity:")
+            print("\nBy severity:")
             for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
                 count = summary["bySeverity"].get(sev, 0)
                 if count:
                     print(f"  {sev}: {count}")
-            print(f"\nBy category:")
+            print("\nBy category:")
             for cat, count in sorted(summary["byCategory"].items()):
                 print(f"  {cat}: {count}")
 
@@ -607,7 +607,7 @@ def _execute_findings(filter_type: str = "all", filter_value: str = ""):
     # Determine target dir from analysis state
     # Look in current dir and common locations
     target_dir = None
-    for candidate in [_os.getcwd(), "/tmp/nexus-rebuild"]:
+    for candidate in [_os.getcwd(), "/tmp/nexus-rebuild"]:  # noqa: S108 - safe temporary test directory
         state_path = _os.path.join(candidate, ".claude", "analysis-state.json")
         if _os.path.exists(state_path):
             target_dir = candidate
@@ -659,12 +659,12 @@ def _execute_findings(filter_type: str = "all", filter_value: str = ""):
 
         # Mark as in-progress
         update_finding_status(target_dir, fid, "in-progress")
-        print(f"    Status: in-progress")
+        print("    Status: in-progress")
         print()
 
     print(f"\n{len(findings)} finding(s) marked as in-progress.")
     print("Use your preferred agent/workflow to implement the remediations.")
-    print(f"Update status with: nexus execute-item <ID> (after fixing)")
+    print("Update status with: nexus execute-item <ID> (after fixing)")
 
 
 if __name__ == "__main__":

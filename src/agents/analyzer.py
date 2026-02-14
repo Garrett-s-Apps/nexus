@@ -396,7 +396,7 @@ def get_finding_by_id(target_dir: str, finding_id: str) -> dict | None:
         return None
     for f in state["findings"]:
         if f["id"].upper() == finding_id.upper():
-            return f
+            return f  # type: ignore[no-any-return]
     return None
 
 

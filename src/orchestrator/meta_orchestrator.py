@@ -94,7 +94,7 @@ class MetaOrchestrator:
         contracts = await self._coordinate_contracts()
 
         # Phase 4: Build services (parallel graph execution)
-        results = await self._build_services(directive)
+        await self._build_services(directive)
 
         # Phase 5: Integration
         docker_compose = self._generate_docker_compose()

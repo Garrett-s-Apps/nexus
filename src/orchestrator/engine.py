@@ -156,7 +156,7 @@ class OrchestrationFacade:
     async def stop(self):
         """Cancel any in-flight directive tasks and shut down."""
         self.running = False
-        for task_id, task in self._active_tasks.items():
+        for _task_id, task in self._active_tasks.items():
             task.cancel()
             try:
                 await task

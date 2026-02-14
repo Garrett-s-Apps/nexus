@@ -1,16 +1,15 @@
 """Tests for NEXUS database encryption module (SEC-008)."""
 
 import os
-import sqlite3
-import pytest
 from unittest.mock import patch
-from pathlib import Path
+
+import pytest
 
 from src.db.encryption import (
+    _get_master_secret,
+    _get_or_create_salt,
     get_db_encryption_key,
     is_encryption_available,
-    _get_or_create_salt,
-    _get_master_secret,
 )
 from src.db.sqlite_store import connect_encrypted
 

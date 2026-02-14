@@ -5,7 +5,7 @@ Verifies that approval gate functions are properly structured and callable.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 

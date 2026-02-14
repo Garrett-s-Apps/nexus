@@ -1,22 +1,16 @@
 """Tests for JWT signing and key management."""
 
-import json
 import os
-import time
 
 import pytest
 
+from src.security.jwt_auth import sign_response, verify_token
 from src.security.key_manager import (
-    KEYS_DIR,
-    META_PATH,
-    PRIVATE_KEY_PATH,
-    PUBLIC_KEY_PATH,
     _generate_key_pair,
     _should_rotate,
     get_private_key,
     get_public_key,
 )
-from src.security.jwt_auth import sign_response, verify_token
 
 
 @pytest.fixture(autouse=True)

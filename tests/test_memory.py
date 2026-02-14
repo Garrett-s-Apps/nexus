@@ -1,7 +1,5 @@
 """Tests for NEXUS Memory store — CRUD operations on all world-state tables."""
 
-import json
-import sqlite3
 
 
 class TestMemoryInit:

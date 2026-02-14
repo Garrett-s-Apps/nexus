@@ -4,10 +4,11 @@ Updated for ARCH-001: Tests now target OrchestrationFacade (LangGraph-primary)
 instead of the retired ReasoningEngine tick-based loop.
 """
 
-import json
 import asyncio
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 
 @pytest.fixture

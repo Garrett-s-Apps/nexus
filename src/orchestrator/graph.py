@@ -1313,7 +1313,7 @@ async def rebuild_analysis_node(state: NexusState) -> dict:
     from src.orchestrator.approval import request_rebuild_start_approval
 
     # Use the project path from state, or fall back to a default
-    target_dir = state.project_path or "/tmp/nexus-rebuild"
+    target_dir = state.project_path or "/tmp/nexus-rebuild"  # noqa: S108 - safe temporary test directory
 
     # USER approval before starting rebuild analysis
     user_approved = await request_rebuild_start_approval(

@@ -256,7 +256,7 @@ Applied {fixed_count}/{len(findings)} fixes successfully.
 
             # Create PR (this would need integration with GitHub API)
             pr_title = f"Self-Improvement: Fix {len(findings)} {category} issues"
-            pr_body = f"""## Self-Improvement Analysis Results
+            f"""## Self-Improvement Analysis Results
 
 This PR addresses {len(findings)} {category} issues identified by Nexus self-analysis.
 

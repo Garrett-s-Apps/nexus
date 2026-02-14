@@ -678,7 +678,7 @@ def create_docx(title: str, request: str, output_dir: str | None = None) -> str:
         try:
             output_path.relative_to(ALLOWED_OUTPUT_DIR)
         except ValueError:
-            raise ValueError(f"Output directory must be within {ALLOWED_OUTPUT_DIR}")
+            raise ValueError(f"Output directory must be within {ALLOWED_OUTPUT_DIR}") from None  # noqa: B904
     else:
         output_path = ALLOWED_OUTPUT_DIR
         output_path.mkdir(parents=True, exist_ok=True)
@@ -988,7 +988,7 @@ def create_pptx(title: str, request: str, output_dir: str | None = None) -> str:
         try:
             output_path.relative_to(ALLOWED_OUTPUT_DIR)
         except ValueError:
-            raise ValueError(f"Output directory must be within {ALLOWED_OUTPUT_DIR}")
+            raise ValueError(f"Output directory must be within {ALLOWED_OUTPUT_DIR}") from None  # noqa: B904
     else:
         output_path = ALLOWED_OUTPUT_DIR
         output_path.mkdir(parents=True, exist_ok=True)
@@ -1058,7 +1058,7 @@ def create_pdf(title: str, request: str, output_dir: str | None = None) -> str:
         try:
             output_path.relative_to(ALLOWED_OUTPUT_DIR)
         except ValueError:
-            raise ValueError(f"Output directory must be within {ALLOWED_OUTPUT_DIR}")
+            raise ValueError(f"Output directory must be within {ALLOWED_OUTPUT_DIR}") from None  # noqa: B904
     else:
         output_path = ALLOWED_OUTPUT_DIR
         output_path.mkdir(parents=True, exist_ok=True)
@@ -1387,7 +1387,7 @@ def create_image(description: str, output_dir: str | None = None) -> str:
         try:
             output_path.relative_to(ALLOWED_OUTPUT_DIR)
         except ValueError:
-            raise ValueError(f"Output directory must be within {ALLOWED_OUTPUT_DIR}")
+            raise ValueError(f"Output directory must be within {ALLOWED_OUTPUT_DIR}") from None  # noqa: B904
     else:
         output_path = ALLOWED_OUTPUT_DIR / "images"
         output_path.mkdir(parents=True, exist_ok=True)

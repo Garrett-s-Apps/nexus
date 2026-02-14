@@ -5,8 +5,11 @@ Tests the vectorized numpy implementation vs the old loop-based approach.
 """
 
 import time
+
 import numpy as np
-from src.ml.embeddings import bytes_to_embedding, embedding_to_bytes, cosine_similarity
+
+from src.ml.embeddings import cosine_similarity
+
 
 def benchmark_old_approach(query_embedding, embeddings_list, threshold=0.35):
     """Original O(n*m) loop implementation - similarity computation only."""
@@ -44,7 +47,7 @@ def run_benchmark(num_chunks=1000):
 
     # Create test embeddings (NOT pre-normalized to match real-world storage)
     embeddings_list = []
-    for i in range(num_chunks):
+    for _i in range(num_chunks):
         emb = np.random.randn(embedding_dim).astype(np.float32)
         embeddings_list.append(emb)
 
@@ -87,8 +90,8 @@ def run_benchmark(num_chunks=1000):
     print(f"Number of results:          {len(old_results)}")
 
     # Calculate what this means at 50-200ms baseline
-    print(f"\nReal-world impact:")
-    print(f"  Old baseline: 50-200ms per query")
+    print("\nReal-world impact:")
+    print("  Old baseline: 50-200ms per query")
     print(f"  Expected new: {50/old_avg*new_avg:.1f}-{200/old_avg*new_avg:.1f}ms per query")
     print("="*60)
 

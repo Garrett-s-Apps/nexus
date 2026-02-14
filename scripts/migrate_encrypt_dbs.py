@@ -156,7 +156,7 @@ def main():
         sys.exit(1)
 
     encryption_key = get_db_encryption_key()
-    print(f"Encryption key derived (salt: ~/.nexus/.db_salt)")
+    print("Encryption key derived (salt: ~/.nexus/.db_salt)")
     print(f"NEXUS directory: {NEXUS_DIR}")
     print()
 

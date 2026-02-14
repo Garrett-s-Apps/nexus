@@ -254,7 +254,7 @@ async def run_gemini(
         response = await llm.ainvoke(messages)
         cost = cost_tracker.record("gemini", "ux_consultant", 1000, 500)
         return TaskResult(
-            status="success", output=response.content,
+            status="success", output=str(response.content),  # type: ignore[arg-type]
             cost_usd=cost if isinstance(cost, float) else 0.0,
             model="gemini", agent="ux_consultant",
         )
@@ -365,7 +365,7 @@ async def _run_o3_langchain(
         cost = cost_tracker.record("o3", "systems_consultant", 2000, 1000)
         return TaskResult(
             status="success",
-            output=response.content,
+            output=str(response.content),  # type: ignore[arg-type]
             cost_usd=cost if isinstance(cost, float) else 0.0,
             model="o3",
             agent="systems_consultant",

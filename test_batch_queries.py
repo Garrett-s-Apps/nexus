@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Test script to verify batch query methods work correctly."""
 
-import sys
 import os
+import sys
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-from memory.store import Memory
 from agents.registry import AgentRegistry
+from memory.store import Memory
 from ml.store import MLStore
+
 
 def test_memory_batch():
     """Test memory.get_agents_batch()"""
@@ -43,7 +44,7 @@ def test_memory_batch():
 def test_registry_batch():
     """Test registry.get_agents_batch()"""
     print("\nTesting registry.get_agents_batch()...")
-    registry = AgentRegistry(db_path="/tmp/test_registry.db")
+    registry = AgentRegistry(db_path="/tmp/test_registry.db")  # noqa: S108
 
     # Load initial config if empty
     if not registry.is_initialized():
@@ -72,7 +73,7 @@ def test_registry_batch():
 def test_ml_batch():
     """Test ml_store.get_agent_success_rates_batch()"""
     print("\nTesting ml_store.get_agent_success_rates_batch()...")
-    ml_store = MLStore(db_path="/tmp/test_ml.db")
+    ml_store = MLStore(db_path="/tmp/test_ml.db")  # noqa: S108
     ml_store.init()
 
     # Record some test outcomes
@@ -113,7 +114,7 @@ def test_ml_batch():
 def test_registry_reliability_batch():
     """Test registry.get_agent_reliability_batch()"""
     print("\nTesting registry.get_agent_reliability_batch()...")
-    registry = AgentRegistry(db_path="/tmp/test_registry2.db")
+    registry = AgentRegistry(db_path="/tmp/test_registry2.db")  # noqa: S108
 
     # Load initial config
     if not registry.is_initialized():

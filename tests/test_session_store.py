@@ -1,7 +1,7 @@
 """Tests for NEXUS SessionStore — async SQLite session persistence."""
 
+
 import pytest
-import asyncio
 
 from src.session.store import SessionStore
 

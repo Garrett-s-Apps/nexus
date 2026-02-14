@@ -9,7 +9,7 @@ from src.orchestrator.graph import (
     _parse_tasks,
     build_nexus_graph,
 )
-from src.orchestrator.state import NexusState, WorkstreamTask
+from src.orchestrator.state import WorkstreamTask
 
 
 class TestBuildGraph:

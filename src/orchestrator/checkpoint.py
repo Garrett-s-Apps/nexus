@@ -89,21 +89,21 @@ class CheckpointManager:
         """Capture current git repository state."""
         try:
             branch = subprocess.check_output(
-                ["git", "branch", "--show-current"],
+                ["git", "branch", "--show-current"],  # noqa: S607 - git is standard system binary
                 cwd=self.project_path,
                 encoding="utf8",
                 stderr=subprocess.DEVNULL
             ).strip()
 
             commit = subprocess.check_output(
-                ["git", "rev-parse", "HEAD"],
+                ["git", "rev-parse", "HEAD"],  # noqa: S607 - git is standard system binary
                 cwd=self.project_path,
                 encoding="utf8",
                 stderr=subprocess.DEVNULL
             ).strip()
 
             status = subprocess.check_output(
-                ["git", "status", "--porcelain"],
+                ["git", "status", "--porcelain"],  # noqa: S607 - git is standard system binary
                 cwd=self.project_path,
                 encoding="utf8",
                 stderr=subprocess.DEVNULL
@@ -111,7 +111,7 @@ class CheckpointManager:
             uncommitted = len([line for line in status.split("\n") if line.strip()])
 
             stash_list = subprocess.check_output(
-                ["git", "stash", "list"],
+                ["git", "stash", "list"],  # noqa: S607 - git is standard system binary
                 cwd=self.project_path,
                 encoding="utf8",
                 stderr=subprocess.DEVNULL
@@ -262,7 +262,8 @@ class CheckpointManager:
                     data = json.load(f)
                     if not data.get("manual", False):
                         checkpoints.append((file_path, file_path.stat().st_mtime))
-            except Exception:
+            except Exception as e:  # noqa: S112
+                logger.debug(f"Skipping invalid checkpoint file {file_path}: {e}")
                 continue
 
         # Sort by modification time (newest first)

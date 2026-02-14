@@ -8,7 +8,7 @@ import logging
 import os
 from datetime import UTC, datetime
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 logger = logging.getLogger("nexus.self_improvement.prompt_updater")
 

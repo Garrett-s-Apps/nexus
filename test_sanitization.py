@@ -2,10 +2,13 @@
 """Test script to verify input sanitization in document generator."""
 
 import sys
-sys.path.insert(0, '/tmp/nexus-rebuild')
 
-from src.documents.generator import sanitize_filename, sanitize_document_content
+sys.path.insert(0, '/tmp/nexus-rebuild')  # noqa: S108
+
 from pathlib import Path
+
+from src.documents.generator import sanitize_document_content, sanitize_filename
+
 
 def test_sanitize_filename():
     """Test filename sanitization."""
@@ -59,7 +62,7 @@ def test_path_traversal_protection():
     from src.documents.generator import ALLOWED_OUTPUT_DIR
 
     # Test that ALLOWED_OUTPUT_DIR is properly set
-    assert ALLOWED_OUTPUT_DIR == Path("~/.nexus/documents").expanduser()
+    assert Path("~/.nexus/documents").expanduser() == ALLOWED_OUTPUT_DIR
     print(f"✓ ALLOWED_OUTPUT_DIR correctly set to: {ALLOWED_OUTPUT_DIR}")
 
     # Test that relative_to() would catch path traversal

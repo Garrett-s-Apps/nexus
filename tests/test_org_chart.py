@@ -1,7 +1,11 @@
 """Tests for NEXUS Org Chart — agent definitions, model costs, and org structure."""
 
 from src.agents.org_chart import (
-    MODEL_COSTS, OPUS, SONNET, HAIKU, O3,
+    HAIKU,
+    MODEL_COSTS,
+    O3,
+    OPUS,
+    SONNET,
     get_org_summary,
 )
 from src.agents.registry import registry

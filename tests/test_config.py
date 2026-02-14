@@ -1,9 +1,9 @@
 """Tests for NEXUS config module — key loading, paths, and directory setup."""
 
 import os
-from unittest.mock import patch, mock_open
+from unittest.mock import patch
 
-from src.config import get_key, load_keys, ensure_nexus_dir, NEXUS_DIR, MEMORY_DB_PATH, COST_DB_PATH
+from src.config import COST_DB_PATH, MEMORY_DB_PATH, NEXUS_DIR, get_key, load_keys
 
 
 class TestGetKey:
@@ -77,7 +77,6 @@ class TestEnsureNexusDir:
         """ensure_nexus_dir should create the directory if it doesn't exist."""
         fake_dir = str(tmp_path / "fake_nexus")
         with patch("src.config.NEXUS_DIR", fake_dir):
-            from src.config import ensure_nexus_dir as _ensure
             # Re-import to pick up patched value
             os.makedirs(fake_dir, exist_ok=True)
             assert os.path.isdir(fake_dir)

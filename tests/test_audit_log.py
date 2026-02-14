@@ -2,12 +2,11 @@
 
 import json
 import time
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from src.security.audit_log import (
+    AUDIT_LOG_DB,
     AuditEventType,
     AuditSeverity,
     get_audit_log,
@@ -22,7 +21,6 @@ from src.security.audit_log import (
     log_sensitive_data_access,
     log_session_event,
     prune_old_audit_logs,
-    AUDIT_LOG_DB,
 )
 
 

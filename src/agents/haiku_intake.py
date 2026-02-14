@@ -268,7 +268,7 @@ async def run_haiku_intake(
     if thread_history:
         # Take last 10 messages for context
         for msg in thread_history[-10:]:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+            messages.append({"role": msg["role"], "content": msg.get("content") or msg.get("text", "")})
 
     # Add current message
     messages.append({"role": "user", "content": message})
@@ -364,7 +364,7 @@ async def format_with_tool_result(
     messages: list = []
     if thread_history:
         for msg in thread_history[-10:]:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+            messages.append({"role": msg["role"], "content": msg.get("content") or msg.get("text", "")})
 
     # Ensure original user message is present so Haiku has context for formatting
     has_recent_user_msg = thread_history and any(

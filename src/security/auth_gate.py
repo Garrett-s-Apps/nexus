@@ -78,15 +78,30 @@ def _persist_key(key: str):
         raise
 
 
-def _compute_fingerprint(user_agent: str, client_ip: str) -> str:
-    """Hash client identity so sessions can't transfer between browsers/IPs."""
-    raw = f"{user_agent}|{client_ip}".encode()
-    return hashlib.sha256(raw).hexdigest()[:16]
+def _compute_fingerprint(user_agent: str, client_ip: str, accept_language: str = "", accept_encoding: str = "", ssl_session_id: str = "") -> str:
+    """Hash client identity with multi-factor validation to prevent session theft.
+
+    Factors included:
+    - User-Agent: browser/client type
+    - Client IP: network origin
+    - Accept-Language: language preferences
+    - Accept-Encoding: compression support
+    - SSL Session ID: TLS session binding
+    """
+    factors = [
+        user_agent,
+        client_ip,
+        accept_language,
+        accept_encoding,
+        ssl_session_id,
+    ]
+    raw = "|".join(factors).encode()
+    return hashlib.sha256(raw).hexdigest()[:32]
 
 
-def create_session(user_agent: str = "", client_ip: str = "") -> str:
+def create_session(user_agent: str = "", client_ip: str = "", accept_language: str = "", accept_encoding: str = "", ssl_session_id: str = "") -> str:
     """Create a new session token bound to the client fingerprint."""
-    fingerprint = _compute_fingerprint(user_agent, client_ip)
+    fingerprint = _compute_fingerprint(user_agent, client_ip, accept_language, accept_encoding, ssl_session_id)
     token = secrets.token_urlsafe(32)
     # Sign token+fingerprint together so neither can be swapped independently
     msg = f"{token}:{fingerprint}".encode()
@@ -103,6 +118,9 @@ def verify_session(
     session_id: str | None,
     user_agent: str = "",
     client_ip: str = "",
+    accept_language: str = "",
+    accept_encoding: str = "",
+    ssl_session_id: str = "",
 ) -> bool:
     """Verify a session cookie is valid, not expired, and from the same client."""
     if not session_id:
@@ -120,7 +138,7 @@ def verify_session(
         return False
 
     # Verify fingerprint matches the requesting client
-    fingerprint = _compute_fingerprint(user_agent, client_ip)
+    fingerprint = _compute_fingerprint(user_agent, client_ip, accept_language, accept_encoding, ssl_session_id)
     if not hmac.compare_digest(fingerprint, session["fingerprint"]):
         logger.warning("Session fingerprint mismatch — possible token theft")
         _sessions.pop(session_id, None)

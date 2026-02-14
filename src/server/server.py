@@ -261,8 +261,11 @@ async def auth_gate_middleware(request: Request, call_next):
 
     user_agent = request.headers.get("user-agent", "")
     client_ip = _get_client_ip(request)
+    accept_language = request.headers.get("accept-language", "")
+    accept_encoding = request.headers.get("accept-encoding", "")
+    ssl_session_id = request.scope.get("ssl_session_id", "")
 
-    if not verify_session(session_id, user_agent=user_agent, client_ip=client_ip):
+    if not verify_session(session_id, user_agent=user_agent, client_ip=client_ip, accept_language=accept_language, accept_encoding=accept_encoding, ssl_session_id=ssl_session_id):
         from starlette.responses import JSONResponse
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
@@ -481,7 +484,10 @@ async def auth_login(req: LoginRequest, request: Request):
 
     # Successful login - create session
     user_agent = request.headers.get("user-agent", "")
-    session_id = create_session(user_agent=user_agent, client_ip=client_ip)
+    accept_language = request.headers.get("accept-language", "")
+    accept_encoding = request.headers.get("accept-encoding", "")
+    ssl_session_id = request.scope.get("ssl_session_id", "")
+    session_id = create_session(user_agent=user_agent, client_ip=client_ip, accept_language=accept_language, accept_encoding=accept_encoding, ssl_session_id=ssl_session_id)
 
     # SEC-005: Log successful authentication
     _log_security_event(client_ip, "LOGIN_SUCCESS", f"user-agent: {user_agent}")
@@ -506,7 +512,10 @@ async def auth_check(request: Request):
     session_id = request.cookies.get(AUTH_COOKIE)
     user_agent = request.headers.get("user-agent", "")
     client_ip = _get_client_ip(request)
-    valid = verify_session(session_id, user_agent=user_agent, client_ip=client_ip)
+    accept_language = request.headers.get("accept-language", "")
+    accept_encoding = request.headers.get("accept-encoding", "")
+    ssl_session_id = request.scope.get("ssl_session_id", "")
+    valid = verify_session(session_id, user_agent=user_agent, client_ip=client_ip, accept_language=accept_language, accept_encoding=accept_encoding, ssl_session_id=ssl_session_id)
     return {"authenticated": valid}
 
 

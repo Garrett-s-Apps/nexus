@@ -44,6 +44,12 @@ async def dispatch(
 
     logger.info(f"Dispatching tool: {tool_name} with input: {tool_input}")
 
+    # Emit event for dashboard live ticker
+    memory.emit_event("intake", tool_name, {
+        "input": {k: str(v)[:100] for k, v in tool_input.items()},
+        "source": source,
+    })
+
     # Route to appropriate handler
     handler = DISPATCH_MAP.get(tool_name)
     if not handler:
@@ -378,6 +384,99 @@ async def handle_talk_to_agent(params: dict) -> str:
     return f"Message queued for {agent.name}: {message[:100]}"
 
 
+async def handle_query_database(params: dict) -> str:
+    """Handle database queries across NEXUS internal stores."""
+    table = params.get("table", "")
+    filter_val = params.get("filter", "recent")
+    limit = min(params.get("limit", 20) or 20, 50)
+
+    if table == "directives":
+        directives = memory.get_recent_directives(limit=limit)
+        if not directives:
+            return "No directives found."
+        lines = [f"DIRECTIVES ({len(directives)} results):"]
+        for d in directives:
+            lines.append(
+                f"  [{d.get('status', '?')}] {d.get('id', '?')[:8]}... "
+                f"| {d.get('text', '')[:80]} "
+                f"| created: {d.get('created_at', '?')}"
+            )
+        return "\n".join(lines)
+
+    elif table == "events":
+        limit_val = 50 if filter_val == "all" else limit
+        events = memory.get_recent_events(limit=limit_val)
+        if not events:
+            return "No events found."
+        lines = [f"EVENTS ({len(events)} results):"]
+        for e in events:
+            data_str = str(e.get("data", ""))[:80]
+            lines.append(
+                f"  [{e.get('source', '?')}] {e.get('event_type', '?')} "
+                f"| {data_str} | {e.get('timestamp', '?')}"
+            )
+        return "\n".join(lines)
+
+    elif table == "sessions":
+        from src.sessions.cli_pool import cli_pool as _pool
+        sessions = _pool._sessions
+        if not sessions:
+            return "No active CLI sessions."
+        lines = [f"ACTIVE CLI SESSIONS ({len(sessions)}):"]
+        for ts, sess_list in sessions.items():
+            for i, s in enumerate(sess_list):
+                lines.append(
+                    f"  thread: {ts}[{i}] | alive: {s.alive} "
+                    f"| pid: {s.process.pid if s.process else 'none'}"
+                )
+        return "\n".join(lines)
+
+    elif table == "memory":
+        # Return project memory + stored context
+        projects = memory.get_active_projects()
+        context = memory.get_all_context()
+        lines = []
+        if projects:
+            lines.append(f"ACTIVE PROJECTS ({len(projects)}):")
+            for p in projects:
+                lines.append(f"  {p.get('name', p.get('id', '?'))}: {p.get('description', '')[:80]}")
+        if context:
+            lines.append(f"\nSTORED CONTEXT ({len(context)} entries):")
+            for c in context[:limit]:
+                lines.append(f"  [{c.get('key', '?')}] {str(c.get('value', ''))[:100]}")
+        return "\n".join(lines) if lines else "No memory entries found."
+
+    elif table == "task_outcomes":
+        outcomes = ml_store.get_outcomes(limit=limit)
+        if not outcomes:
+            return "No task outcomes recorded yet."
+        lines = [f"TASK OUTCOMES ({len(outcomes)} results):"]
+        for o in outcomes:
+            lines.append(
+                f"  [{o.get('outcome', '?')}] agent={o.get('agent_id', '?')} "
+                f"| cost=${o.get('cost', 0):.4f} "
+                f"| {o.get('directive_text', '')[:60]} "
+                f"| {o.get('created_at', '?')}"
+            )
+        return "\n".join(lines)
+
+    elif table == "cost_log":
+        daily = cost_tracker.get_daily_breakdown(days=7)
+        agents = cost_tracker.get_agent_breakdown()
+        lines = [f"COST REPORT (session: ${cost_tracker.total_cost:.2f}, rate: ${cost_tracker.hourly_rate:.2f}/hr)"]
+        if daily:
+            lines.append("\nDAILY BREAKDOWN (last 7 days):")
+            for d in daily:
+                lines.append(f"  {d.get('date', '?')}: ${d.get('cost', 0):.2f} ({d.get('calls', 0)} calls)")
+        if agents:
+            lines.append("\nAGENT BREAKDOWN:")
+            for a in agents[:15]:
+                lines.append(f"  {a.get('agent', '?')}: ${a.get('cost', 0):.4f} ({a.get('calls', 0)} calls)")
+        return "\n".join(lines)
+
+    return f"Error: Unknown table '{table}'. Valid: directives, events, sessions, memory, task_outcomes, cost_log"
+
+
 # ============================================
 # DISPATCH MAP
 # ============================================
@@ -389,6 +488,7 @@ DISPATCH_MAP = {
     "query_cost": handle_query_cost,
     "query_kpi": handle_query_kpi,
     "query_ml": handle_query_ml,
+    "query_database": handle_query_database,
     "start_directive": handle_start_directive,
     "generate_document": handle_generate_document,
     "talk_to_agent": handle_talk_to_agent,

@@ -1,29 +1,57 @@
 """
-CLI Session Pool — persistent Claude Code processes per Slack thread.
+CLI Session Pool — streaming Claude Code processes per Slack thread.
 
-Each Slack thread gets its own long-lived `claude` CLI process.
-Messages in the same thread are piped to the same process, preserving
-conversational context without re-sending history.
+Each Slack thread gets its own Claude CLI process in pipe mode with
+stream-json output. Events are parsed in real-time and progress
+callbacks update Slack with human-readable status.
 
-Idle sessions are cleaned up after a configurable timeout.
+Key design decisions:
+- One process per send() call (pipe mode is one-shot)
+- 15-minute timeout (Opus needs time for real engineering)
+- No auto-retry — errors are reported with context
+- Cancellation support — follow-up messages kill the current process
+- Progress streaming — tool use events surface live status to Slack
 """
 
 import asyncio
+import json
 import logging
 import os
 import shutil
 import time
+from collections.abc import Awaitable, Callable
 
 from src.agents.task_result import TaskResult
+from src.config import CLI_DOCKER_ENABLED, CLI_DOCKER_IMAGE, get_key
 
 logger = logging.getLogger(__name__)
 
 CLAUDE_CMD = "claude"
+DOCKER_CMD = "docker"
 IDLE_TIMEOUT = 1800  # 30 minutes
+DEFAULT_TIMEOUT = 900  # 15 minutes
+STREAM_BUFFER_LIMIT = 10 * 1024 * 1024  # 10 MB — stream-json lines can exceed asyncio's 64KB default
+
+# Map CLI tool names to human-readable Slack status
+_TOOL_STATUS: dict[str, str] = {
+    "Read": ":book: Reading",
+    "Write": ":pencil2: Writing",
+    "Edit": ":pencil2: Editing",
+    "Bash": ":gear: Running command",
+    "Glob": ":mag: Searching files",
+    "Grep": ":mag: Searching code",
+    "WebFetch": ":globe_with_meridians: Fetching URL",
+    "WebSearch": ":globe_with_meridians: Searching web",
+    "Task": ":robot_face: Delegating to agent",
+    "LSP": ":brain: Analyzing code",
+    "NotebookEdit": ":pencil2: Editing notebook",
+}
+
+ProgressCallback = Callable[[str], Awaitable[None]]
 
 
 class CLISession:
-    """A single persistent Claude Code CLI process."""
+    """A single Claude Code CLI process with streaming and cancellation."""
 
     def __init__(self, thread_ts: str, project_path: str):
         self.thread_ts = thread_ts
@@ -31,40 +59,103 @@ class CLISession:
         self.process: asyncio.subprocess.Process | None = None
         self.last_used: float = time.monotonic()
         self._lock = asyncio.Lock()
+        self._cancelled = False
 
     async def start(self) -> bool:
-        if not shutil.which(CLAUDE_CMD):
+        use_docker = CLI_DOCKER_ENABLED and shutil.which(DOCKER_CMD)
+
+        if not use_docker and not shutil.which(CLAUDE_CMD):
             logger.warning("Claude CLI not found, session unavailable")
             return False
 
+        # Kill any existing process to prevent orphans
+        if self.process and self.process.returncode is None:
+            try:
+                self.process.kill()
+                await self.process.wait()
+            except Exception:
+                pass
+
+        self._cancelled = False
+
         try:
-            # Strip CLAUDECODE env var so spawned CLI avoids nested-session block
-            clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-            # Uses create_subprocess_exec (not shell) — args passed as array, safe from injection
-            self.process = await asyncio.create_subprocess_exec(
-                CLAUDE_CMD, "--dangerously-skip-permissions", "--model", "opus", "-p",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self.project_path,
-                env=clean_env,
-            )
+            if use_docker:
+                self.process = await self._start_docker()
+            else:
+                self.process = await self._start_native()
+
             self.last_used = time.monotonic()
-            logger.info("CLI session started for thread %s (pid=%s)", self.thread_ts, self.process.pid)
+            mode = "docker" if use_docker else "native"
+            logger.info(
+                "CLI session started (%s) for thread %s (pid=%s)",
+                mode, self.thread_ts, self.process.pid,
+            )
             return True
         except OSError as e:
             logger.error("Failed to start CLI session: %s", e)
             return False
 
-    async def send(self, message: str, timeout: int = 300) -> TaskResult:
-        """Send a message to the CLI process and collect the response.
+    async def _start_native(self) -> asyncio.subprocess.Process:
+        """Start Claude CLI as a native subprocess."""
+        clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        return await asyncio.create_subprocess_exec(
+            CLAUDE_CMD, "--dangerously-skip-permissions", "--model", "opus",
+            "-p", "--verbose", "--output-format", "stream-json",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=self.project_path,
+            env=clean_env,
+            limit=STREAM_BUFFER_LIMIT,
+        )
 
-        The CLI runs in pipe mode (-p), which reads stdin until EOF then responds.
-        Each send() spawns a fresh process, writes the message, closes stdin to
-        signal EOF, then waits for the process to finish and collects all output.
+    async def _start_docker(self) -> asyncio.subprocess.Process:
+        """Start Claude CLI inside a Docker container with project mounted."""
+        env_args: list[str] = []
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
+            val = get_key(key)
+            if val:
+                env_args.extend(["-e", f"{key}={val}"])
+
+        return await asyncio.create_subprocess_exec(
+            DOCKER_CMD, "run", "--rm", "-i",
+            "-v", f"{self.project_path}:/workspace",
+            *env_args,
+            "-e", f"NEXUS_CLI_TIMEOUT={DEFAULT_TIMEOUT}",
+            CLI_DOCKER_IMAGE,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=STREAM_BUFFER_LIMIT,
+        )
+
+    def cancel(self):
+        """Cancel the running send() — kills the process immediately."""
+        self._cancelled = True
+        if self.process and self.process.returncode is None:
+            try:
+                self.process.kill()
+            except Exception:
+                pass
+
+    @property
+    def is_busy(self) -> bool:
+        """True if send() is currently in progress."""
+        return self._lock.locked()
+
+    async def send(
+        self,
+        message: str,
+        timeout: int = DEFAULT_TIMEOUT,
+        on_progress: ProgressCallback | None = None,
+    ) -> TaskResult:
+        """Send a message and stream progress to Slack.
+
+        Uses --output-format stream-json to parse events in real-time.
+        Calls on_progress with human-readable status (never raw JSON).
+        Supports cancellation via cancel().
         """
         async with self._lock:
-            # Always start a fresh process — pipe mode is one-shot
             if not await self.start():
                 return TaskResult(
                     status="unavailable", output="CLI session unavailable",
@@ -83,41 +174,185 @@ class CLISession:
 
                 proc.stdin.write(message.encode())
                 await proc.stdin.drain()
-                proc.stdin.close()  # Signal EOF so -p mode starts processing
+                proc.stdin.close()
 
-                # Wait for the process to finish and collect all output.
-                # communicate() reads stdout/stderr until EOF and waits for
-                # process exit — no premature truncation from buffer polling.
-                try:
-                    stdout_data, stderr_data = await asyncio.wait_for(
-                        proc.communicate(), timeout=timeout,
+                result_text = ""
+                cost_usd = 0.0
+                last_progress_time = time.monotonic()
+                start_time = time.monotonic()
+                tool_count = 0
+                tools_log: list[str] = []  # ordered list of tool names used
+                files_touched: list[str] = []  # file paths read/written/edited
+                raw_lines: list[str] = []
+                deadline = time.monotonic() + timeout
+
+                while True:
+                    # Check cancellation
+                    if self._cancelled:
+                        logger.info("CLI cancelled for thread %s", self.thread_ts)
+                        if proc.returncode is None:
+                            proc.kill()
+                            await proc.wait()
+                        return TaskResult(
+                            status="error",
+                            output="Redirected by follow-up message",
+                            error_type="cancelled",
+                        )
+
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        logger.warning(
+                            "CLI timed out after %ds for thread %s",
+                            timeout, self.thread_ts,
+                        )
+                        proc.kill()
+                        await proc.wait()
+                        partial = result_text.strip() or "(no output before timeout)"
+                        return TaskResult(
+                            status="timeout",
+                            output=f"CLI timed out after {timeout // 60} minutes. "
+                            f"Last activity: {tool_count} tools used.\n\n"
+                            f"Partial output:\n{partial[:2000]}",
+                            error_type="timeout",
+                        )
+
+                    # Read next line with sub-timeout for heartbeats
+                    try:
+                        line = await asyncio.wait_for(
+                            proc.stdout.readline(),
+                            timeout=min(remaining, 30),
+                        )
+                    except TimeoutError:
+                        # No output for 30s — send heartbeat
+                        if on_progress and (time.monotonic() - last_progress_time) > 25:
+                            heartbeat_secs = int(time.monotonic() - self.last_used)
+                            mins, secs = divmod(heartbeat_secs, 60)
+                            time_str = f"{mins}m{secs}s" if mins else f"{secs}s"
+                            await on_progress(
+                                f":hourglass_flowing_sand: Still working... "
+                                f"({time_str}, {tool_count} tools used)"
+                            )
+                            last_progress_time = time.monotonic()
+                        continue
+
+                    if not line:
+                        break  # EOF — process finished
+
+                    line_str = line.decode(errors="replace").strip()
+                    if not line_str:
+                        continue
+
+                    raw_lines.append(line_str)
+
+                    # Try to parse as stream-json event
+                    try:
+                        event = json.loads(line_str)
+                    except json.JSONDecodeError:
+                        # Raw text output (non-JSON fallback)
+                        result_text += line_str + "\n"
+                        continue
+
+                    event_type = event.get("type", "")
+
+                    if event_type == "result":
+                        result_text = event.get("result", result_text)
+                        cost_usd = event.get("cost_usd", 0.0) or 0.0
+                        subtype = event.get("subtype", "")
+                        if subtype == "error":
+                            error_msg = event.get("error", "Unknown error")
+                            return TaskResult(
+                                status="error",
+                                output=f"CLI error: {error_msg}",
+                                error_type="cli_error",
+                                error_detail=error_msg,
+                                cost_usd=cost_usd,
+                            )
+
+                    elif event_type == "assistant":
+                        msg = event.get("message", {})
+                        content_blocks = msg.get("content", [])
+                        for block in content_blocks:
+                            if not isinstance(block, dict):
+                                continue
+                            block_type = block.get("type", "")
+
+                            if block_type == "tool_use":
+                                tool_name = block.get("name", "")
+                                tool_count += 1
+                                tools_log.append(tool_name)
+                                status = _TOOL_STATUS.get(
+                                    tool_name, f":wrench: {tool_name}"
+                                )
+
+                                # Add context for specific tools
+                                tool_input = block.get("input", {})
+                                if tool_name in ("Read", "Write", "Edit"):
+                                    fp = tool_input.get("file_path", "")
+                                    if fp:
+                                        status += f" `{fp.split('/')[-1]}`"
+                                        if fp not in files_touched:
+                                            files_touched.append(fp)
+                                elif tool_name == "Bash":
+                                    cmd = tool_input.get("command", "")
+                                    if cmd:
+                                        status += f": `{cmd[:50]}`"
+
+                                logger.info(
+                                    "CLI [%d] %s for thread %s",
+                                    tool_count, status, self.thread_ts,
+                                )
+
+                                # Rate-limit progress updates (every 5s)
+                                now = time.monotonic()
+                                if on_progress and (now - last_progress_time) > 5:
+                                    await on_progress(status)
+                                    last_progress_time = now
+
+                            elif block_type == "text":
+                                # Intermediate text — don't accumulate,
+                                # result event has the final version
+                                pass
+
+                # Process exited — collect stderr
+                await proc.wait()
+                stderr_data = b""
+                if proc.stderr:
+                    stderr_data = await proc.stderr.read()
+                stderr_text = stderr_data.decode(errors="replace").strip()
+
+                if not result_text and stderr_text:
+                    logger.warning(
+                        "CLI stderr for thread %s: %s",
+                        self.thread_ts, stderr_text[:500],
                     )
-                except TimeoutError:
-                    logger.warning("CLI timed out after %ds for thread %s", timeout, self.thread_ts)
-                    proc.kill()
-                    await proc.wait()
                     return TaskResult(
-                        status="timeout",
-                        output="(CLI timed out — the request may be too complex)",
-                        error_type="timeout",
+                        status="error",
+                        output=f"CLI error: {stderr_text[:500]}",
+                        error_type="api_error",
+                        error_detail=stderr_text[:500],
                     )
 
-                result = stdout_data.decode(errors="replace").strip() if stdout_data else ""
-                stderr_text = stderr_data.decode(errors="replace").strip() if stderr_data else ""
+                # If no result event was parsed, try raw lines
+                if not result_text and raw_lines:
+                    result_text = "\n".join(raw_lines)
 
-                if not result and stderr_text:
-                    logger.warning("CLI stderr for thread %s: %s", self.thread_ts, stderr_text[:500])
-                    return TaskResult(
-                        status="error", output=f"CLI error: {stderr_text[:300]}",
-                        error_type="api_error", error_detail=stderr_text[:500],
-                    )
-
+                elapsed: float = time.monotonic() - start_time
                 return TaskResult(
-                    status="success", output=result or "(No response from CLI)",
+                    status="success",
+                    output=result_text.strip() or "(No response from CLI)",
+                    cost_usd=cost_usd,
+                    elapsed_seconds=round(elapsed, 1),
+                    metadata={
+                        "tools_used": tool_count,
+                        "tools_log": tools_log,
+                        "files_touched": files_touched,
+                    },
                 )
 
             except Exception as e:
-                logger.error("CLI session error for thread %s: %s", self.thread_ts, e)
+                logger.error(
+                    "CLI session error for thread %s: %s", self.thread_ts, e,
+                )
                 return TaskResult(
                     status="error", output=f"CLI error: {e}",
                     error_type="api_error", error_detail=str(e),
@@ -142,34 +377,58 @@ class CLISession:
 
 
 class CLISessionPool:
-    """Manages persistent Claude Code CLI sessions per Slack thread."""
+    """Manages multiple concurrent CLI sessions per Slack thread.
+
+    A thread is a directive scope. Multiple CLI processes can run in parallel
+    within the same thread — e.g. "build the API" + "also add dark mode".
+    Queries (cost, status, org) bypass CLI entirely via Haiku intake.
+    """
 
     def __init__(self):
-        self._sessions: dict[str, CLISession] = {}
+        self._sessions: dict[str, list[CLISession]] = {}
         self._cleanup_task: asyncio.Task | None = None
 
-    async def get_or_create(self, thread_ts: str, project_path: str) -> CLISession:
-        if thread_ts in self._sessions and self._sessions[thread_ts].alive:
-            session = self._sessions[thread_ts]
-            session.last_used = time.monotonic()
-            return session
-
+    def spawn(self, thread_ts: str, project_path: str) -> CLISession:
+        """Create a new CLI session for this thread (always creates fresh)."""
         session = CLISession(thread_ts, project_path)
-        if await session.start():
-            self._sessions[thread_ts] = session
+        if thread_ts not in self._sessions:
+            self._sessions[thread_ts] = []
+        self._sessions[thread_ts].append(session)
         return session
 
-    async def send_message(self, thread_ts: str, message: str, project_path: str) -> TaskResult:
-        session = await self.get_or_create(thread_ts, project_path)
-        return await session.send(message)
+    def has_busy_sessions(self, thread_ts: str) -> bool:
+        """True if any CLI session in this thread is currently executing."""
+        return any(s.is_busy for s in self._sessions.get(thread_ts, []))
+
+    def busy_count(self, thread_ts: str) -> int:
+        """Number of actively executing sessions in this thread."""
+        return sum(1 for s in self._sessions.get(thread_ts, []) if s.is_busy)
+
+    async def cancel_all(self, thread_ts: str) -> int:
+        """Cancel all active sessions in a thread. Returns count cancelled."""
+        cancelled = 0
+        for session in self._sessions.get(thread_ts, []):
+            if session.is_busy:
+                session.cancel()
+                cancelled += 1
+        return cancelled
 
     async def cleanup_stale(self):
-        stale = [ts for ts, s in self._sessions.items() if s.is_idle]
-        for ts in stale:
-            await self._sessions[ts].kill()
+        stale_threads: list[str] = []
+        for ts, sessions in self._sessions.items():
+            # Remove idle sessions from the list
+            active = [s for s in sessions if not s.is_idle]
+            idle = [s for s in sessions if s.is_idle]
+            for s in idle:
+                await s.kill()
+            if active:
+                self._sessions[ts] = active
+            else:
+                stale_threads.append(ts)
+        for ts in stale_threads:
             del self._sessions[ts]
-        if stale:
-            logger.info("Cleaned up %d stale CLI sessions", len(stale))
+        if stale_threads:
+            logger.info("Cleaned up %d stale thread session groups", len(stale_threads))
 
     def start_cleanup_loop(self):
         if self._cleanup_task is not None:
@@ -185,25 +444,34 @@ class CLISessionPool:
     async def shutdown(self):
         if self._cleanup_task:
             self._cleanup_task.cancel()
-        for session in self._sessions.values():
-            await session.kill()
+        for sessions in self._sessions.values():
+            for session in sessions:
+                await session.kill()
         self._sessions.clear()
 
     def active_count(self) -> int:
-        return sum(1 for s in self._sessions.values() if s.alive)
+        return sum(
+            1
+            for sessions in self._sessions.values()
+            for s in sessions
+            if s.alive
+        )
 
     def status(self) -> dict:
+        all_sessions = []
+        for ts, sessions in self._sessions.items():
+            for i, s in enumerate(sessions):
+                all_sessions.append({
+                    "thread_ts": ts,
+                    "session_index": i,
+                    "alive": s.alive,
+                    "busy": s.is_busy,
+                    "idle_seconds": round(time.monotonic() - s.last_used, 1),
+                })
         return {
             "active_sessions": self.active_count(),
-            "total_created": len(self._sessions),
-            "sessions": [
-                {
-                    "thread_ts": ts,
-                    "alive": s.alive,
-                    "idle_seconds": round(time.monotonic() - s.last_used, 1),
-                }
-                for ts, s in self._sessions.items()
-            ],
+            "total_threads": len(self._sessions),
+            "sessions": all_sessions,
         }
 
 

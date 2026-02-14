@@ -7,12 +7,15 @@ Tasks survive server restarts. Each step checkpointed to SQLite.
 
 import asyncio
 import json
+import logging
 import os
 import traceback
 
 import anthropic
 
 from src.memory.store import memory
+
+logger = logging.getLogger("nexus.task_runner")
 from src.slack.notifier import notify, notify_escalation
 
 RETRY_LIMIT = 3
@@ -106,7 +109,7 @@ async def run_task(task_id: str, directive: str, project_path: str, project_id: 
             # Write file to disk (canonicalize to block path traversal from LLM output)
             full_path = os.path.realpath(os.path.join(project_path, file_path))
             if not full_path.startswith(os.path.realpath(project_path) + os.sep):
-                print(f"[TaskRunner] BLOCKED path traversal attempt: {file_path}")
+                logger.critical("BLOCKED path traversal attempt: %s", file_path)
                 continue
             parent_dir = os.path.dirname(full_path)
             if parent_dir:
@@ -141,7 +144,7 @@ async def run_task(task_id: str, directive: str, project_path: str, project_id: 
                 git_info = {"branch": branch, "commit": sha}
                 _save(git=git_info)
             except Exception as e:
-                print(f"[TaskRunner] Git failed (non-fatal): {e}")
+                logger.warning("Git failed (non-fatal): %s", e)
 
         # ========== PHASE 5: COMPLETE ==========
         memory.update_task(task_id, status="complete", current_step="done")
@@ -174,7 +177,7 @@ async def run_task(task_id: str, directive: str, project_path: str, project_id: 
 
     except Exception as e:
         tb = traceback.format_exc()
-        print(f"[TaskRunner] Task failed: {e}\n{tb}")
+        logger.error("Task failed: %s\n%s", e, tb)
         memory.update_task(task_id, status="error", error=str(e))
         notify_escalation("task_runner", f"Task failed: {str(e)[:200]}")
         return {"status": "error", "error": str(e)}
@@ -215,7 +218,7 @@ Only return JSON."""}],
             plan["_cost"] = cost
             return plan  # type: ignore[no-any-return]
         except Exception as e:
-            print(f"[TaskRunner] Plan attempt {attempt + 1} failed: {e}")
+            logger.warning("Plan attempt %d failed: %s", attempt + 1, e)
             if attempt < retries - 1:
                 await asyncio.sleep(2 ** attempt)
     return None
@@ -254,7 +257,7 @@ Write the complete file now."""}],
 
             return {"code": code, "_cost": cost}
         except Exception as e:
-            print(f"[TaskRunner] Build {file_path} attempt {attempt + 1} failed: {e}")
+            logger.warning("Build %s attempt %d failed: %s", file_path, attempt + 1, e)
             if attempt < retries - 1:
                 await asyncio.sleep(2 ** attempt)
     return None
@@ -277,7 +280,7 @@ async def _qa_review(client, written_context, retries=RETRY_LIMIT) -> dict:
             verdict = "SHIP IT" if "SHIP IT" in resp.content[0].text.upper() else "NEEDS REVIEW"
             return {"verdict": verdict, "details": resp.content[0].text, "_cost": cost}
         except Exception as e:
-            print(f"[TaskRunner] QA attempt {attempt + 1} failed: {e}")
+            logger.warning("QA attempt %d failed: %s", attempt + 1, e)
             if attempt < retries - 1:
                 await asyncio.sleep(2 ** attempt)
     return {"verdict": "SKIPPED", "_cost": 0}
@@ -288,10 +291,10 @@ async def resume_pending_tasks():
     pending = memory.get_pending_tasks()
     if not pending:
         return
-    print(f"[TaskRunner] Found {len(pending)} pending tasks to resume")
+    logger.info("Found %d pending tasks to resume", len(pending))
     notify(f"🔄 Resuming {len(pending)} interrupted task(s)...")
     for task in pending:
-        print(f"[TaskRunner] Resuming: {task['directive'][:60]}")
+        logger.info("Resuming: %s", task['directive'][:60])
         asyncio.create_task(
             run_task(task["id"], task["directive"], task.get("project_path", ""), task.get("project_id", ""))
         )

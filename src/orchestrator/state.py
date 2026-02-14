@@ -134,6 +134,10 @@ class NexusState(BaseModel):
     analysis_summary: dict[str, Any] = Field(default_factory=dict)
     analysis_state_path: str | None = None
 
+    # --- User Approval Gates ---
+    user_approval_received: bool = False
+    user_approval_context: dict[str, Any] = Field(default_factory=dict)
+
     # --- Flow Control ---
     current_phase: Literal[
         "intake",

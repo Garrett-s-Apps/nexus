@@ -628,6 +628,21 @@ async def handle_message(req: MessageRequest):
     return {"response": response}
 
 
+class MetaRequest(BaseModel):
+    directive: str
+    services: list[str] = []
+
+
+@app.post("/meta")
+async def meta_orchestrate(req: MetaRequest):
+    """ARCH-014: Meta-orchestration for multi-service directives."""
+    from src.orchestrator.meta_orchestrator import MetaOrchestrator
+
+    meta = MetaOrchestrator(services=req.services if req.services else None)
+    result = await meta.orchestrate_multi_service(req.directive)
+    return result
+
+
 @app.get("/events")
 async def event_stream(request: Request, last_id: int = 0, token: str = ""):
     async def generate():

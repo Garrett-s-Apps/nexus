@@ -134,6 +134,8 @@ Output:
 
 async def cfo_node(state: NexusState) -> dict:
     """CFO allocates token budget for the work."""
+    from src.orchestrator.approval import request_budget_approval
+
     result = await run_planning_agent(
         "cfo",
         AGENTS["cfo"],
@@ -184,16 +186,30 @@ Output a budget allocation as key:value pairs.""",
     # High-cost operation warning (>$10)
     if total_budget > 10.0:
         budget_warnings.append(
-            f"HIGH COST WARNING: Allocated budget ${total_budget:.2f} exceeds $10.00. User approval recommended."
+            f"HIGH COST WARNING: Allocated budget ${total_budget:.2f} exceeds $10.00. User approval required."
         )
-        # For high-cost ops, set approved to False to trigger escalation
-        cfo_approved = False
 
     # Log warnings
     if budget_warnings:
         logger.warning("CFO Budget Warnings: %s", " | ".join(budget_warnings))
         # Add warnings to budget allocation for visibility
         budget_allocation["_warnings"] = " | ".join(budget_warnings)
+
+    # USER approval for budget > $50
+    if total_budget > 50.0:
+        user_approved = await request_budget_approval(
+            total_budget=total_budget,
+            breakdown=budget_allocation,
+            threshold=50.0,
+        )
+
+        if not user_approved:
+            return {
+                "cfo_budget_allocation": budget_allocation,
+                "cfo_approved": False,
+                "escalation_reason": "User rejected high budget allocation",
+                "cost": _update_cost(state.cost, result),
+            }
 
     return {
         "cfo_budget_allocation": budget_allocation,
@@ -305,7 +321,10 @@ Output a complete, implementation-ready specification document.""",
 
 
 async def spec_approval_node(state: NexusState) -> dict:
-    """CEO reviews and approves the specification (agent-to-agent, no user prompt)."""
+    """CEO reviews spec, then USER approves spec → dev transition."""
+    from src.orchestrator.approval import request_spec_to_dev_approval
+
+    # Step 1: CEO agent reviews (autonomous)
     result = await run_planning_agent(
         "ceo",
         AGENTS["ceo"],
@@ -331,12 +350,36 @@ If the spec needs refinement, respond with: REJECTED and list specific issues to
 Maximum 2 refinement loops allowed.""",
     )
 
-    approved = "APPROVED" in result.output.upper() and "REJECTED" not in result.output.upper()
+    ceo_approved = "APPROVED" in result.output.upper() and "REJECTED" not in result.output.upper()
+
+    if not ceo_approved:
+        return {
+            "spec_approved": False,
+            "spec_loop_count": state.spec_loop_count + 1,
+            "ceo_approved": False,
+            "cost": _update_cost(state.cost, result),
+        }
+
+    # Step 2: USER approval for strategic transition
+    total_budget = sum(state.cfo_budget_allocation.values())
+    spec_summary = state.formal_spec[:500] if state.formal_spec else "No spec available"
+
+    user_approved = await request_spec_to_dev_approval(
+        spec_summary=spec_summary,
+        estimated_cost=total_budget,
+        acceptance_criteria=state.cpo_acceptance_criteria,
+    )
 
     return {
-        "spec_approved": approved,
+        "spec_approved": user_approved,
         "spec_loop_count": state.spec_loop_count + 1,
-        "ceo_approved": approved,
+        "ceo_approved": ceo_approved,
+        "user_approval_received": user_approved,
+        "user_approval_context": {
+            "gate": "spec_to_dev",
+            "timestamp": "now",
+            "approved": user_approved,
+        },
         "cost": _update_cost(state.cost, result),
     }
 
@@ -1267,9 +1310,25 @@ async def rebuild_analysis_node(state: NexusState) -> dict:
     in the state for downstream execution or reporting.
     """
     from src.agents.analyzer import Finding, save_analysis_state
+    from src.orchestrator.approval import request_rebuild_start_approval
 
     # Use the project path from state, or fall back to a default
     target_dir = state.project_path or "/tmp/nexus-rebuild"
+
+    # USER approval before starting rebuild analysis
+    user_approved = await request_rebuild_start_approval(
+        project_path=target_dir,
+        estimated_cost="Analysis: ~$2-5, Implementation: TBD based on findings",
+    )
+
+    if not user_approved:
+        logger.warning("User rejected rebuild analysis start for %s", target_dir)
+        return {
+            "analysis_findings": [],
+            "analysis_summary": {"status": "rejected_by_user", "reason": "User did not approve rebuild analysis"},
+            "analysis_state_path": None,
+            "escalation_reason": "User rejected rebuild analysis",
+        }
 
     result = await run_planning_agent(
         "chief_architect",

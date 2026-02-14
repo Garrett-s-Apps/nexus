@@ -21,6 +21,12 @@ MODEL_COSTS = {
     SONNET: {"input": 3.00, "output": 15.00},
     OPUS:   {"input": 15.00, "output": 75.00},
     O3:     {"input": 10.00, "output": 40.00},
+    # Short aliases for backward compatibility with agents.yaml
+    "haiku": {"input": 0.80, "output": 4.00},
+    "sonnet": {"input": 3.00, "output": 15.00},
+    "opus": {"input": 15.00, "output": 75.00},
+    "o3": {"input": 10.00, "output": 40.00},
+    "gemini": {"input": 0.15, "output": 0.60},  # Gemini 2.0 Flash pricing
 }
 
 

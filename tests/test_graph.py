@@ -17,9 +17,10 @@ class TestBuildGraph:
         graph = build_nexus_graph()
         assert graph is not None
 
-    def test_graph_has_18_nodes(self):
+    def test_graph_has_27_nodes(self):
+        """Graph should have 27 nodes after adding approval gates, TDD, SDD workflows."""
         graph = build_nexus_graph()
-        assert len(graph.nodes) == 18
+        assert len(graph.nodes) == 27
 
     def test_graph_has_escalation_node(self):
         graph = build_nexus_graph()

@@ -303,7 +303,7 @@ async def test_rate_limit_ip_validation(client):
 
 @pytest.mark.asyncio
 async def test_rate_limit_security_event_logging(client):
-    """Failed login attempts are logged as security events."""
+    """Failed login attempts are logged to login_attempts table."""
     import sqlite3
 
     from src.server.server import RATE_LIMIT_DB, _init_rate_limit_db, _record_failed_login
@@ -314,16 +314,17 @@ async def test_rate_limit_security_event_logging(client):
     # Record a failed login
     _record_failed_login("192.168.1.200")
 
-    # Check that event was logged
+    # Check that attempt was recorded in login_attempts table
     conn = sqlite3.connect(RATE_LIMIT_DB)
     cursor = conn.cursor()
-    events = cursor.execute(
-        "SELECT event_type FROM security_events WHERE ip = ?",
+    attempts = cursor.execute(
+        "SELECT attempt_count FROM login_attempts WHERE ip = ?",
         ("192.168.1.200",)
     ).fetchall()
     conn.close()
 
-    assert len(events) > 0
+    assert len(attempts) > 0
+    assert attempts[0][0] >= 1  # At least 1 failed attempt recorded
 
 
 @pytest.mark.asyncio

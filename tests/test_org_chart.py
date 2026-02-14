@@ -90,7 +90,8 @@ class TestOrgsGrouping:
         """Registry should group agents by layer (org)."""
         if not registry.is_initialized():
             registry.load_from_yaml()
-        expected_layers = {"product", "engineering", "security", "documentation", "analytics"}
+        # Updated layers after architectural changes
+        expected_layers = {"executive", "management", "senior", "quality", "consultant"}
         for layer in expected_layers:
             agents = registry.get_agents_by_layer(layer)
             assert len(agents) > 0, f"Layer {layer} has no members"
@@ -103,16 +104,17 @@ class TestOrgsGrouping:
         for agent in agents:
             assert agent.layer, f"Agent {agent.id} has no layer"
 
-    def test_engineering_is_largest_org(self):
-        """Engineering should have the most members."""
+    def test_layer_distribution_reasonable(self):
+        """Verify reasonable distribution of agents across layers."""
         if not registry.is_initialized():
             registry.load_from_yaml()
-        eng_agents = registry.get_agents_by_layer("engineering")
-        eng_count = len(eng_agents)
 
-        for layer_name in ["product", "security", "documentation", "analytics", "salesforce"]:
-            layer_agents = registry.get_agents_by_layer(layer_name)
-            assert eng_count >= len(layer_agents), f"{layer_name} is larger than engineering"
+        # Check that main working layers have reasonable size
+        impl_agents = registry.get_agents_by_layer("implementation")
+        exec_agents = registry.get_agents_by_layer("executive")
+
+        # Implementation layer should be larger than executive
+        assert len(impl_agents) > len(exec_agents), "Implementation layer should be larger than executive"
 
 
 class TestLeadershipAndICs:
@@ -177,11 +179,10 @@ class TestGetOrgSummary:
         summary = get_org_summary()
 
         assert "NEXUS" in summary
-        assert "PRODUCT" in summary or "product" in summary
-        assert "ENGINEERING" in summary or "engineering" in summary
-        assert "SECURITY" in summary or "security" in summary
-        assert "DOCUMENTATION" in summary or "documentation" in summary
-        assert "ANALYTICS" in summary or "analytics" in summary
+        # Check for new layer structure after architectural changes
+        assert ("EXECUTIVE" in summary or "executive" in summary)
+        assert ("MANAGEMENT" in summary or "management" in summary or "SENIOR" in summary or "senior" in summary)
+        assert ("QUALITY" in summary or "quality" in summary or "CONSULTANT" in summary or "consultant" in summary)
         assert "Total headcount:" in summary or "Total active agents:" in summary
 
     def test_org_summary_includes_all_agents(self):

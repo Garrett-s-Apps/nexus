@@ -1,29 +1,29 @@
 """
-NEXUS Sonnet Planner — creates structured execution plans before CLI handoff.
+NEXUS o3 Architect Planner — creates structured execution plans before CLI handoff.
 
-Sits between Haiku intake (classification) and Opus CLI (execution).
-Sonnet analyzes the directive, considers context, and produces a plan
-that gives Opus clear direction instead of a raw user message.
+Pipeline: Haiku (classify) → o3 (architect/plan) → Opus CLI (execute)
+
+o3 is the architect. It analyzes the directive, considers context from the ML
+system and RAG, and produces a structured plan that gives Opus clear direction.
+Falls back to Sonnet if o3 is unavailable.
 """
 
 import logging
-
-import anthropic
 
 from src.config import get_key
 from src.cost.tracker import cost_tracker
 
 logger = logging.getLogger("nexus.planner")
 
-PLANNER_SYSTEM = """You are a senior engineering planner for NEXUS, an autonomous software engineering organization.
+PLANNER_SYSTEM = """You are the chief architect for NEXUS, an autonomous software engineering organization.
 
 Your job is to take a CEO directive and produce a structured execution plan that an Opus-level
-engineer will follow. You are NOT implementing — you are PLANNING.
+engineer will follow. You are NOT implementing — you are ARCHITECTING and PLANNING.
 
 Given the directive and any available context (similar past work, RAG codebase context, ML briefing),
 produce a plan with:
 
-1. **Approach** — 2-3 sentences on overall strategy
+1. **Approach** — 2-3 sentences on overall strategy and architecture decisions
 2. **Steps** — numbered list of concrete implementation steps (max 8)
 3. **Files** — list of files likely to be created or modified
 4. **Risks** — potential pitfalls or things to watch out for (max 3)
@@ -37,6 +37,9 @@ If it's complex (new feature, multi-file refactor), be thorough.
 
 NEVER suggest the user do anything manually. Every step must be something
 the engineer agent executes autonomously.
+
+Consider architecture: separation of concerns, existing patterns in the codebase,
+test coverage, error handling, and how the change fits into the broader system.
 """
 
 
@@ -47,7 +50,9 @@ async def create_plan(
     thread_history: list[dict] | None = None,
 ) -> str:
     """
-    Create a structured execution plan for a directive.
+    Create a structured execution plan using o3 as architect.
+
+    Falls back to Sonnet if o3 is unavailable.
 
     Args:
         directive_text: The CEO's directive
@@ -58,13 +63,6 @@ async def create_plan(
     Returns:
         Structured plan text, or empty string if planning fails
     """
-    api_key = get_key("ANTHROPIC_API_KEY")
-    if not api_key:
-        logger.error("No ANTHROPIC_API_KEY for planner")
-        return ""
-
-    client = anthropic.AsyncAnthropic(api_key=api_key)
-
     # Build the planning prompt with all available context
     parts: list[str] = [f"## Directive\n{directive_text}"]
 
@@ -82,21 +80,58 @@ async def create_plan(
         )
         parts.append(f"\n## Thread Context\n{convo}")
 
-    user_message = "\n".join(parts)
+    task_prompt = "\n".join(parts)
+
+    # Try o3 architect first (lazy import — sdk_bridge has heavy deps)
+    logger.info("Creating execution plan with o3 architect: %s", directive_text[:80])
+    try:
+        from src.agents.sdk_bridge import run_o3
+    except ImportError:
+        logger.warning("sdk_bridge unavailable, using Sonnet fallback")
+        return await _sonnet_fallback(task_prompt)
+
+    result = await run_o3(
+        task_prompt=task_prompt,
+        system_prompt=PLANNER_SYSTEM,
+        timeout_seconds=120,
+    )
+
+    if result.succeeded and result.output and len(result.output) > 50:
+        logger.info(
+            "o3 plan created (%.1fs, %s): %s",
+            result.elapsed_seconds, result.model, directive_text[:80],
+        )
+        return result.output
+
+    # Fallback to Sonnet if o3 fails
+    logger.warning("o3 planner failed (%s), falling back to Sonnet", result.error_type or result.status)
+    return await _sonnet_fallback(task_prompt)
+
+
+async def _sonnet_fallback(task_prompt: str) -> str:
+    """Fallback planner using Anthropic Sonnet."""
+    import anthropic
+
+    api_key = get_key("ANTHROPIC_API_KEY")
+    if not api_key:
+        logger.error("No ANTHROPIC_API_KEY for Sonnet fallback planner")
+        return ""
+
+    client = anthropic.AsyncAnthropic(api_key=api_key)
 
     try:
         response = await client.messages.create(
             model="claude-sonnet-4-5-20250929",
             max_tokens=1500,
             system=PLANNER_SYSTEM,
-            messages=[{"role": "user", "content": user_message}],
+            messages=[{"role": "user", "content": task_prompt}],
         )
 
         tokens_in = response.usage.input_tokens
         tokens_out = response.usage.output_tokens
         cost_tracker.record(
             model="sonnet",
-            agent_name="sonnet_planner",
+            agent_name="sonnet_planner_fallback",
             tokens_in=tokens_in,
             tokens_out=tokens_out,
         )
@@ -109,14 +144,11 @@ async def create_plan(
         plan = plan_text.strip()
         if plan:
             logger.info(
-                "Plan created for directive (tokens: %d in, %d out): %s",
-                tokens_in, tokens_out, directive_text[:80],
+                "Sonnet fallback plan created (tokens: %d in, %d out)",
+                tokens_in, tokens_out,
             )
         return plan
 
-    except anthropic.APIError as e:
-        logger.error("Planner API error: %s", e)
-        return ""
     except Exception as e:
-        logger.exception("Planner unexpected error: %s", e)
+        logger.error("Sonnet fallback planner error: %s", e)
         return ""

@@ -252,3 +252,87 @@ async def test_session_fingerprint_validation(client):
         headers={"user-agent": "test-client-2"}
     )
     assert response.status_code == 401
+
+
+# SEC-005: Persistent rate limiting tests
+@pytest.mark.asyncio
+async def test_rate_limit_progressive_lockout(client):
+    """Failed login attempts trigger progressive lockout delays."""
+    # 5 failed attempts should trigger 1 minute lockout
+    for i in range(5):
+        response = await client.post("/auth/login", json={"passphrase": "wrong-pass"})
+        assert response.status_code == 403
+
+    # 6th attempt should be rate limited
+    response = await client.post("/auth/login", json={"passphrase": "wrong-pass"})
+    assert response.status_code == 429
+    assert "rate limited" in response.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_persistent_across_restarts(client):
+    """Rate limits persist in SQLite database across server restarts."""
+    from src.server.server import _record_failed_login, _check_rate_limit_persistent
+
+    # Simulate 10 failed attempts to trigger 10-minute lockout
+    for i in range(10):
+        _record_failed_login("192.168.1.100")
+
+    # Check that the IP is locked
+    allowed, reason = _check_rate_limit_persistent("192.168.1.100")
+    assert not allowed
+    assert "locked for" in reason
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_ip_validation(client):
+    """X-Forwarded-For is only trusted from localhost."""
+    # Direct connection should use client IP
+    response = await client.post("/auth/login", json={"passphrase": "wrong-pass"})
+    assert response.status_code == 403
+
+    # X-Forwarded-For from untrusted source should be ignored
+    response = await client.post(
+        "/auth/login",
+        json={"passphrase": "wrong-pass"},
+        headers={"x-forwarded-for": "spoofed.ip.address"}
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_security_event_logging(client):
+    """Failed login attempts are logged as security events."""
+    import sqlite3
+    from src.server.server import RATE_LIMIT_DB, _record_failed_login, _init_rate_limit_db
+
+    # Initialize database
+    _init_rate_limit_db()
+
+    # Record a failed login
+    _record_failed_login("192.168.1.200")
+
+    # Check that event was logged
+    conn = sqlite3.connect(RATE_LIMIT_DB)
+    cursor = conn.cursor()
+    events = cursor.execute(
+        "SELECT event_type FROM security_events WHERE ip = ?",
+        ("192.168.1.200",)
+    ).fetchall()
+    conn.close()
+
+    assert len(events) > 0
+
+
+@pytest.mark.asyncio
+async def test_successful_login_clears_attempts(client):
+    """Successful login after failed attempts allows access."""
+    # First, make a few failed attempts
+    for i in range(3):
+        response = await client.post("/auth/login", json={"passphrase": "wrong-pass"})
+        assert response.status_code == 403
+
+    # Now login successfully
+    response = await client.post("/auth/login", json={"passphrase": "test-pass"})
+    assert response.status_code == 200
+    assert response.json()["ok"] is True

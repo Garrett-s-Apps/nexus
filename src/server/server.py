@@ -9,11 +9,16 @@ FastAPI on localhost:4200.
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 import re
+import sqlite3
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 
@@ -251,39 +256,180 @@ async def auth_gate_middleware(request: Request, call_next):
 # Auth endpoints
 # ---------------------------------------------------------------------------
 
-# Rate limiting for login attempts
-_login_attempts: dict[str, list[float]] = {}
-_MAX_LOGIN_ATTEMPTS = 5
-_RATE_LIMIT_WINDOW = 60  # seconds
+# SEC-005: Persistent rate limiting with progressive delays
+RATE_LIMIT_DB = Path("~/.nexus/rate_limits.db").expanduser()
+
+# Progressive lockout thresholds
+_RATE_LIMITS = [
+    (5, 60),          # 5 attempts → 1 minute
+    (10, 600),        # 10 attempts → 10 minutes
+    (15, 3600),       # 15 attempts → 1 hour
+    (20, float('inf')) # 20 attempts → permanent
+]
 
 
-def _cleanup_old_attempts():
-    """Remove attempts older than the rate limit window."""
-    import time
-    cutoff = time.time() - _RATE_LIMIT_WINDOW
-    for ip in list(_login_attempts.keys()):
-        _login_attempts[ip] = [ts for ts in _login_attempts[ip] if ts > cutoff]
-        if not _login_attempts[ip]:
-            del _login_attempts[ip]
+def _init_rate_limit_db():
+    """Initialize the rate limit database with required schema."""
+    RATE_LIMIT_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(RATE_LIMIT_DB)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            ip TEXT PRIMARY KEY,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            first_attempt_at REAL NOT NULL,
+            last_attempt_at REAL NOT NULL,
+            locked_until REAL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS security_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL NOT NULL,
+            ip TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            details TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
 
-def _check_rate_limit(ip: str) -> bool:
-    """Check if IP has exceeded rate limit. Returns True if allowed, False if rate limited."""
-    import time
-    _cleanup_old_attempts()
+def _get_real_client_ip(request: Request) -> str:
+    """
+    Extract and validate client IP, preventing header spoofing.
 
-    attempts = _login_attempts.get(ip, [])
-    if len(attempts) >= _MAX_LOGIN_ATTEMPTS:
-        return False
+    SEC-005: Only trust X-Forwarded-For from known trusted proxies.
+    Validates IP format to prevent injection attacks.
+    """
+    trusted_proxies = {"127.0.0.1", "::1"}
 
-    _login_attempts.setdefault(ip, []).append(time.time())
-    return True
+    # Only trust X-Forwarded-For if request comes from trusted proxy
+    if request.client and request.client.host in trusted_proxies:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            ip_str = forwarded.split(",")[0].strip()
+            try:
+                # Validate IP format
+                ipaddress.ip_address(ip_str)
+                return ip_str
+            except ValueError:
+                logger.warning("Invalid IP in X-Forwarded-For: %s", ip_str)
+
+    # Fallback to direct connection IP
+    return request.client.host if request.client else "127.0.0.1"
+
+
+def _log_security_event(ip: str, event_type: str, details: str = ""):
+    """Log security events for audit trail."""
+    try:
+        conn = sqlite3.connect(RATE_LIMIT_DB)
+        conn.execute(
+            "INSERT INTO security_events (timestamp, ip, event_type, details) VALUES (?, ?, ?, ?)",
+            (time.time(), ip, event_type, details)
+        )
+        conn.commit()
+        conn.close()
+        logger.warning("Security event [%s] from %s: %s", event_type, ip, details)
+    except Exception as e:
+        logger.error("Failed to log security event: %s", e)
+
+
+def _check_rate_limit_persistent(ip: str) -> tuple[bool, str]:
+    """
+    Check persistent rate limit with progressive delays.
+
+    Returns:
+        (allowed: bool, reason: str)
+    """
+    _init_rate_limit_db()
+
+    conn = sqlite3.connect(RATE_LIMIT_DB)
+    cursor = conn.cursor()
+
+    now = time.time()
+
+    # Get current attempt record
+    row = cursor.execute(
+        "SELECT attempt_count, locked_until FROM login_attempts WHERE ip = ?",
+        (ip,)
+    ).fetchone()
+
+    if row:
+        attempt_count, locked_until = row
+
+        # Check if currently locked
+        if locked_until and now < locked_until:
+            conn.close()
+            remaining = int(locked_until - now)
+            if locked_until == float('inf'):
+                _log_security_event(ip, "RATE_LIMIT_PERMANENT", f"Permanently blocked after {attempt_count} attempts")
+                return False, "permanently blocked"
+            else:
+                _log_security_event(ip, "RATE_LIMIT_ACTIVE", f"Locked for {remaining}s (attempt {attempt_count})")
+                return False, f"locked for {remaining} seconds"
+
+    conn.close()
+    return True, "allowed"
+
+
+def _record_failed_login(ip: str):
+    """
+    Record a failed login attempt and apply progressive lockout.
+    """
+    _init_rate_limit_db()
+
+    conn = sqlite3.connect(RATE_LIMIT_DB)
+    cursor = conn.cursor()
+
+    now = time.time()
+
+    # Get or create attempt record
+    row = cursor.execute(
+        "SELECT attempt_count, first_attempt_at FROM login_attempts WHERE ip = ?",
+        (ip,)
+    ).fetchone()
+
+    if row:
+        attempt_count = row[0] + 1
+        first_attempt_at = row[1]
+    else:
+        attempt_count = 1
+        first_attempt_at = now
+
+    # Determine lockout duration based on progressive thresholds
+    locked_until = None
+    for threshold, duration in _RATE_LIMITS:
+        if attempt_count >= threshold:
+            if duration == float('inf'):
+                locked_until = float('inf')
+                _log_security_event(ip, "PERMANENT_LOCKOUT", f"Permanently locked after {attempt_count} attempts")
+            else:
+                locked_until = now + duration
+                _log_security_event(ip, "PROGRESSIVE_LOCKOUT", f"Locked for {duration}s after {attempt_count} attempts")
+
+    # Upsert attempt record
+    cursor.execute("""
+        INSERT INTO login_attempts (ip, attempt_count, first_attempt_at, last_attempt_at, locked_until)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(ip) DO UPDATE SET
+            attempt_count = ?,
+            last_attempt_at = ?,
+            locked_until = ?
+    """, (ip, attempt_count, first_attempt_at, now, locked_until,
+          attempt_count, now, locked_until))
+
+    conn.commit()
+    conn.close()
 
 
 def _clear_rate_limits():
     """Clear all rate limit tracking. Used for testing."""
-    global _login_attempts
-    _login_attempts = {}
+    if RATE_LIMIT_DB.exists():
+        conn = sqlite3.connect(RATE_LIMIT_DB)
+        conn.execute("DELETE FROM login_attempts")
+        conn.execute("DELETE FROM security_events")
+        conn.commit()
+        conn.close()
 
 
 class LoginRequest(BaseModel):
@@ -292,22 +438,36 @@ class LoginRequest(BaseModel):
 
 @app.post("/auth/login")
 async def auth_login(req: LoginRequest, request: Request):
-    """Verify passphrase and set httponly session cookie."""
-    client_ip = _get_client_ip(request)
+    """
+    Verify passphrase and set httponly session cookie.
 
-    if not _check_rate_limit(client_ip):
+    SEC-005: Uses persistent rate limiting with progressive delays.
+    """
+    # SEC-005: Use validated IP extraction
+    client_ip = _get_real_client_ip(request)
+
+    # SEC-005: Check persistent rate limit
+    allowed, reason = _check_rate_limit_persistent(client_ip)
+    if not allowed:
         from starlette.responses import JSONResponse
         return JSONResponse(
-            {"error": "too many attempts, try again later"},
+            {"error": f"rate limited: {reason}"},
             status_code=429
         )
 
+    # Verify passphrase
     if not verify_passphrase(req.passphrase):
+        # SEC-005: Record failed attempt with progressive lockout
+        _record_failed_login(client_ip)
         from starlette.responses import JSONResponse
         return JSONResponse({"error": "invalid passphrase"}, status_code=403)
 
+    # Successful login - create session
     user_agent = request.headers.get("user-agent", "")
     session_id = create_session(user_agent=user_agent, client_ip=client_ip)
+
+    # SEC-005: Log successful authentication
+    _log_security_event(client_ip, "LOGIN_SUCCESS", f"user-agent: {user_agent}")
 
     from starlette.responses import JSONResponse
     resp = JSONResponse({"ok": True, "token": session_id})

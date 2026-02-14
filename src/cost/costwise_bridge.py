@@ -19,14 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import asdict
 from typing import Any
-
-from costwise.analyzer import analyze
-from costwise.models import CostSummary, OptimizationTip
-from costwise.pricing import set_price as costwise_set_price
-from costwise.tracker import CostTracker as CostwiseTracker
-from costwise.tracker import get_tracker
 
 from src.config import NEXUS_DIR
 
@@ -50,9 +43,18 @@ _NEXUS_MODEL_MAP: dict[str, tuple[str, str]] = {
     "claude-code:haiku": ("anthropic", "claude-code:haiku"),
 }
 
+# Flag: is costwise package available?
+_COSTWISE_AVAILABLE = False
+try:
+    import costwise  # noqa: F401
+    _COSTWISE_AVAILABLE = True
+except ImportError:
+    logger.info("costwise package not installed — analytics features disabled")
 
-def _get_costwise_tracker() -> CostwiseTracker:
+
+def _get_costwise_tracker():
     """Get or create the costwise tracker singleton pointed at NEXUS DB."""
+    from costwise.tracker import get_tracker
     return get_tracker(
         db_path=COSTWISE_DB_PATH,
         tags={"org": "nexus", "env": os.environ.get("NEXUS_ENV", "production")},
@@ -72,6 +74,8 @@ def record_cost(
     error: str = "",
 ) -> None:
     """Record a cost event in costwise (called from NEXUS CostTracker)."""
+    if not _COSTWISE_AVAILABLE:
+        return
     try:
         tracker = _get_costwise_tracker()
         provider, cw_model = _NEXUS_MODEL_MAP.get(model, ("unknown", model))
@@ -102,8 +106,10 @@ def record_cost(
 
 def get_summary(period: str = "30d", days: int | None = None) -> dict[str, Any]:
     """Get costwise summary as a dict (safe for JSON serialization)."""
+    if not _COSTWISE_AVAILABLE:
+        return {"error": "costwise not installed"}
     tracker = _get_costwise_tracker()
-    summary: CostSummary = tracker.summary(period=period, days=days)
+    summary = tracker.summary(period=period, days=days)
     return {
         "period": summary.period,
         "total_cost": summary.total_cost,
@@ -121,25 +127,36 @@ def get_summary(period: str = "30d", days: int | None = None) -> dict[str, Any]:
 
 def get_daily_costs(days: int = 30) -> list[dict[str, Any]]:
     """Get daily cost time series."""
+    if not _COSTWISE_AVAILABLE:
+        return []
     result: list[dict[str, Any]] = _get_costwise_tracker().daily_costs(days)
     return result
 
 
 def get_model_breakdown(days: int = 30) -> list[dict[str, Any]]:
     """Get cost breakdown by model."""
+    if not _COSTWISE_AVAILABLE:
+        return []
     result: list[dict[str, Any]] = _get_costwise_tracker().model_breakdown(days)
     return result
 
 
 def get_optimization_tips(days: int = 30) -> list[dict[str, Any]]:
     """Get optimization recommendations from the costwise analyzer."""
+    if not _COSTWISE_AVAILABLE:
+        return []
+    from dataclasses import asdict
+
+    from costwise.analyzer import analyze
     tracker = _get_costwise_tracker()
-    tips: list[OptimizationTip] = analyze(tracker.storage, days)
+    tips = analyze(tracker.storage, days)
     return [asdict(tip) for tip in tips]
 
 
 def get_agent_costs(agent_name: str, days: int = 30) -> dict[str, Any]:
     """Get cost data for a specific agent (for cost_consultant queries)."""
+    if not _COSTWISE_AVAILABLE:
+        return {"agent": agent_name, "total_cost": 0.0, "calls": 0}
     tracker = _get_costwise_tracker()
     records = tracker.query(tag_key="agent", tag_value=agent_name)
     if not records:
@@ -166,6 +183,8 @@ def get_agent_costs(agent_name: str, days: int = 30) -> dict[str, Any]:
 
 def get_project_costs(project: str, days: int = 30) -> dict[str, Any]:
     """Get cost data for a specific project."""
+    if not _COSTWISE_AVAILABLE:
+        return {"project": project, "total_cost": 0.0, "calls": 0}
     tracker = _get_costwise_tracker()
     records = tracker.query(tag_key="project", tag_value=project)
     if not records:
@@ -185,6 +204,9 @@ def get_project_costs(project: str, days: int = 30) -> dict[str, Any]:
 
 def register_nexus_pricing() -> None:
     """Register NEXUS-specific pricing (Claude Code at $0 for Max sub)."""
+    if not _COSTWISE_AVAILABLE:
+        return
+    from costwise.pricing import set_price as costwise_set_price
     costwise_set_price("claude-code:opus", 0.0, 0.0)
     costwise_set_price("claude-code:sonnet", 0.0, 0.0)
     costwise_set_price("claude-code:haiku", 0.0, 0.0)
@@ -192,9 +214,10 @@ def register_nexus_pricing() -> None:
 
 def healthcheck() -> dict[str, Any]:
     """Check costwise backend health."""
+    if not _COSTWISE_AVAILABLE:
+        return {"status": "unavailable", "error": "costwise package not installed"}
     try:
         tracker = _get_costwise_tracker()
-        # Verify DB is accessible
         summary = tracker.summary(days=1)
         return {
             "status": "up",
@@ -220,6 +243,8 @@ def get_efficiency_report(days: int = 30) -> dict[str, Any]:
 
 def export_costs(days: int = 30, fmt: str = "json") -> str:
     """Export cost records as JSON or CSV."""
+    if not _COSTWISE_AVAILABLE:
+        return "[]" if fmt == "json" else ""
     import json as json_mod
     import time as time_mod
 

@@ -250,7 +250,13 @@ class AgentRegistry(SQLiteStore):
         return [a for a in self.get_active_agents() if a.layer == layer]
 
     def get_direct_reports(self, manager_id: str) -> list[Agent]:
-        return [a for a in self.get_active_agents() if a.reports_to == manager_id]
+        """Get direct reports using a targeted SQL query instead of filtering all agents."""
+        conn = self._db()
+        rows = conn.execute(
+            "SELECT * FROM agents WHERE reports_to = ? AND status IN ('active', 'temporary')",
+            (manager_id,)
+        ).fetchall()
+        return [Agent.from_row(row) for row in rows]
 
     def get_agent_by_name(self, name: str) -> Agent | None:
         conn = self._db()
@@ -400,7 +406,10 @@ class AgentRegistry(SQLiteStore):
             return True
 
     def consolidate_agents(self, agent_ids: list[str], new_agent_id: str, new_name: str, new_description: str) -> Agent | None:
-        agents = [a for aid in agent_ids if (a := self.get_agent(aid)) is not None]
+        """Consolidate multiple agents using batch queries instead of N+1 pattern."""
+        # Batch fetch all agents in one query
+        agents_dict = self.get_agents_batch(agent_ids)
+        agents = list(agents_dict.values())
         if not agents:
             return None
 
@@ -421,14 +430,15 @@ class AgentRegistry(SQLiteStore):
         for aid in agent_ids:
             self.fire_agent(aid, reason=f"Consolidated into {new_name}")
 
-        all_orphans = []
+        # Batch fetch all orphans in one query
         conn = self._db()
-        for aid in agent_ids:
-            orphans = conn.execute(
-                "SELECT id FROM agents WHERE reports_to = ? AND status IN ('active', 'temporary')",
-                (aid,),
-            ).fetchall()
-            all_orphans.extend([o[0] for o in orphans])
+        ph = ",".join("?" for _ in agent_ids)
+        # Safe: ph contains only "?" placeholders, no user input in query structure
+        orphan_rows = conn.execute(
+            f"SELECT id FROM agents WHERE reports_to IN ({ph}) AND status IN ('active', 'temporary')",  # noqa: S608
+            agent_ids
+        ).fetchall()
+        all_orphans = [row[0] for row in orphan_rows]
 
         new_agent = self.hire_agent(
             agent_id=new_agent_id,
@@ -474,19 +484,36 @@ class AgentRegistry(SQLiteStore):
         return "\n".join(lines)
 
     def get_reporting_tree(self, root_id: str = "ceo", indent: int = 0) -> str:
-        agent = self.get_agent(root_id)
-        if not agent or agent.status not in ("active", "temporary"):
-            return ""
+        """Build reporting tree with a single query instead of N+1 pattern."""
+        # Fetch entire org tree in one query
+        conn = self._db()
+        rows = conn.execute(
+            "SELECT * FROM agents WHERE status IN ('active', 'temporary')"
+        ).fetchall()
 
-        prefix = "  " * indent
-        status_tag = " (temp)" if agent.status == "temporary" else ""
-        line = f"{prefix}{agent.name} [{agent.model}]{status_tag}\n"
+        # Build lookup maps
+        agents_by_id = {row[0]: Agent.from_row(row) for row in rows}
+        reports_by_manager: dict[str, list[Agent]] = {}
+        for agent in agents_by_id.values():
+            if agent.reports_to:
+                reports_by_manager.setdefault(agent.reports_to, []).append(agent)
 
-        reports = self.get_direct_reports(root_id)
-        for report in reports:
-            line += self.get_reporting_tree(report.id, indent + 1)
+        # Recursive tree builder using in-memory maps
+        def build_tree(agent_id: str, depth: int) -> str:
+            agent = agents_by_id.get(agent_id)
+            if not agent:
+                return ""
 
-        return line
+            prefix = "  " * depth
+            status_tag = " (temp)" if agent.status == "temporary" else ""
+            result = f"{prefix}{agent.name} [{agent.model}]{status_tag}\n"
+
+            for report in reports_by_manager.get(agent_id, []):
+                result += build_tree(report.id, depth + 1)
+
+            return result
+
+        return build_tree(root_id, indent)
 
     def get_changelog(self, limit: int = 20) -> list[dict]:
         conn = self._db()

@@ -76,7 +76,7 @@ def test_ml_batch():
     ml_store.init()
 
     # Record some test outcomes
-    ml_store.record_task_outcome(
+    ml_store.record_outcome(
         directive_id="dir1",
         task_id="task1",
         agent_id="agent1",
@@ -85,7 +85,7 @@ def test_ml_batch():
         cost_usd=0.05,
         duration_sec=10.0
     )
-    ml_store.record_task_outcome(
+    ml_store.record_outcome(
         directive_id="dir1",
         task_id="task2",
         agent_id="agent2",

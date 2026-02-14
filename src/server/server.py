@@ -395,8 +395,8 @@ async def health():
             ("ml_db", lambda: ml_store._conn is not None),
             ("knowledge_db", lambda: knowledge_store._conn is not None),
             ("memory_db", lambda: memory._conn is not None),
-            ("registry_db", lambda: registry._conn is not None),
-            ("cost_db", lambda: cost_tracker._conn is not None),
+            ("registry_db", lambda: os.path.exists(registry.db_path)),
+            ("cost_db", lambda: os.path.exists(cost_tracker.db_path)),
         ]:
             try:
                 checks[name] = {"status": "up" if check_fn() else "down"}
@@ -504,8 +504,8 @@ async def health_detail():
         ("ml_db", lambda: ml_store._conn is not None),
         ("knowledge_db", lambda: knowledge_store._conn is not None),
         ("memory_db", lambda: memory._conn is not None),
-        ("registry_db", lambda: registry._conn is not None),
-        ("cost_db", lambda: cost_tracker._conn is not None),
+        ("registry_db", lambda: os.path.exists(registry.db_path)),
+        ("cost_db", lambda: os.path.exists(cost_tracker.db_path)),
     ]:
         try:
             checks[name] = {"status": "up" if check_fn() else "down"}

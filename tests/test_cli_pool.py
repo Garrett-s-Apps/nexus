@@ -46,7 +46,7 @@ class TestCLISessionPool:
         pool = CLISessionPool()
         status = pool.status()
         assert status["active_sessions"] == 0
-        assert status["total_created"] == 0
+        assert status["total_threads"] == 0
         assert status["sessions"] == []
 
     @pytest.mark.asyncio
@@ -59,7 +59,7 @@ class TestCLISessionPool:
         session.process.terminate = MagicMock()
         session.process.wait = AsyncMock()
         session.process.kill = MagicMock()
-        pool._sessions["thread-1"] = session
+        pool._sessions["thread-1"] = [session]
         await pool.cleanup_stale()
         assert "thread-1" not in pool._sessions
 
@@ -72,6 +72,6 @@ class TestCLISessionPool:
         session.process.terminate = MagicMock()
         session.process.wait = AsyncMock()
         session.process.kill = MagicMock()
-        pool._sessions["thread-1"] = session
+        pool._sessions["thread-1"] = [session]
         await pool.shutdown()
         assert len(pool._sessions) == 0

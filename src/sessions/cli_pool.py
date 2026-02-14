@@ -30,6 +30,7 @@ CLAUDE_CMD = "claude"
 DOCKER_CMD = "docker"
 IDLE_TIMEOUT = 1800  # 30 minutes
 DEFAULT_TIMEOUT = 900  # 15 minutes
+STREAM_BUFFER_LIMIT = 10 * 1024 * 1024  # 10 MB — stream-json lines can exceed asyncio's 64KB default
 
 # Map CLI tool names to human-readable Slack status
 _TOOL_STATUS: dict[str, str] = {
@@ -105,6 +106,7 @@ class CLISession:
             stderr=asyncio.subprocess.PIPE,
             cwd=self.project_path,
             env=clean_env,
+            limit=STREAM_BUFFER_LIMIT,
         )
 
     async def _start_docker(self) -> asyncio.subprocess.Process:
@@ -124,6 +126,7 @@ class CLISession:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=STREAM_BUFFER_LIMIT,
         )
 
     def cancel(self):

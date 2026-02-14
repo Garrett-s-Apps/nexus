@@ -3,13 +3,16 @@
 NEXUS CLI
 
 Usage:
-    nexus start              Start the server + Slack listener
-    nexus status             Show active workstreams
-    nexus kpi                Show KPI dashboard
-    nexus cost               Show cost report
-    nexus talk <agent> <msg> Talk to a specific agent
-    nexus directive <text>   Submit a directive
-    nexus stop               Stop the server
+    nexus start                    Start the server + Slack listener
+    nexus status                   Show active workstreams
+    nexus kpi                      Show KPI dashboard
+    nexus cost                     Show cost report
+    nexus talk <agent> <msg>       Talk to a specific agent
+    nexus directive <text>         Submit a directive
+    nexus checkpoint save <name>   Save a manual checkpoint
+    nexus checkpoint list          List all checkpoints
+    nexus checkpoint restore <name> Restore a checkpoint
+    nexus stop                     Stop the server
 """
 
 import sys
@@ -184,6 +187,59 @@ def main():
                 print("NEXUS is working. You'll be notified via Slack when complete.")
         except ValueError as e:
             print(f"Error: Invalid input - {e}", file=sys.stderr)
+            sys.exit(1)
+
+    elif command == "checkpoint":
+        from src.orchestrator.checkpoint import CheckpointManager
+        checkpoint_mgr = CheckpointManager()
+
+        if len(sys.argv) < 3:
+            print("Usage:")
+            print("  nexus checkpoint save <name>")
+            print("  nexus checkpoint list")
+            print("  nexus checkpoint restore <name>")
+            sys.exit(1)
+
+        subcommand = sys.argv[2]
+
+        if subcommand == "save":
+            if len(sys.argv) < 4:
+                print("Error: Checkpoint name required")
+                print("Usage: nexus checkpoint save <name>")
+                sys.exit(1)
+            name = sys.argv[3]
+            checkpoint_mgr.save_checkpoint(name, manual=True)
+            print(f"✅ Checkpoint saved: {name}")
+
+        elif subcommand == "list":
+            checkpoints = checkpoint_mgr.list_checkpoints()
+            if not checkpoints:
+                print("No checkpoints found.")
+            else:
+                print("\n" + "=" * 63)
+                print("📸 CHECKPOINTS")
+                print("=" * 63 + "\n")
+
+                for cp in checkpoints:
+                    marker = "📌" if cp["manual"] else "⏰"
+                    print(f"{marker} {cp['name']}")
+                    print(f"   Time: {cp['timestamp']}")
+                    print(f"   Branch: {cp['branch']} | Uncommitted: {cp['uncommitted']} files")
+                    print(f"   Cost: ${cp['cost']:.2f}\n")
+
+        elif subcommand == "restore":
+            if len(sys.argv) < 4:
+                print("Error: Checkpoint name required")
+                print("Usage: nexus checkpoint restore <name>")
+                sys.exit(1)
+            name = sys.argv[3]
+            success = checkpoint_mgr.restore_checkpoint(name)
+            if not success:
+                sys.exit(1)
+
+        else:
+            print(f"Unknown checkpoint subcommand: {subcommand}")
+            print("Valid subcommands: save, list, restore")
             sys.exit(1)
 
     else:

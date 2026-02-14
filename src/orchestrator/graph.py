@@ -26,6 +26,7 @@ from src.agents.sdk_bridge import (
     run_sdk_agent,
 )
 from src.agents.task_result import TaskResult
+from src.orchestrator.checkpoint import CheckpointManager
 from src.orchestrator.state import CostSnapshot, NexusState, PRReview, WorkstreamTask
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,20 @@ async def _run_impl_agent(agent_key: str, agent_config: dict, prompt: str, proje
 
 
 async def safe_node(node_fn, state: NexusState, timeout: int = 300) -> dict:
-    """Wrap any node function with timeout and error handling."""
+    """Wrap any node function with timeout and error handling.
+
+    Auto-checkpoints before executing the node.
+    """
+    # Auto-checkpoint before node execution
+    try:
+        checkpoint_manager = CheckpointManager(state.project_path)
+        checkpoint_name = f"before-{node_fn.__name__}-{state.current_phase}"
+        checkpoint_manager.save_checkpoint(checkpoint_name, manual=False)
+        logger.debug("Auto-checkpoint created: %s", checkpoint_name)
+    except Exception as e:
+        logger.warning("Failed to create auto-checkpoint: %s", e)
+
+    # Execute node with timeout and error handling
     try:
         return await asyncio.wait_for(node_fn(state), timeout=timeout)
     except TimeoutError:
@@ -141,9 +155,48 @@ Recommend cost-saving approaches if needed (e.g., use Haiku for X, skip Y).
 Output a budget allocation as key:value pairs.""",
     )
 
+    budget_allocation = _parse_budget(result.output)
+
+    # Calculate total allocated budget
+    total_budget = sum(budget_allocation.values())
+    current_spend = cost_tracker.total_cost
+
+    # Budget enforcement logic
+    cfo_approved = True
+    budget_warnings = []
+
+    # Check if current spend already exceeds hourly hard cap
+    if cost_tracker.hourly_rate > cost_tracker.budgets["hourly_hard_cap"]:
+        cfo_approved = False
+        budget_warnings.append(
+            f"BUDGET EXCEEDED: Hourly rate ${cost_tracker.hourly_rate:.2f}/hr exceeds hard cap ${cost_tracker.budgets['hourly_hard_cap']:.2f}/hr"
+        )
+
+    # Check if projected spend would exceed session hard cap
+    projected_total = current_spend + total_budget
+    if projected_total > cost_tracker.budgets["session_hard_cap"]:
+        cfo_approved = False
+        budget_warnings.append(
+            f"BUDGET EXCEEDED: Projected total ${projected_total:.2f} exceeds session hard cap ${cost_tracker.budgets['session_hard_cap']:.2f}"
+        )
+
+    # High-cost operation warning (>$10)
+    if total_budget > 10.0:
+        budget_warnings.append(
+            f"HIGH COST WARNING: Allocated budget ${total_budget:.2f} exceeds $10.00. User approval recommended."
+        )
+        # For high-cost ops, set approved to False to trigger escalation
+        cfo_approved = False
+
+    # Log warnings
+    if budget_warnings:
+        logger.warning("CFO Budget Warnings: %s", " | ".join(budget_warnings))
+        # Add warnings to budget allocation for visibility
+        budget_allocation["_warnings"] = " | ".join(budget_warnings)
+
     return {
-        "cfo_budget_allocation": _parse_budget(result.output),
-        "cfo_approved": True,
+        "cfo_budget_allocation": budget_allocation,
+        "cfo_approved": cfo_approved,
         "cost": _update_cost(state.cost, result),
     }
 
@@ -722,6 +775,15 @@ def route_after_escalation(state: NexusState) -> str:
     return "demo"
 
 
+def route_after_cfo(state: NexusState) -> str:
+    """Route after CFO budget approval. Block if budget exceeded."""
+    if state.cfo_approved:
+        return "cro"
+    # Budget exceeded - escalate for approval
+    logger.warning("CFO budget not approved. Routing to escalation for user approval.")
+    return "escalation"
+
+
 # ============================================
 # GRAPH CONSTRUCTION
 # This builds the actual executable graph.
@@ -762,7 +824,12 @@ def build_nexus_graph() -> StateGraph:
     graph.add_edge("intake", "ceo")
     graph.add_edge("ceo", "cpo")
     graph.add_edge("cpo", "cfo")
-    graph.add_edge("cfo", "cro")
+    # CFO → conditional routing based on budget approval
+    graph.add_conditional_edges(
+        "cfo",
+        route_after_cfo,
+        {"cro": "cro", "escalation": "escalation"},
+    )
     graph.add_edge("cro", "executive_consensus")
 
     # Executive consensus → either loop back or proceed

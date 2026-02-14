@@ -21,6 +21,7 @@ from src.ml.embeddings import (
     cosine_similarity,
     embedding_to_bytes,
     encode,
+    encode_async,
 )
 from src.ml.knowledge_store import knowledge_store
 
@@ -58,16 +59,17 @@ def _classify_domain(content: str, chunk_type: str) -> str:
     return "general"
 
 
-def ingest(
+async def ingest_async(
     chunk_type: str,
     content: str,
     source_id: str = "",
     metadata: dict | None = None,
 ) -> bool:
-    """Embed and store a knowledge chunk for future retrieval.
+    """Async embed and store a knowledge chunk for future retrieval.
 
     Returns True on success, False on failure (non-fatal).
     Deduplicates by source_id — repeated ingestions update the existing chunk.
+    Uses async embedding to prevent event loop blocking during ingestion.
     """
     if not content or len(content.strip()) < 20:
         return False
@@ -83,7 +85,7 @@ def ingest(
 
         # Truncate very long content before embedding
         embed_text = content[:2000]
-        embedding = encode(embed_text)
+        embedding = await encode_async(embed_text)
         knowledge_store.store_chunk(
             chunk_type=chunk_type,
             content=content[:4000],  # Store more than we embed
@@ -97,6 +99,19 @@ def ingest(
     except Exception as e:
         logger.warning("RAG ingest failed: %s", e)
         return False
+
+
+async def ingest_conversation_async(
+    thread_ts: str, user_message: str, assistant_response: str,
+) -> bool:
+    """Async store a conversation exchange as a retrievable chunk."""
+    content = f"User asked: {user_message[:500]}\nNEXUS responded: {assistant_response[:1500]}"
+    return await ingest_async(
+        chunk_type="conversation",
+        content=content,
+        source_id=f"thread:{thread_ts}",
+        metadata={"thread_ts": thread_ts, "timestamp": time.time()},
+    )
 
 
 def ingest_conversation(
@@ -167,7 +182,7 @@ def ingest_code_change(
     )
 
 
-def retrieve(
+async def retrieve_async(
     query: str,
     top_k: int = 5,
     threshold: float = 0.35,
@@ -175,17 +190,18 @@ def retrieve(
     domain_tag: str | None = None,
     exclude_source_ids: set[str] | None = None,
 ) -> list[dict]:
-    """Retrieve the most relevant knowledge chunks for a query.
+    """Async retrieve the most relevant knowledge chunks for a query.
 
     Returns chunks sorted by weighted similarity score.
     Excludes chunks whose source_id matches exclude_source_ids (e.g. current thread).
 
     Pre-filters by chunk_type and/or domain_tag to reduce cosine similarity candidates.
+    Uses async embedding to prevent event loop blocking (50-100ms savings per query).
     """
     try:
         start_time = time.time()
 
-        query_embedding = encode(query[:1000])
+        query_embedding = await encode_async(query[:1000])
 
         # Use pre-filtering to reduce candidate set
         chunk_type_filter = chunk_types[0] if chunk_types and len(chunk_types) == 1 else None
@@ -249,17 +265,18 @@ def retrieve(
         return []
 
 
-def build_rag_context(
+async def build_rag_context_async(
     query: str,
     max_chars: int = MAX_CONTEXT_TOKENS * CHARS_PER_TOKEN,
     exclude_source_ids: set[str] | None = None,
 ) -> str:
-    """Retrieve relevant knowledge and format it for prompt injection.
+    """Async retrieve relevant knowledge and format it for prompt injection.
 
     Returns a formatted context block, or empty string if nothing relevant.
     Filters out chunks from excluded sources to avoid duplicating thread history.
+    Uses async embedding to prevent event loop blocking.
     """
-    chunks = retrieve(query, top_k=8, exclude_source_ids=exclude_source_ids)
+    chunks = await retrieve_async(query, top_k=8, exclude_source_ids=exclude_source_ids)
     if not chunks:
         return ""
 

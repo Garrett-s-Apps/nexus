@@ -372,7 +372,7 @@ def _get_real_client_ip(request: Request) -> str:
             try:
                 # Validate IP format
                 ipaddress.ip_address(ip_str)
-                return ip_str
+                return ip_str  # type: ignore[no-any-return]
             except ValueError:
                 logger.warning("Invalid IP in X-Forwarded-For: %s", ip_str)
 

@@ -25,7 +25,7 @@ MODEL_COSTS = {
 ORG_CHART = {
     # === PRODUCT ORG ===
     "vp_product": {
-        "name": "Marcus", "title": "VP of Product", "model": OPUS,
+        "name": "Marcus", "title": "VP of Product", "model": SONNET,
         "role": "Owns the product org. Defines product strategy, prioritizes the roadmap, ensures alignment between engineering delivery and business goals. Reviews PRDs from PMs. Reports status and strategic recommendations to the CEO.",
         "reports_to": "ceo", "direct_reports": ["pm_1", "pm_2"], "org": "product",
         "produces": ["product_strategy", "roadmap_priorities", "status_memos", "approval_decisions"],
@@ -45,7 +45,7 @@ ORG_CHART = {
 
     # === ENGINEERING ORG ===
     "vp_engineering": {
-        "name": "Adrian", "title": "VP of Engineering", "model": OPUS,
+        "name": "Adrian", "title": "VP of Engineering", "model": SONNET,
         "role": "Owns the engineering org. Makes high-level architecture decisions with the Chief Architect. Manages engineering leads. Ensures code quality, velocity, and technical excellence. Does NOT write code. Reports to CEO on engineering status, risks, and technical direction. Can hire new engineers when skill gaps are identified.",
         "reports_to": "ceo", "direct_reports": ["chief_architect", "eng_lead", "code_review_lead", "qa_lead"], "org": "engineering",
         "produces": ["architecture_decisions", "engineering_memos", "status_reports", "hiring_decisions"],
@@ -131,7 +131,7 @@ ORG_CHART = {
 
     # === SECURITY & INFRASTRUCTURE ORG ===
     "ciso": {
-        "name": "Dominic", "title": "CISO", "model": OPUS,
+        "name": "Dominic", "title": "CISO", "model": SONNET,
         "role": "Owns security, networking, DevOps, and infrastructure. Sets security policy, reviews threat models, approves deployments. Reports security posture to CEO. Can hire security/infra specialists when needed.",
         "reports_to": "ceo", "direct_reports": ["security_engineer", "devops_engineer"], "org": "security",
         "produces": ["security_assessments", "threat_models", "security_policies", "incident_reports"],
@@ -151,7 +151,7 @@ ORG_CHART = {
 
     # === DOCUMENTATION ORG ===
     "head_of_docs": {
-        "name": "Grant", "title": "Head of Documentation", "model": OPUS,
+        "name": "Grant", "title": "Head of Documentation", "model": SONNET,
         "role": "Owns all documentation output. Ensures quality, consistency, and completeness of all written deliverables. Reviews technical writer output. Manages documentation standards and templates.",
         "reports_to": "ceo", "direct_reports": ["tech_writer"], "org": "documentation",
         "produces": ["doc_standards", "templates", "review_decisions", "doc_strategy"],
@@ -165,7 +165,7 @@ ORG_CHART = {
 
     # === EXECUTIVE CONSULTANT ===
     "consultant": {
-        "name": "Sterling", "title": "Executive Consultant", "model": OPUS,
+        "name": "Sterling", "title": "Executive Consultant", "model": SONNET,
         "role": "Creates powerful PPTX pitch decks, executive-level Word documents, board presentations, investor materials, one-pagers, and strategic briefs. Specializes in executive communication and visual storytelling.",
         "reports_to": "ceo", "direct_reports": [], "org": "executive",
         "produces": ["pptx_decks", "executive_docx", "pitch_decks", "one_pagers", "strategic_briefs"],
@@ -173,7 +173,7 @@ ORG_CHART = {
 
     # === ANALYTICS ORG ===
     "director_analytics": {
-        "name": "Brennan", "title": "Director of Analytics", "model": OPUS,
+        "name": "Brennan", "title": "Director of Analytics", "model": SONNET,
         "role": "Owns the analytics org. Defines analytics strategy, reviews data models, ensures data quality and insight accuracy. Uses advanced statistical methods. Can hire analysts when needed. Reports insights to CEO.",
         "reports_to": "ceo", "direct_reports": ["sr_data_analyst", "data_analyst"], "org": "analytics",
         "produces": ["analytics_strategy", "data_models", "executive_dashboards", "insight_reports"],
@@ -193,7 +193,7 @@ ORG_CHART = {
 
     # === SALESFORCE ORG ===
     "vp_salesforce": {
-        "name": "Cameron", "title": "VP of Salesforce", "model": OPUS,
+        "name": "Cameron", "title": "VP of Salesforce", "model": SONNET,
         "role": "Owns the Salesforce practice. Defines Salesforce strategy, architecture decisions, and oversees all Salesforce implementations. Manages both product (PM) and engineering (technical) sides of Salesforce work. Expert in Financial Services Cloud, Service Cloud, Agent Force.",
         "reports_to": "ceo", "direct_reports": ["sf_product_lead", "sf_eng_lead"], "org": "salesforce",
         "produces": ["salesforce_strategy", "architecture_decisions", "implementation_roadmaps", "executive_updates"],
@@ -201,7 +201,7 @@ ORG_CHART = {
 
     # SALESFORCE PRODUCT SIDE
     "sf_product_lead": {
-        "name": "Parker", "title": "Salesforce Product Lead", "model": OPUS,
+        "name": "Parker", "title": "Salesforce Product Lead", "model": SONNET,
         "role": "Leads Salesforce product strategy and requirements. Writes PRDs, user stories, and specs for Salesforce implementations. Expert in Financial Services Cloud business processes, Service Cloud features, and Agent Force capabilities.",
         "reports_to": "vp_salesforce", "direct_reports": ["sf_pm_senior", "sf_pm"], "org": "salesforce",
         "produces": ["prd", "user_stories", "specs", "product_strategy", "requirements"],
@@ -221,7 +221,7 @@ ORG_CHART = {
 
     # SALESFORCE ENGINEERING SIDE
     "sf_eng_lead": {
-        "name": "Quinn", "title": "Salesforce Engineering Lead", "model": OPUS,
+        "name": "Quinn", "title": "Salesforce Engineering Lead", "model": SONNET,
         "role": "Leads Salesforce engineering team. Expert in Salesforce architecture, Apex, LWC, Visualforce, integrations, data migrations. Owns technical decisions for all Salesforce implementations. Manages data model experts, developers, and integration specialists.",
         "reports_to": "vp_salesforce", "direct_reports": ["sf_fsc_data_expert", "sf_service_cloud_architect", "sf_developer", "sf_integration_engineer", "sf_agent_force_specialist"], "org": "salesforce",
         "produces": ["technical_architecture", "implementation_plans", "code_reviews", "technical_specs"],

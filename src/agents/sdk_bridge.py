@@ -184,7 +184,7 @@ async def run_sdk_agent(
     Spawn a Claude Agent SDK session for an agent that needs filesystem access.
     Returns the agent's output and cost information.
     """
-    model = cost_tracker.get_effective_model(MODEL_MAP.get(agent_config.get("model", "sonnet"), "sonnet"))
+    model = cost_tracker.get_effective_model(MODEL_MAP.get(agent_config.get("model", "sonnet"), "sonnet"), agent_name=agent_name)
     system_prompt = agent_config.get("system_prompt", "")
     allowed_tools = agent_config.get("tools", ["Read", "Grep", "Glob"])
 

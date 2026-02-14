@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.agents.org_chart import get_org_summary
+from src.cost.api_routes import router as costwise_router
 from src.memory.store import memory
 from src.observability.api_routes import router as metrics_router
 from src.security.auth_gate import (
@@ -66,6 +67,13 @@ def _register_background_jobs():
 
     scheduler.register("embedding_warmup", _embedding_warmup, interval_seconds=86400, run_immediately=True)
 
+    # Costwise bloat analysis — periodic model bloat detection
+    def _costwise_bloat_analysis():
+        from src.cost.bloat_detector import bloat_detector
+        bloat_detector.analyze(days=7)
+
+    scheduler.register("costwise_bloat", _costwise_bloat_analysis, interval_seconds=300)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -105,6 +113,7 @@ async def _start_slack():
 
 app = FastAPI(title="NEXUS", version="3.0.0", lifespan=lifespan)
 app.include_router(metrics_router)
+app.include_router(costwise_router)
 
 _ALLOWED_ORIGINS = [
     "http://localhost:4200",
@@ -167,7 +176,7 @@ async def jwt_signing_middleware(request: Request, call_next):
 _PUBLIC_PATHS = {
     "/auth/login", "/auth/check", "/health", "/dashboard/logo.svg",
 }
-_PUBLIC_PREFIXES = ("/auth/",)
+_PUBLIC_PREFIXES = ("/auth/", "/costwise/")
 _TOKEN_HEADER = "Authorization"  # noqa: S105 — header name, not a password
 
 
@@ -182,7 +191,7 @@ def _get_client_ip(request: Request) -> str:
 @app.middleware("http")
 async def auth_gate_middleware(request: Request, call_next):
     """Reject unauthenticated requests to protected routes."""
-    path = request.url.path
+    path = os.path.normpath(request.url.path)
 
     if path in _PUBLIC_PATHS or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
         return await call_next(request)
@@ -387,6 +396,7 @@ async def health():
     # Database connectivity — degrade gracefully, never return 503
     try:
         from src.agents.registry import registry
+        from src.cost.costwise_bridge import healthcheck as costwise_healthcheck
         from src.cost.tracker import cost_tracker
         from src.ml.knowledge_store import knowledge_store
         from src.ml.store import ml_store
@@ -408,6 +418,15 @@ async def health():
     except Exception as e:
         checks["databases"] = {"status": "unknown", "error": str(e)}
         overall = "degraded"
+
+    # Costwise analytics backend
+    try:
+        cw_health = costwise_healthcheck()
+        checks["costwise"] = cw_health
+        if cw_health.get("status") != "up" and overall == "healthy":
+            overall = "degraded"
+    except Exception as e:
+        checks["costwise"] = {"status": "unknown", "error": str(e)}
 
     # ML model staleness
     try:

@@ -120,6 +120,19 @@ class KPITracker:
 
         agents = registry.get_active_agents()
 
+        # Pull optimization tips from costwise analyzer
+        tips_section = ""
+        try:
+            from src.cost.costwise_bridge import get_optimization_tips
+            tips = get_optimization_tips(days=30)
+            if tips:
+                tips_section = "\nCOST OPTIMIZATION (costwise)\n"
+                for tip in tips[:5]:
+                    icon = "!!" if tip["severity"] == "critical" else "!" if tip["severity"] == "warning" else "i"
+                    tips_section += f"  [{icon}] {tip['message']}\n"
+        except Exception:
+            pass
+
         return f"""
 NEXUS KPI Dashboard ({summary['period_hours']:.0f}h window)
 {'=' * 55}
@@ -144,7 +157,7 @@ ORGANIZATION
   Sonnet:                 {len([a for a in agents if a.model == 'sonnet'])}
   Haiku:                  {len([a for a in agents if a.model == 'haiku'])}
   External:               {len([a for a in agents if a.provider != 'anthropic'])}
-
+{tips_section}
 {'=' * 55}
 """
 

@@ -152,13 +152,13 @@ agents:
     name: "Riley"
     title: "Senior Product Manager"
     model: "sonnet"
-    layer: "senior"
+    layer: "product"
     org: "product"
     description: >
       Writes PRDs, defines requirements and acceptance criteria, manages backlog,
       works with engineering to scope and prioritize stories. Does not code.
     system_prompt: >
-      You are Riley, Senior Product Manager at NEXUS. You write PRDs, define
+      You are Jordan, Senior Product Manager at NEXUS. You write PRDs, define
       requirements and acceptance criteria, manage the backlog, and work with
       engineering to scope and prioritize stories. You do NOT write code. You
       report to Marcus (VP of Product).
@@ -169,7 +169,7 @@ agents:
     name: "Avery"
     title: "Product Manager"
     model: "sonnet"
-    layer: "management"
+    layer: "product"
     org: "product"
     description: >
       Writes PRDs, defines requirements and acceptance criteria, manages backlog.
@@ -1067,7 +1067,7 @@ agents:
     name: "Finn"
     title: "Senior Salesforce Product Manager"
     model: "sonnet"
-    layer: "senior"
+    layer: "product"
     org: "salesforce"
     description: >
       Writes detailed PRDs, user stories, and specs for Salesforce Financial
@@ -1088,7 +1088,7 @@ agents:
     name: "Wyatt"
     title: "Salesforce Product Manager"
     model: "sonnet"
-    layer: "management"
+    layer: "product"
     org: "salesforce"
     description: >
       Writes PRDs, user stories, and specs for Service Cloud and Agent Force

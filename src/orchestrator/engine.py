@@ -189,6 +189,11 @@ class ReasoningEngine:
 
     async def _tick(self):
         self._tick_count += 1
+
+        # Periodic TTL cleanup (every 10 ticks ~60 seconds)
+        if self._tick_count % 10 == 0:
+            _cleanup_old_reviews()
+
         directive = memory.get_active_directive()
         if not directive or directive["status"] in ("complete", "cancelled"):
             return
@@ -693,8 +698,11 @@ class ReasoningEngine:
 
     async def _h_stop(self, msg, intent, d):
         if not d: return "Nothing active."
-        memory.update_directive(d["id"], status="cancelled")
-        return f"Cancelled `{d['id']}`."
+        did = d["id"]
+        memory.update_directive(did, status="cancelled")
+        # Cleanup pending review results for cancelled directive
+        _plugin_review_results.pop(did, None)
+        return f"Cancelled `{did}`."
 
     async def _h_hire(self, msg, intent, d):
         try:

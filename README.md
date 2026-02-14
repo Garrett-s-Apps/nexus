@@ -204,7 +204,11 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Configure API keys
+# Generate master secret for database encryption
+NEXUS_MASTER_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+echo "Generated NEXUS_MASTER_SECRET: $NEXUS_MASTER_SECRET"
+
+# Configure API keys and secrets
 mkdir -p ~/.nexus
 cat > ~/.nexus/.env.keys << 'EOF'
 ANTHROPIC_API_KEY=sk-ant-...
@@ -214,12 +218,141 @@ GITHUB_TOKEN=ghp_...
 SLACK_CHANNEL=C0...
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
+NEXUS_MASTER_SECRET=<paste-generated-secret-here>
+ALLOWED_TUNNEL_IDS=<comma-separated-cloudflare-tunnel-ids>
 EOF
 chmod 600 ~/.nexus/.env.keys
+
+# Encrypt existing databases (if migrating from plaintext)
+NEXUS_MASTER_SECRET=$NEXUS_MASTER_SECRET python scripts/migrate_encrypt_dbs.py
 
 # Start
 python -m src.main
 ```
+
+## Required Environment Variables
+
+| Variable | Purpose | Required |
+|----------|---------|----------|
+| `ANTHROPIC_API_KEY` | Claude API key from Anthropic | Yes |
+| `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) | Yes |
+| `SLACK_APP_TOKEN` | Slack app token (`xapp-...`) | Yes |
+| `SLACK_CHANNEL` | Slack channel ID | Yes |
+| `SLACK_OWNER_USER_ID` | Your Slack user ID | Yes |
+| `NEXUS_MASTER_SECRET` | Master secret for database encryption | Yes |
+| `ALLOWED_TUNNEL_IDS` | Comma-separated Cloudflare tunnel IDs for CORS whitelist | Yes |
+| `OPENAI_API_KEY` | OpenAI API key (optional, for o3 model) | No |
+| `GOOGLE_API_KEY` | Google AI API key (optional, for Gemini) | No |
+| `GITHUB_TOKEN` | GitHub token (optional, for code analysis) | No |
+
+**Security Note:** Store sensitive keys in `~/.nexus/.env.keys` with mode `0600`. Never commit keys to version control.
+
+---
+
+## Migrating Existing Installation
+
+If you have NEXUS running with plaintext databases, migrate to encrypted storage:
+
+```bash
+# Set the master secret (same one you'll use going forward)
+export NEXUS_MASTER_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+
+# Stop NEXUS completely
+pkill -f "python -m src.main"
+
+# Run the migration script
+python scripts/migrate_encrypt_dbs.py
+
+# Verify success — all 7 databases should be encrypted
+echo "Migration complete. Database files are now encrypted at rest."
+
+# Add NEXUS_MASTER_SECRET to ~/.nexus/.env.keys
+echo "NEXUS_MASTER_SECRET=$NEXUS_MASTER_SECRET" >> ~/.nexus/.env.keys
+
+# Restart NEXUS
+python -m src.main
+```
+
+**What the migration does:**
+- Encrypts all 7 SQLite databases: `memory.db`, `cost.db`, `kpi.db`, `registry.db`, `ml.db`, `knowledge.db`, `sessions.db`
+- Creates backups with `.backup.TIMESTAMP` extension
+- Uses 256,000 KDF iterations for strong key derivation
+- Preserves all data — transparent upgrade
+
+---
+
+## Security Hardening
+
+NEXUS implements SOC 2 Type II controls across authentication, data protection, and API security.
+
+### Database Encryption at Rest (SEC-008)
+
+All SQLite databases are encrypted with SQLCipher using `NEXUS_MASTER_SECRET`. The encryption key is derived from your master secret using PBKDF2 with 256,000 iterations and a salted derivation.
+
+- **Encryption Scheme:** AES-256-CBC
+- **KDF:** PBKDF2 with 256,000 iterations
+- **Key Derivation:** Per-database salted HMAC
+- **WAL Mode:** Enabled for durability
+
+### Docker Sandbox Hardening (SEC-004)
+
+CLI sessions run in hardened Docker containers with restricted permissions:
+
+```bash
+docker run \
+  --rm \
+  --read-only \
+  --security-opt=no-new-privileges \
+  --cap-drop=ALL \
+  --memory=2g \
+  --cpus=2 \
+  -v /path/to/project:/workspace \
+  -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+  nexus-cli-sandbox "your prompt"
+```
+
+**Security flags:**
+- `--read-only`: Filesystem is read-only (except `/tmp`, `/workspace`)
+- `--security-opt=no-new-privileges`: Prevents privilege escalation
+- `--cap-drop=ALL`: No Linux capabilities (no network, syscall, or filesystem manipulation)
+- Memory/CPU limits: Prevents resource exhaustion
+- Non-root user: CLI runs as `nexus:nexus` (UID 1000)
+
+### Rate Limiting with Progressive Delays (SEC-005)
+
+Failed login attempts are persisted in a dedicated SQLite database. Each IP gets locked out with exponential backoff:
+
+- **Attempt 1-3:** Locked for 30 seconds
+- **Attempt 4-6:** Locked for 2 minutes
+- **Attempt 7-9:** Locked for 15 minutes
+- **Attempt 10+:** Locked for 1 hour
+
+Rate limits reset after 1 hour of no attempts. Tracking survives application restarts (persistent storage).
+
+### CORS Whitelist with Tunnel ID Validation (SEC-007)
+
+The API no longer accepts wildcard `*` CORS origins. Instead, it validates:
+
+1. **Tunnel ID whitelist:** `ALLOWED_TUNNEL_IDS` environment variable (comma-separated Cloudflare tunnel IDs)
+2. **Origin header validation:** Incoming request origin must match a whitelisted tunnel
+
+```bash
+# Example: whitelist two Cloudflare tunnels
+export ALLOWED_TUNNEL_IDS="abc123def456,ghi789jkl012"
+```
+
+### JWT Token Hardening (SEC-006)
+
+Session tokens include explicit audience/issuer claims:
+
+- `aud: "nexus-dashboard"`
+- `iss: "nexus-auth"`
+- `exp`: 30 days
+- HMAC-SHA256 signature over token + client fingerprint
+
+### Session Binding to Client Fingerprint
+
+Sessions are bound to each client's User-Agent and IP address. If a token is stolen, it can't be used from a different browser or IP. Fingerprint mismatches trigger immediate invalidation.
 
 ---
 

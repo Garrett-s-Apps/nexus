@@ -18,6 +18,8 @@ import hmac
 import logging
 import os
 import secrets
+import stat
+import tempfile
 import time
 
 from src.config import get_key
@@ -47,20 +49,33 @@ def _get_passphrase() -> str:
     if not key:
         key = secrets.token_urlsafe(24)
         _persist_key(key)
-        logger.info("Generated dashboard passphrase (check ~/.nexus/.env.keys)")
     return key
 
 
 def _persist_key(key: str):
-    """Append the generated key to the env file with restricted permissions."""
-    from src.config import KEYS_PATH
+    """Persist the generated key using atomic file creation with restricted permissions."""
+    from src.config import KEYS_PATH, NEXUS_DIR
+
     try:
-        fd = os.open(KEYS_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "a") as f:
-            f.write(f"\nNEXUS_DASHBOARD_KEY={key}\n")
-        os.chmod(KEYS_PATH, 0o600)
+        os.makedirs(NEXUS_DIR, mode=0o700, exist_ok=True)
+
+        fd, temp_path = tempfile.mkstemp(dir=NEXUS_DIR, prefix='.env.keys.', text=True)
+        try:
+            with os.fdopen(fd, 'w') as f:
+                os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+                f.write(f"NEXUS_DASHBOARD_KEY={key}\n")
+                f.flush()
+                os.fsync(fd)
+            os.replace(temp_path, KEYS_PATH)
+            logger.info("Dashboard passphrase generated and secured")
+        except OSError as e:
+            logger.error("CRITICAL: Could not persist dashboard key: %s", e)
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise
     except OSError as e:
-        logger.warning("Could not persist dashboard key: %s", e)
+        logger.error("CRITICAL: Could not persist dashboard key: %s", e)
+        raise
 
 
 def _compute_fingerprint(user_agent: str, client_ip: str) -> str:

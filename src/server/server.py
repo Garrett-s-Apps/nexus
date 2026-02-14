@@ -12,12 +12,12 @@ import asyncio
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 
 logger = logging.getLogger("nexus.server")
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -123,22 +123,53 @@ _ALLOWED_ORIGINS = [
     "https://nexus-dashboard-black-nine.vercel.app",
 ]
 
+# Load allowed tunnel IDs from environment (comma-separated list)
+# Example: ALLOWED_TUNNEL_IDS=abc123,def456,ghi789
+_ALLOWED_TUNNEL_IDS = [
+    tid.strip()
+    for tid in os.environ.get("ALLOWED_TUNNEL_IDS", "").split(",")
+    if tid.strip()
+]
+
 
 def _origin_allowed(origin: str) -> bool:
-    """Allow listed origins plus any *.trycloudflare.com tunnel."""
-    return origin in _ALLOWED_ORIGINS or (
-        origin.endswith(".trycloudflare.com") and origin.startswith("https://")
-    )
+    """
+    Allow listed origins plus explicitly whitelisted Cloudflare tunnels.
+
+    SEC-007 fix: Replaces wildcard regex with explicit tunnel ID whitelist.
+    Only allows *.trycloudflare.com origins where the tunnel ID is in the whitelist.
+    """
+    # Allow explicitly configured origins
+    if origin in _ALLOWED_ORIGINS:
+        return True
+
+    # Validate Cloudflare tunnel origins with explicit tunnel ID whitelist
+    if origin.startswith("https://") and origin.endswith(".trycloudflare.com"):
+        match = re.match(r'^https://([a-z0-9-]+)\.trycloudflare\.com$', origin)
+        if match:
+            tunnel_id = match.group(1)
+            return tunnel_id in _ALLOWED_TUNNEL_IDS
+
+    return False
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"https://.*\.trycloudflare\.com",
-    allow_origins=_ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Nexus-JWT"],
-)
+@app.middleware("http")
+async def cors_middleware(request: Request, call_next):
+    """
+    Custom CORS middleware with explicit tunnel ID validation (SEC-007).
+    Replaces vulnerable wildcard CORS configuration.
+    """
+    origin = request.headers.get("origin", "")
+    response = await call_next(request)
+
+    if _origin_allowed(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-Nexus-JWT"
+        response.headers["Access-Control-Max-Age"] = "3600"
+
+    return response
 
 
 @app.middleware("http")

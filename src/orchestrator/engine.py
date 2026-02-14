@@ -15,6 +15,8 @@ import logging
 import os
 import time
 import uuid
+from collections import OrderedDict
+from datetime import datetime, timedelta
 
 from src.agents.base import Agent, Decision, allm_call
 from src.agents.implementations import create_agent, create_all_agents, extract_json
@@ -30,6 +32,25 @@ from src.resilience.escalation import escalation_chain
 logger = logging.getLogger("nexus.engine")
 
 MAX_QA_CYCLES = 3
+
+# Plugin review result storage with TTL and LRU eviction
+_plugin_review_results: OrderedDict[str, tuple[datetime, dict]] = OrderedDict()
+_MAX_REVIEW_RESULTS = 1000
+_REVIEW_TTL_HOURS = 24
+
+def _cleanup_old_reviews():
+    """Remove review results older than TTL."""
+    cutoff = datetime.now() - timedelta(hours=_REVIEW_TTL_HOURS)
+    expired = [k for k, (ts, _) in _plugin_review_results.items() if ts < cutoff]
+    for k in expired:
+        del _plugin_review_results[k]
+
+def _store_review(directive_id: str, result: dict) -> None:
+    """Store review result with TTL cleanup and LRU eviction."""
+    _cleanup_old_reviews()
+    if len(_plugin_review_results) >= _MAX_REVIEW_RESULTS:
+        _plugin_review_results.popitem(last=False)  # LRU eviction
+    _plugin_review_results[directive_id] = (datetime.now(), result)
 
 
 async def notify_slack(message: str, thread_ts: str | None = None):
@@ -122,7 +143,6 @@ class ReasoningEngine:
         self._cooldown_s = 35
         self._qa_cycles: dict[str, int] = {}
         self._thread_ts: dict[str, str] = {}
-        self._plugin_review_results: dict[str, dict] = {}
 
     async def _notify(self, message: str, did: str | None = None):
         """Send a Slack notification in the directive's thread."""
@@ -436,16 +456,18 @@ class ReasoningEngine:
                         if path:
                             changed_files.append(path)
 
-            self._plugin_review_results[did] = await run_plugin_review_suite(
+            result = await run_plugin_review_suite(
                 changed_files, project_path
             )
+            _store_review(did, result)
         except Exception as e:
             logger.error(f"Plugin review failed for {did}: {e}")
-            self._plugin_review_results[did] = {"passed": True, "results": [], "error": str(e)}
+            _store_review(did, {"passed": True, "results": [], "error": str(e)})
 
     async def _check_plugin_review_done(self, did):
         """Check plugin review results. Critical findings go back to fixing; otherwise complete."""
-        results = self._plugin_review_results.get(did)
+        entry = _plugin_review_results.get(did)
+        results = entry[1] if entry else None
         if results is None:
             return  # Still running
 
@@ -493,7 +515,7 @@ class ReasoningEngine:
             )
 
         # Cleanup
-        self._plugin_review_results.pop(did, None)
+        _plugin_review_results.pop(did, None)
 
     async def _safe_run(self, agent_id, decision, directive_id):
         agent = self.agents.get(agent_id)

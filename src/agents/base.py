@@ -26,7 +26,7 @@ logger = logging.getLogger("nexus.agent")
 
 
 # ---------------------------------------------------------------------------
-# LLM Clients — Anthropic + OpenAI
+# LLM Clients — Anthropic (Async) + OpenAI
 # ---------------------------------------------------------------------------
 _anthropic_client = None
 _openai_client = None
@@ -36,10 +36,11 @@ from src.config import get_key as _load_key  # consolidated key loading
 
 
 def get_anthropic_client():
+    """Get async Anthropic client (non-blocking)."""
     global _anthropic_client
     if _anthropic_client is None:
-        from anthropic import Anthropic
-        _anthropic_client = Anthropic(api_key=_load_key("ANTHROPIC_API_KEY"))
+        from anthropic import AsyncAnthropic
+        _anthropic_client = AsyncAnthropic(api_key=_load_key("ANTHROPIC_API_KEY"))
     return _anthropic_client
 
 
@@ -51,12 +52,11 @@ def get_openai_client():
     return _openai_client
 
 
-def llm_call(prompt: str, model: str = HAIKU, system: str = "",
-             max_tokens: int = 4096) -> tuple[str, float]:
-    """Make an LLM call. Routes to Anthropic or OpenAI based on model.
+async def allm_call(prompt: str, model: str = HAIKU, system: str = "",
+                    max_tokens: int = 4096) -> tuple[str, float]:
+    """Make an async LLM call. Routes to Anthropic or OpenAI based on model.
 
-    DEPRECATED: This function still returns (text, cost) tuple for backward compatibility.
-    New code should use the Agent SDK bridge functions that return TaskResult.
+    Uses AsyncAnthropic for Claude models to avoid blocking via thread pool.
     """
     if model == O3:
         client = get_openai_client()
@@ -75,7 +75,7 @@ def llm_call(prompt: str, model: str = HAIKU, system: str = "",
         kwargs = {"model": model, "max_tokens": max_tokens, "messages": messages}
         if system:
             kwargs["system"] = system
-        response = client.messages.create(**kwargs)
+        response = await client.messages.create(**kwargs)
         text = response.content[0].text
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
@@ -83,12 +83,6 @@ def llm_call(prompt: str, model: str = HAIKU, system: str = "",
     rates = MODEL_COSTS.get(model, MODEL_COSTS[SONNET])
     cost = (input_tokens * rates["input"] + output_tokens * rates["output"]) / 1_000_000
     return text, cost
-
-
-async def allm_call(prompt: str, model: str = HAIKU, system: str = "",
-                    max_tokens: int = 4096) -> tuple[str, float]:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, llm_call, prompt, model, system, max_tokens)
 
 
 # ---------------------------------------------------------------------------

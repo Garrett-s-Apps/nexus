@@ -9,12 +9,15 @@ Extends the basic cost tracker with:
 - Projected monthly spend calculations
 """
 
+import logging
 import os
 import sqlite3
 import time
 from typing import Any
 
 from src.config import COST_DB_PATH
+
+logger = logging.getLogger("nexus.cost.tracker")
 
 DB_PATH = COST_DB_PATH
 
@@ -124,7 +127,7 @@ class CostTracker:
             self.by_project[project] = self.by_project.get(project, 0.0) + cost
         self.call_count += 1
 
-        # Persist
+        # Persist to NEXUS cost_events table
         conn = sqlite3.connect(self.db_path)
         conn.execute(
             "INSERT INTO cost_events (timestamp, model, agent, project, tokens_in, tokens_out, cost_usd, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -132,6 +135,20 @@ class CostTracker:
         )
         conn.commit()
         conn.close()
+
+        # Dual-write to costwise analytics backend
+        try:
+            from src.cost.costwise_bridge import record_cost
+            record_cost(
+                model=model,
+                agent_name=agent_name,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                project=project,
+                session_id=session_id,
+            )
+        except Exception as e:
+            logger.warning("costwise dual-write failed (non-fatal): %s", e)
 
         # Enforcement
         return self._enforce_budget(cost, agent_name)
@@ -187,10 +204,17 @@ class CostTracker:
 
         return actions
 
-    def get_effective_model(self, requested_model: str) -> str:
-        """Return the model to actually use, considering budget enforcement."""
+    def get_effective_model(self, requested_model: str, agent_name: str = "") -> str:
+        """Return the model to actually use, considering budget and bloat enforcement."""
         if self._downgrade_active:
             return DOWNGRADE_MAP.get(requested_model, requested_model)
+        # Bloat-based smart downgrade (costwise microservice)
+        if agent_name:
+            try:
+                from src.cost.bloat_detector import bloat_detector
+                return bloat_detector.get_effective_model(agent_name, requested_model)
+            except Exception:
+                pass
         return requested_model
 
     @property
@@ -248,6 +272,28 @@ class CostTracker:
             reverse=True,
         )
 
+    def get_summary(self) -> dict:
+        """Get cost summary combining NEXUS budget data and costwise analytics."""
+        try:
+            from src.cost.costwise_bridge import get_summary as cw_summary
+            analytics = cw_summary(period="30d")
+        except Exception:
+            analytics = {}
+
+        return {
+            "session_cost": round(self.session_cost, 4),
+            "hourly_rate": round(self.hourly_rate, 4),
+            "call_count": self.call_count,
+            "monthly_cost": round(self.get_monthly_cost(), 4),
+            "over_budget": self.over_budget,
+            "downgrade_active": self._downgrade_active,
+            "budgets": self.budgets,
+            "by_model": self.by_model,
+            "by_agent": self.by_agent,
+            "by_project": self.by_project,
+            "costwise": analytics,
+        }
+
     def generate_cfo_report(self) -> str:
         """Full CFO cost report."""
         monthly = self.get_monthly_cost()
@@ -286,6 +332,20 @@ BY MODEL:
             report += "\nDAILY (last 7 days):\n"
             for d in daily:
                 report += f"  {d['date']}  ${d['cost']:.2f}  ({d['calls']} calls)\n"
+
+        # costwise optimization tips
+        try:
+            from src.cost.costwise_bridge import get_optimization_tips
+            tips = get_optimization_tips(days=30)
+            if tips:
+                report += "\nCOSTWISE OPTIMIZATION TIPS:\n"
+                for tip in tips[:5]:
+                    icon = "!!" if tip["severity"] == "critical" else "!" if tip["severity"] == "warning" else "i"
+                    report += f"  [{icon}] {tip['message']}\n"
+                    if tip.get("estimated_savings_usd"):
+                        report += f"       Est. savings: ${tip['estimated_savings_usd']:.2f}/mo\n"
+        except Exception:
+            pass
 
         report += f"\n{'=' * 55}\n"
         return report

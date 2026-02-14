@@ -98,8 +98,13 @@ class CLISession:
     async def _start_native(self) -> asyncio.subprocess.Process:
         """Start Claude CLI as a native subprocess."""
         clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        # Inject API keys from .env.keys that may not be in os.environ
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
+            val = get_key(key)
+            if val:
+                clean_env[key] = val
         return await asyncio.create_subprocess_exec(
-            CLAUDE_CMD, "--dangerously-skip-permissions", "--model", "opus",
+            CLAUDE_CMD, "--dangerously-skip-permissions", "--model", "sonnet",
             "-p", "--verbose", "--output-format", "stream-json",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,

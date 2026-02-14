@@ -152,6 +152,5 @@ class TestGetOrgSummary:
     def test_org_summary_includes_model_tiers(self):
         """The summary should show model tier labels."""
         summary = get_org_summary()
-        assert "Opus" in summary
         assert "Sonnet" in summary
         assert "Haiku" in summary

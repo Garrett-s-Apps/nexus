@@ -208,6 +208,23 @@ async def jwt_signing_middleware(request: Request, call_next):
     )
 
 
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """
+    Add security headers to all responses (SEC-010).
+
+    Protects against MIME sniffing, clickjacking, XSS, and other
+    common web vulnerabilities.
+    """
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none';"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
 
 _PUBLIC_PATHS = {
     "/auth/login", "/auth/check", "/health", "/dashboard/logo.svg",

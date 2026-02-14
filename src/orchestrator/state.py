@@ -108,6 +108,12 @@ class NexusState(BaseModel):
     architect_feedback: str = ""
     qa_verified: bool = False
 
+    # --- AI Team Approval (ARCH-013) ---
+    ai_team_approved: bool = False
+    ai_team_orchestrator_approval: bool = False
+    ai_team_architect_approval: bool = False
+    ai_team_rejection_reason: str = ""
+
     # --- Demo ---
     demo_summary: str | None = None
     demo_screenshots: list[str] = Field(default_factory=list)
@@ -123,6 +129,11 @@ class NexusState(BaseModel):
     retry_counts: dict[str, int] = Field(default_factory=dict)
     quality_gate_details: dict[str, bool] = Field(default_factory=dict)
 
+    # --- Codebase Analysis (MAINT-011) ---
+    analysis_findings: list[dict[str, Any]] = Field(default_factory=list)
+    analysis_summary: dict[str, Any] = Field(default_factory=dict)
+    analysis_state_path: str | None = None
+
     # --- Flow Control ---
     current_phase: Literal[
         "intake",
@@ -136,7 +147,8 @@ class NexusState(BaseModel):
         "pr_review",
         "demo",
         "complete",
-        "escalation"
+        "escalation",
+        "analysis"
     ] = "intake"
     error: str | None = None
     escalation_reason: str | None = None

@@ -889,6 +889,72 @@ agents:
     spawns_sdk: true
 
   # ============================================
+  # AI/ML TEAM (ARCH-013: Dual Approval Required)
+  # ============================================
+  ml_engineer:
+    name: "ML Engineer (AI Team)"
+    title: "Machine Learning Engineer"
+    model: "opus"
+    layer: "implementation"
+    org: "ai_team"
+    specialty: "ml"
+    requires_dual_approval: true
+    approved_by: ["vp_engineering", "chief_architect"]
+    description: >
+      Machine Learning Engineer. Requires dual approval from VP Engineering
+      and Chief Architect before invocation. Specializes in model training,
+      feature engineering, and ML pipeline development.
+    system_prompt: >
+      You are an ML Engineer on the AI Team. You can only execute tasks after
+      receiving dual approval from both VP Engineering and Chief Architect.
+      You specialize in model training, feature engineering, and ML pipeline
+      development. All invocations are logged to the audit trail.
+    tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
+    spawns_sdk: true
+
+  ai_engineer:
+    name: "AI Engineer (AI Team)"
+    title: "AI Engineer"
+    model: "opus"
+    layer: "implementation"
+    org: "ai_team"
+    specialty: "ai"
+    requires_dual_approval: true
+    approved_by: ["vp_engineering", "chief_architect"]
+    description: >
+      AI Engineer. Requires dual approval from VP Engineering and Chief
+      Architect before invocation. Specializes in neural networks, deep
+      learning, and AI system architecture.
+    system_prompt: >
+      You are an AI Engineer on the AI Team. You can only execute tasks after
+      receiving dual approval from both VP Engineering and Chief Architect.
+      You specialize in neural networks, deep learning, and AI system
+      architecture. All invocations are logged to the audit trail.
+    tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
+    spawns_sdk: true
+
+  data_engineer:
+    name: "Data Engineer (AI Team)"
+    title: "Data Engineer"
+    model: "sonnet"
+    layer: "implementation"
+    org: "ai_team"
+    specialty: "data"
+    requires_dual_approval: true
+    approved_by: ["vp_engineering", "chief_architect"]
+    description: >
+      Data Engineer. Requires dual approval from VP Engineering and Chief
+      Architect before invocation. Specializes in data pipelines, ETL, and
+      data infrastructure for ML/AI systems.
+    system_prompt: >
+      You are a Data Engineer on the AI Team. You can only execute tasks after
+      receiving dual approval from both VP Engineering and Chief Architect.
+      You specialize in data pipelines, ETL, and data infrastructure for
+      ML/AI systems. All invocations are logged to the audit trail.
+    tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
+    spawns_sdk: true
+
+  # ============================================
   # ANALYTICS ORG
   # ============================================
   director_analytics:

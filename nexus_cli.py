@@ -13,11 +13,16 @@ Usage:
     nexus checkpoint list          List all checkpoints
     nexus checkpoint restore <name> Restore a checkpoint
     nexus analyze <target_dir>     Analyze codebase for issues
+    nexus generate-report <analysis-state.json> <output.docx>  Generate DOCX report
     nexus execute-all              Execute all pending findings
     nexus execute-priority <sev>   Execute findings by severity
     nexus execute-category <cat>   Execute findings by category
     nexus execute-item <item_id>   Execute a single finding
     nexus dashboard                Start progress visualization dashboard
+    nexus self-analyze             Run self-analysis on Nexus codebase
+    nexus self-fix                 Auto-fix LOW/MEDIUM severity issues
+    nexus self-pr                  Create PRs for HIGH/CRITICAL issues
+    nexus self-metrics             Show self-improvement trend
     nexus stop                     Stop the server
 """
 
@@ -364,6 +369,27 @@ def main():
             print(f"Error: Analysis failed - {e}", file=sys.stderr)
             sys.exit(1)
 
+    elif command == "generate-report" and len(sys.argv) >= 4:
+        analysis_state_path = sys.argv[2]
+        output_path = sys.argv[3]
+
+        if not os.path.isfile(analysis_state_path):
+            print(f"Error: Analysis state file not found: {analysis_state_path}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"Generating DOCX report...")
+        print(f"  Input: {analysis_state_path}")
+        print(f"  Output: {output_path}")
+
+        try:
+            from src.reports.docx_generator import ReportGenerator
+            generator = ReportGenerator()
+            result_path = generator.generate_rebuild_report(analysis_state_path, output_path)
+            print(f"\n✅ Report generated: {result_path}")
+        except Exception as e:
+            print(f"Error: Failed to generate report - {e}", file=sys.stderr)
+            sys.exit(1)
+
     elif command == "execute-all":
         _execute_findings(filter_type="all")
 
@@ -394,6 +420,163 @@ def main():
             run_dashboard(host="127.0.0.1", port=8080, debug=False)
         except KeyboardInterrupt:
             print("\nDashboard stopped.")
+
+    elif command == "self-analyze":
+        print("Running self-analysis on Nexus codebase...")
+        print("This may take a few minutes...\n")
+
+        from src.self_improvement.analyzer import SelfImprovementLoop
+
+        async def _run_self_analysis():
+            loop = SelfImprovementLoop()
+            return await loop.run_self_analysis()
+
+        try:
+            result = asyncio.run(_run_self_analysis())
+            summary = result["summary"]
+            findings = result["findings"]
+
+            print("=" * 60)
+            print("NEXUS SELF-ANALYSIS COMPLETE")
+            print("=" * 60)
+            print(f"\nTotal findings: {summary['totalFindings']}")
+            print(f"\nBy severity:")
+            for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+                count = summary["bySeverity"].get(sev, 0)
+                if count:
+                    print(f"  {sev}: {count}")
+            print(f"\nBy category:")
+            for cat, count in sorted(summary["byCategory"].items()):
+                print(f"  {cat}: {count}")
+
+            print(f"\nState saved to: {result['state_path']}")
+            print("\nTop self-improvement opportunities:")
+            for f in findings[:10]:
+                print(f"  [{f.severity}] {f.id}: {f.title}")
+                print(f"         Location: {f.location} | Effort: {f.effort}")
+
+        except Exception as e:
+            print(f"Error: Self-analysis failed - {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+
+    elif command == "self-fix":
+        print("Auto-fixing LOW/MEDIUM severity issues in Nexus...")
+
+        from src.self_improvement.analyzer import SelfImprovementLoop
+
+        async def _run_auto_fix():
+            loop = SelfImprovementLoop()
+            return await loop.auto_fix_issues(max_severity="MEDIUM")
+
+        try:
+            result = asyncio.run(_run_auto_fix())
+
+            print("=" * 60)
+            print("AUTO-FIX COMPLETE")
+            print("=" * 60)
+            print(f"\nTotal auto-fixable issues: {result['total']}")
+            print(f"Successfully fixed: {len(result['fixed'])}")
+            print(f"Failed to fix: {len(result['failed'])}")
+
+            if result['fixed']:
+                print("\nFixed issues:")
+                for finding_id in result['fixed']:
+                    print(f"  ✅ {finding_id}")
+
+            if result['failed']:
+                print("\nFailed to fix:")
+                for finding_id in result['failed']:
+                    print(f"  ❌ {finding_id}")
+
+        except Exception as e:
+            print(f"Error: Auto-fix failed - {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+
+    elif command == "self-pr":
+        print("Creating PRs for HIGH/CRITICAL issues in Nexus...")
+
+        from src.self_improvement.analyzer import SelfImprovementLoop
+
+        async def _create_prs():
+            loop = SelfImprovementLoop()
+            return await loop.create_pr_for_high_severity()
+
+        try:
+            prs = asyncio.run(_create_prs())
+
+            print("=" * 60)
+            print("PR CREATION COMPLETE")
+            print("=" * 60)
+            print(f"\nCreated {len(prs)} PR(s):")
+
+            for pr_url in prs:
+                print(f"  📋 {pr_url}")
+
+            if not prs:
+                print("\nNo HIGH/CRITICAL issues found or PRs created.")
+
+        except Exception as e:
+            print(f"Error: PR creation failed - {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+
+    elif command == "self-metrics":
+        print("Loading self-improvement metrics...\n")
+
+        from src.self_improvement.metrics import ImprovementMetrics
+
+        try:
+            metrics = ImprovementMetrics()
+            trend = metrics.get_trend()
+
+            if "message" in trend:
+                print(trend["message"])
+                sys.exit(0)
+
+            print("=" * 60)
+            print("NEXUS SELF-IMPROVEMENT TREND")
+            print("=" * 60)
+            print(f"\nTotal analyses: {trend['total_analyses']}")
+            print(f"Time span: {trend['time_span_days']:.1f} days")
+            print(f"Average effort per analysis: {trend['average_effort_hours']:.1f} hours")
+
+            print("\n" + "-" * 60)
+            print("TREND ANALYSIS")
+            print("-" * 60)
+
+            trend_data = trend["trend"]
+            change = trend_data["findings_change"]
+            change_pct = trend_data["findings_change_pct"]
+
+            if trend_data["improving"]:
+                print("✅ IMPROVING")
+            else:
+                print("⚠️  NEEDS ATTENTION")
+
+            print(f"\nTotal findings change: {change:+d} ({change_pct:+.1f}%)")
+            print(f"CRITICAL issues change: {trend_data['critical_change']:+d}")
+            print(f"HIGH issues change: {trend_data['high_change']:+d}")
+
+            print("\n" + "-" * 60)
+            print("LATEST ANALYSIS")
+            print("-" * 60)
+            latest = trend["latest_analysis"]
+            print(f"Date: {latest['timestamp'][:19]}")
+            print(f"Total findings: {latest['total_findings']}")
+            print("By severity:")
+            for sev, count in latest.get("by_severity", {}).items():
+                print(f"  {sev}: {count}")
+
+        except Exception as e:
+            print(f"Error: Failed to load metrics - {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
 
     elif command == "slack-webhook":
         if len(sys.argv) < 3:

@@ -711,3 +711,27 @@ def create_all_agents() -> dict[str, Agent]:
         agent_obj.register()
         agents[agent.id] = agent_obj
     return agents
+
+
+def get_agent_for_category(category: str) -> str | None:
+    """Get the appropriate agent type for a finding category.
+
+    Args:
+        category: Finding category (SEC, PERF, ARCH, CODE, etc.)
+
+    Returns:
+        Agent type string or None if no agent available
+    """
+    # Map categories to agent types
+    category_to_agent_type = {
+        "SEC": "engineer",  # Security fixes
+        "PERF": "engineer",  # Performance optimization
+        "ARCH": "architect",  # Architecture improvements
+        "CODE": "code_reviewer",  # Code quality fixes
+        "UX": "engineer",  # UX improvements
+        "DATA": "engineer",  # Data integrity fixes
+        "MAINT": "engineer",  # Maintainability improvements
+        "COMP": "engineer",  # Compliance fixes
+    }
+
+    return category_to_agent_type.get(category.upper())

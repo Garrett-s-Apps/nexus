@@ -296,6 +296,12 @@ class Memory:
             "SELECT * FROM directives WHERE status NOT IN ('complete','cancelled') ORDER BY created_at DESC LIMIT 1").fetchone()
         return dict(row) if row else None
 
+    def get_recent_directives(self, limit: int = 20) -> list[dict]:
+        """Return the most recent directives across all statuses."""
+        c = self._conn.cursor()
+        c.execute("SELECT * FROM directives ORDER BY created_at DESC LIMIT ?", (limit,))
+        return [dict(r) for r in c.fetchall()]
+
     def update_directive(self, directive_id, **kwargs):
         _DIRECTIVE_COLS = {"status", "intent", "project_path", "updated_at"}
         updates, values = ["updated_at=?"], [datetime.now(UTC).isoformat()]

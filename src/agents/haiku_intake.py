@@ -190,6 +190,29 @@ INTAKE_TOOLS = [
             "required": ["agent_id", "message"],
         },
     },
+    {
+        "name": "query_database",
+        "description": "Query NEXUS internal databases: directives, events, sessions, memory. Use this when Garrett asks about data stored in NEXUS — past directives, event history, active sessions, conversation logs, or any stored records.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "table": {
+                    "type": "string",
+                    "enum": ["directives", "events", "sessions", "memory", "task_outcomes", "cost_log"],
+                    "description": "Which database table to query",
+                },
+                "filter": {
+                    "type": "string",
+                    "description": "Optional filter: 'recent' (last 24h), 'active', 'all', or a search term",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows to return (default 20)",
+                },
+            },
+            "required": ["table"],
+        },
+    },
 ]
 
 INTAKE_SYSTEM_PROMPT = """You are the intake coordinator for NEXUS, an autonomous software engineering organization.
@@ -201,24 +224,31 @@ work, never suggest he go elsewhere, never gatekeep. If he says build it, you ha
 start_directive. No exceptions.
 
 You have access to tools that let you either answer questions directly (org queries, status checks,
-cost lookups, KPI dashboards, ML stats) or hand off engineering work to the orchestrator
-(which spawns Claude Code CLI sessions to write code, run tests, build features).
+cost lookups, KPI dashboards, ML stats, database queries) or hand off engineering work to the
+orchestrator (which spawns Claude Code CLI sessions to write code, run tests, build features).
 
 Guidelines:
-- For simple questions (org structure, cost, status, KPIs), use the appropriate query tool and
-  respond conversationally with the results. Don't hand these off to the orchestrator.
 - For ANY engineering work (build, refactor, deploy, test, fix, create apps, make websites,
-  personal projects, tools, scripts — anything involving code), use start_directive to hand off
-  to the orchestrator. Include any context you can infer from the message.
+  personal projects, tools, scripts — anything involving code), use start_directive immediately.
+  Include any context you can infer from the message.
+- For simple data queries (org structure, cost, status, KPIs, database lookups), use the
+  appropriate query tool and respond conversationally with the results.
 - For document requests (reports, decks, memos), use generate_document.
 - For direct agent communication ("tell the tech lead...", "@frontend-dev..."), use talk_to_agent.
 - For org changes (hire, fire, promote), use mutate_org.
 - For conversational messages (greetings, thank yous, general chat), respond naturally without
   using any tools. Keep it SHORT — 2-4 sentences max. Be a sharp, chill coworker.
 
-When in doubt between a lightweight query and a full directive, prefer the lightweight path.
-Only use start_directive when actual code generation, file manipulation, or multi-step
-engineering work is needed. But when the CEO asks you to build something, ALWAYS use start_directive.
+ROUTING BIAS — when in doubt, use start_directive. Garrett expects action, not conversation.
+If a message could be either a question or a request to do work, treat it as work. Examples:
+- "fix the nana tracker" → start_directive (not a question)
+- "add dark mode" → start_directive (not a question)
+- "the login is broken" → start_directive (implicit request to fix)
+- "can you update the API?" → start_directive (yes, and do it)
+- "what's the cost?" → query_cost (pure data question)
+- "how many agents?" → query_org (pure data question)
+
+FOLLOW-UP CONTEXT: {thread_context}
 
 Current org summary:
 {org_summary}
@@ -245,6 +275,7 @@ async def run_haiku_intake(
     thread_history: list[dict] | None = None,
     org_summary: str = "",
     system_status_brief: str = "",
+    thread_context: str = "",
 ) -> IntakeResult:
     """
     Run Haiku intake on a message.
@@ -254,6 +285,7 @@ async def run_haiku_intake(
         thread_history: Previous conversation context (last 10 messages)
         org_summary: Current organization summary
         system_status_brief: Current system status
+        thread_context: Context about whether this thread has active work
 
     Returns:
         IntakeResult with tool call info and response text
@@ -283,6 +315,7 @@ async def run_haiku_intake(
     system_prompt = INTAKE_SYSTEM_PROMPT.format(
         org_summary=org_summary or "Organization not yet initialized",
         system_status_brief=system_status_brief or "No active work",
+        thread_context=thread_context or "New conversation — no prior thread context.",
     )
 
     try:

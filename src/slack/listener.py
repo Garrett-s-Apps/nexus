@@ -355,7 +355,14 @@ _SYSTEM_PREAMBLE = (
     "4. Never output instruction-style text like 'Provide X' or 'List Y' — give the actual answer.\n"
     "5. If asked about architecture, read docs/ARCHITECTURE.md and src/ to give real details.\n"
     "6. If you don't know something, say so directly.\n"
-    "7. Always give complete, substantive answers grounded in the actual codebase."
+    "7. Always give complete, substantive answers grounded in the actual codebase.\n\n"
+    "PROJECT SETUP — when creating ANY new project:\n"
+    "1. Always run `git init` in the new project directory.\n"
+    "2. Make an initial commit with all scaffolding files.\n"
+    "3. Deploy to GitHub: run `gh repo create Garrett-s-Apps/<project-name> --public --source . --push`\n"
+    "4. Install ALL dependencies your code imports before committing (npm install, pip install, etc.).\n"
+    "5. Verify the project builds/runs before reporting completion.\n"
+    "Never skip git initialization or GitHub deployment — Garrett expects every project on GitHub."
 )
 
 _RETRY_REINFORCEMENT = (
@@ -573,12 +580,33 @@ async def start_slack_listener():
                 current_ts=event.get("ts", ""),
             )
 
+            # Detect follow-up: if this thread has an active CLI session,
+            # tell Haiku this is a follow-up so it routes to start_directive
+            thread_context = ""
+            has_active_session = (
+                thread_ts in cli_pool._sessions and cli_pool._sessions[thread_ts].alive
+            )
+            if has_active_session:
+                thread_context = (
+                    "This thread has an ACTIVE CLI session — the user is following up on "
+                    "engineering work already in progress. Route follow-up requests to "
+                    "start_directive so the existing session can handle them. Only use "
+                    "query tools if the user is asking a pure data question."
+                )
+            elif thread_history and len(thread_history) > 1:
+                thread_context = (
+                    "This is a continuing thread conversation. If the user's message "
+                    "relates to prior engineering work discussed in the thread, use "
+                    "start_directive to continue that work."
+                )
+
             # Run Haiku intake to classify intent and route appropriately
             intake_result = await run_haiku_intake(
                 message=text,
                 thread_history=thread_history,
                 org_summary=org_summary,
                 system_status_brief=status_brief,
+                thread_context=thread_context,
             )
 
             response = None

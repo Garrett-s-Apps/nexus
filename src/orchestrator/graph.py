@@ -28,6 +28,7 @@ from src.agents.sdk_bridge import (
 from src.agents.task_result import TaskResult
 from src.orchestrator.checkpoint import CheckpointManager
 from src.orchestrator.state import CostSnapshot, NexusState, PRReview, WorkstreamTask
+from src.slack import notifier
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +397,105 @@ If not, say NEEDS_REVISION and list specific changes needed.""",
         "tech_plan_approved": approved,
         "tech_plan_loop_count": state.tech_plan_loop_count + 1,
         "cost": _update_cost(state.cost, result),
+    }
+
+
+async def ai_team_approval_node(state: NexusState) -> dict:
+    """Dual approval gate for AI/ML tasks (ARCH-013).
+
+    Agent-to-agent approval only:
+    1. Orchestrator (VP Engineering) requests approval
+    2. Architect reviews architectural implications
+    3. Both must approve for AI Team invocation
+    """
+    # Identify AI/ML tasks
+    ai_keywords = ["ml", "ai", "machine learning", "neural", "model", "training", "dataset", "prediction"]
+    ai_tasks = [
+        t for t in state.workstreams
+        if any(kw in t.description.lower() for kw in ai_keywords)
+    ]
+
+    if not ai_tasks:
+        return {"ai_team_approved": True}  # No AI tasks, skip gate
+
+    # Step 1: Orchestrator (VP Engineering) approval request
+    orchestrator_request = await run_planning_agent(
+        "vp_engineering",
+        AGENTS["vp_engineering"],
+        f"""Review these AI/ML tasks for technical feasibility:
+
+{chr(10).join(f"- {t.description}" for t in ai_tasks)}
+
+As orchestrator, do you approve invoking the AI Team?
+
+Consider:
+- Data requirements and availability
+- Model complexity and training resources
+- Timeline impact and resource allocation
+- Integration with existing systems
+
+Respond with APPROVED or REJECTED followed by your reasoning.
+This is agent-to-agent approval - no user prompts."""
+    )
+
+    orchestrator_approved = "APPROVED" in orchestrator_request.output.upper() and "REJECTED" not in orchestrator_request.output.upper()
+
+    if not orchestrator_approved:
+        logger.warning("AI Team rejected by orchestrator: %s", orchestrator_request.output[:200])
+        return {
+            "ai_team_approved": False,
+            "ai_team_orchestrator_approval": False,
+            "ai_team_architect_approval": False,
+            "ai_team_rejection_reason": "Orchestrator rejected AI Team invocation",
+            "cost": _update_cost(state.cost, orchestrator_request),
+        }
+
+    # Step 2: Architect reviews architectural implications
+    architect_review = await run_planning_agent(
+        "chief_architect",
+        AGENTS["chief_architect"],
+        f"""Review AI/ML architectural implications:
+
+{chr(10).join(f"- {t.description}" for t in ai_tasks)}
+
+Orchestrator (VP Engineering) has approved.
+As Chief Architect, do you approve?
+
+Consider:
+- ML technical debt and long-term maintenance burden
+- Model versioning and lifecycle management
+- Infrastructure cost (training, serving, storage)
+- Risk of model drift and monitoring requirements
+- Explainability and compliance requirements
+
+Respond with APPROVED or REJECTED followed by your reasoning.
+This is agent-to-agent approval - no user prompts."""
+    )
+
+    architect_approved = "APPROVED" in architect_review.output.upper() and "REJECTED" not in architect_review.output.upper()
+
+    # Both must approve
+    dual_approved = orchestrator_approved and architect_approved
+
+    # Log to audit trail
+    logger.info(
+        "AI Team approval: orchestrator=%s, architect=%s, dual_approved=%s",
+        orchestrator_approved, architect_approved, dual_approved
+    )
+
+    rejection_reason = ""
+    if not dual_approved:
+        if not architect_approved:
+            rejection_reason = "Architect rejected AI Team invocation"
+        else:
+            rejection_reason = "Orchestrator rejected AI Team invocation"
+
+    return {
+        "ai_team_approved": dual_approved,
+        "ai_team_orchestrator_approval": orchestrator_approved,
+        "ai_team_architect_approval": architect_approved,
+        "ai_team_rejection_reason": rejection_reason,
+        "cost": _update_cost_multi(state.cost, [orchestrator_request, architect_review]),
     }
 
 
@@ -1019,6 +1119,9 @@ async def architect_approval_node(state: NexusState) -> dict:
     Output: architect_approved (bool), architect_feedback (str)
     Blocking: If not approved, returns to implementation.
     Agent-to-agent only — no user prompts.
+
+    For high-risk or high-cost work, sends an interactive Slack approval UI
+    to allow manual Slack-based approval before final merge.
     """
     result = await run_planning_agent(
         'chief_architect',
@@ -1040,6 +1143,7 @@ SECURITY SCAN:
 
 QA VERIFIED: {state.qa_verified}
 QUALITY SCORE: {state.quality_score}/100
+TOTAL COST: ${state.cost.total_cost_usd:.2f}
 
 Evaluate:
 1. Architecture soundness — does implementation match the approved design?
@@ -1054,6 +1158,32 @@ Be decisive. Your word is final.""",
     )
 
     approved = 'APPROVED' in result.output.upper() and 'REJECTED' not in result.output.upper()
+
+    # Send Slack approval request for high-cost or critical approvals
+    if approved and (state.cost.total_cost_usd > 10.0 or state.quality_score < 75):
+        try:
+            approval_id = f"ARCH-{state.session_id[:8]}"
+            notifier.send_approval_request(
+                title="Architecture Review Complete - Final Approval Required",
+                context={
+                    "description": f"""Architecture review complete and approved by Chief Architect.
+
+**Summary:** {result.output[:300]}
+
+**Quality Score:** {state.quality_score}/100
+**Total Cost:** ${state.cost.total_cost_usd:.2f}
+**PR Status:** {len([r for r in state.pr_reviews if r.status == 'approved'])}/{len(state.pr_reviews)} approved
+
+Click below to confirm final approval to proceed with merge.""",
+                    "requester": "Chief Architect",
+                    "severity": "Critical" if state.cost.total_cost_usd > 10.0 else "High",
+                },
+                approval_id=approval_id,
+            )
+            logger.info("Sent Slack approval request for architect decision: %s", approval_id)
+        except Exception as e:
+            logger.warning("Failed to send Slack approval request: %s", e)
+            # Continue anyway - don't block on Slack notification failures
 
     return {
         'architect_approved': approved,
@@ -1126,6 +1256,92 @@ This is a DEMO, not a request for review. Be confident and direct.""",
             "Lint": "Passed" if state.lint_results.get("passed") else "Issues",
         },
         "current_phase": "complete",
+        "cost": _update_cost(state.cost, result),
+    }
+
+
+async def rebuild_analysis_node(state: NexusState) -> dict:
+    """Analyze the project codebase for self-improvement (MAINT-011).
+
+    Runs the AnalyzerAgent on the project directory and stores findings
+    in the state for downstream execution or reporting.
+    """
+    from src.agents.analyzer import Finding, save_analysis_state
+
+    # Use the project path from state, or fall back to a default
+    target_dir = state.project_path or "/tmp/nexus-rebuild"
+
+    result = await run_planning_agent(
+        "chief_architect",
+        AGENTS["chief_architect"],
+        f"""Analyze the codebase at {target_dir} for self-improvement opportunities.
+
+Scan for issues across these categories:
+- SEC: Security vulnerabilities
+- PERF: Performance bottlenecks
+- ARCH: Architecture issues
+- CODE: Code quality
+- MAINT: Maintainability
+
+Focus on HIGH and CRITICAL severity issues that would have the most impact.
+Produce findings as a JSON array. Each finding must have:
+- id, category, severity, title, description, location, impact, remediation,
+  effort, effort_hours, dependencies, risk
+
+Project path: {target_dir}
+Current phase: {state.current_phase}
+Quality score: {state.quality_score}""",
+    )
+
+    # Parse findings from architect analysis and store as analysis state
+    findings_data = []
+    try:
+        text = result.output
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start >= 0 and end > start:
+            findings_data = json.loads(text[start:end])
+    except (ValueError, json.JSONDecodeError):
+        pass
+
+    # Build summary
+    summary = {
+        "totalFindings": len(findings_data),
+        "source": "rebuild_analysis_node",
+        "raw_output": result.output[:2000],
+    }
+
+    # Save state file if we got structured findings
+    state_path = None
+    if findings_data:
+        try:
+            parsed_findings = []
+            for i, item in enumerate(findings_data):
+                if isinstance(item, dict):
+                    item.setdefault("id", f"SELF-{i+1:03d}")
+                    item.setdefault("category", "MAINT")
+                    item.setdefault("severity", "MEDIUM")
+                    item.setdefault("title", "Untitled finding")
+                    item.setdefault("description", "")
+                    item.setdefault("location", "unknown")
+                    item.setdefault("impact", "")
+                    item.setdefault("remediation", "")
+                    item.setdefault("effort", "M")
+                    item.setdefault("effort_hours", "4-8 hours")
+                    item.setdefault("dependencies", [])
+                    item.setdefault("status", "pending")
+                    item.setdefault("risk", "")
+                    parsed_findings.append(Finding.from_dict(item))
+
+            if parsed_findings:
+                state_path = save_analysis_state(parsed_findings, target_dir, "NEXUS Self-Analysis")
+        except Exception as e:
+            logger.warning("Failed to save analysis state: %s", e)
+
+    return {
+        "analysis_findings": findings_data,
+        "analysis_summary": summary,
+        "analysis_state_path": state_path,
         "cost": _update_cost(state.cost, result),
     }
 
@@ -1236,6 +1452,7 @@ def build_nexus_graph() -> StateGraph:
     graph.add_node("vp_engineering", vp_engineering_node)
     graph.add_node("tech_lead_review", tech_lead_review_node)
     graph.add_node("decomposition", decomposition_node)
+    graph.add_node("ai_team_approval", ai_team_approval_node)
     graph.add_node("test_first", test_first_node)
     graph.add_node("implementation", implementation_node)
     graph.add_node("verify_green", verify_green_phase)
@@ -1250,6 +1467,7 @@ def build_nexus_graph() -> StateGraph:
     graph.add_node("architect_approval", architect_approval_node)
     graph.add_node("demo", demo_node)
     graph.add_node("escalation", escalation_node)
+    graph.add_node("rebuild_analysis", rebuild_analysis_node)
 
     # --- Define edges (the org chart as a flow) ---
 
@@ -1295,8 +1513,11 @@ def build_nexus_graph() -> StateGraph:
         {"vp_engineering": "vp_engineering", "decomposition": "decomposition"},
     )
 
-    # Decomposition → Test First (RED phase)
-    graph.add_edge("decomposition", "test_first")
+    # Decomposition → AI Team Approval Gate
+    graph.add_edge("decomposition", "ai_team_approval")
+
+    # AI Team Approval → Test First (RED phase)
+    graph.add_edge("ai_team_approval", "test_first")
 
     # Test First (RED) → Implementation (GREEN)
     graph.add_edge("test_first", "implementation")
@@ -1356,6 +1577,9 @@ def build_nexus_graph() -> StateGraph:
 
     # Demo → End
     graph.add_edge("demo", END)
+
+    # Rebuild Analysis → End (standalone node for self-improvement, MAINT-011)
+    graph.add_edge("rebuild_analysis", END)
 
     return graph
 

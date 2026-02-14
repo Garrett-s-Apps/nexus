@@ -123,3 +123,73 @@ def notify_cost_alert(current_rate, budget):
 
 def notify_completion(project, feature, cost):
     notify(f"Feature complete: *{feature}* on {project}. Total cost: ${cost:.2f}")
+
+
+def send_approval_request(title: str, context: dict, approval_id: str) -> dict:
+    """Send Slack message with interactive approve/reject buttons using Block Kit.
+
+    Args:
+        title: Approval request title
+        context: Context dictionary with description, requester, severity, etc.
+        approval_id: Unique approval identifier for state tracking
+
+    Returns:
+        Response from Slack API
+    """
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"🔔 Approval Required: {title}"}
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": context.get("description", "")}
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Requester:* {context.get('requester', 'Unknown')}"},
+                {"type": "mrkdwn", "text": f"*Severity:* {context.get('severity', 'Normal')}"},
+            ]
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "✅ Approve"},
+                    "style": "primary",
+                    "value": f"{approval_id}:approve",
+                    "action_id": "approval_approve"
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "❌ Reject"},
+                    "style": "danger",
+                    "value": f"{approval_id}:reject",
+                    "action_id": "approval_reject"
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "💬 Request Changes"},
+                    "value": f"{approval_id}:changes",
+                    "action_id": "approval_changes"
+                }
+            ]
+        }
+    ]
+
+    client = get_client()
+    channel = get_channel()
+    try:
+        client.conversations_join(channel=channel)
+    except SlackApiError:
+        pass
+
+    try:
+        result = client.chat_postMessage(channel=channel, blocks=blocks, text=title)
+        logger.info("Approval request sent: %s", approval_id)
+        return result
+    except SlackApiError as e:
+        logger.error("Failed to send approval request: %s", e.response['error'])
+        raise

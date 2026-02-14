@@ -20,6 +20,7 @@ Usage:
     nexus stop                     Stop the server
 """
 
+import os
 import sys
 import asyncio
 import aiohttp
@@ -110,6 +111,62 @@ async def call_server(method: str, path: str, json: dict = None):
                     return await resp.json()
         except aiohttp.ClientError:
             return {"error": "NEXUS server is not running. Start with: nexus start"}
+
+
+def _start_slack_webhook():
+    """Start the Slack webhook server for interactive approvals."""
+    import threading
+    from src.config import get_key
+    from src.slack.webhook import create_webhook_app
+
+    # Get configuration
+    signing_secret = get_key("SLACK_SIGNING_SECRET")
+    if not signing_secret:
+        print("Error: SLACK_SIGNING_SECRET not configured")
+        print("Set SLACK_SIGNING_SECRET in ~/.nexus/.env.keys or as environment variable")
+        sys.exit(1)
+
+    webhook_port = int(os.environ.get("SLACK_APPROVAL_WEBHOOK_PORT", "3000"))
+
+    # Create and start Flask app
+    app = create_webhook_app(signing_secret)
+
+    print(f"Starting Slack webhook server on port {webhook_port}...")
+    print(f"Listening for interactive events at http://localhost:{webhook_port}/slack/interactive")
+    print("Press Ctrl+C to stop.\n")
+
+    try:
+        app.run(host="127.0.0.1", port=webhook_port, debug=False)
+    except KeyboardInterrupt:
+        print("\nSlack webhook server stopped.")
+        sys.exit(0)
+
+
+def _stop_slack_webhook():
+    """Stop the running Slack webhook server."""
+    import signal
+    import subprocess
+
+    try:
+        # Find and kill process on webhook port
+        port = int(os.environ.get("SLACK_APPROVAL_WEBHOOK_PORT", "3000"))
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.stdout.strip():
+            pids = result.stdout.strip().split("\n")
+            for pid in pids:
+                if pid:
+                    os.kill(int(pid), signal.SIGTERM)
+            print(f"Slack webhook server stopped (killed PID(s): {', '.join(pids)})")
+        else:
+            print(f"No process found on port {port}")
+    except (subprocess.TimeoutExpired, FileNotFoundError, ProcessLookupError) as e:
+        print(f"Could not stop webhook server: {e}")
+        sys.exit(1)
 
 
 def main():
@@ -247,8 +304,174 @@ def main():
             print("Valid subcommands: save, list, restore")
             sys.exit(1)
 
+    elif command == "analyze" and len(sys.argv) >= 3:
+        target_dir = sys.argv[2]
+        if not os.path.isdir(target_dir):
+            print(f"Error: Directory not found: {target_dir}", file=sys.stderr)
+            sys.exit(1)
+
+        focus_areas = sys.argv[3:] if len(sys.argv) > 3 else None
+
+        print(f"Analyzing codebase: {target_dir}")
+        if focus_areas:
+            print(f"Focus areas: {', '.join(focus_areas)}")
+        print("This may take a minute...\n")
+
+        from src.agents.analyzer import AnalyzerAgent, load_analysis_state
+
+        async def _run_analysis():
+            try:
+                analyzer = AnalyzerAgent("chief_architect")
+            except Exception:
+                # Fallback: run analysis without agent framework
+                from src.agents.analyzer import AnalyzerAgent as _AA
+                analyzer = _AA.__new__(_AA)
+                analyzer.agent_id = "analyzer"
+                analyzer.name = "Analyzer"
+                analyzer.title = "Codebase Analyzer"
+                analyzer.model = "claude-sonnet-4-20250514"
+                analyzer._total_cost = 0.0
+                analyzer._running = False
+
+            return await analyzer.analyze_codebase(target_dir, focus_areas)
+
+        try:
+            result = asyncio.run(_run_analysis())
+            summary = result["summary"]
+            findings = result["findings"]
+
+            print("=" * 60)
+            print("CODEBASE ANALYSIS COMPLETE")
+            print("=" * 60)
+            print(f"\nTotal findings: {summary['totalFindings']}")
+            print(f"\nBy severity:")
+            for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+                count = summary["bySeverity"].get(sev, 0)
+                if count:
+                    print(f"  {sev}: {count}")
+            print(f"\nBy category:")
+            for cat, count in sorted(summary["byCategory"].items()):
+                print(f"  {cat}: {count}")
+
+            print(f"\nState saved to: {result['state_path']}")
+            print("\nTop findings:")
+            for f in findings[:10]:
+                print(f"  [{f.severity}] {f.id}: {f.title}")
+                print(f"         Location: {f.location} | Effort: {f.effort} ({f.effort_hours})")
+
+        except Exception as e:
+            print(f"Error: Analysis failed - {e}", file=sys.stderr)
+            sys.exit(1)
+
+    elif command == "execute-all":
+        _execute_findings(filter_type="all")
+
+    elif command == "execute-priority" and len(sys.argv) >= 3:
+        severity = sys.argv[2].upper()
+        if severity not in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+            print(f"Error: Invalid severity: {severity}. Use CRITICAL, HIGH, MEDIUM, or LOW.", file=sys.stderr)
+            sys.exit(1)
+        _execute_findings(filter_type="severity", filter_value=severity)
+
+    elif command == "execute-category" and len(sys.argv) >= 3:
+        category = sys.argv[2].upper()
+        valid_cats = ("SEC", "PERF", "ARCH", "CODE", "UX", "DATA", "MAINT", "COMP")
+        if category not in valid_cats:
+            print(f"Error: Invalid category: {category}. Use one of: {', '.join(valid_cats)}", file=sys.stderr)
+            sys.exit(1)
+        _execute_findings(filter_type="category", filter_value=category)
+
+    elif command == "execute-item" and len(sys.argv) >= 3:
+        item_id = sys.argv[2].upper()
+        _execute_findings(filter_type="item", filter_value=item_id)
+
+    elif command == "slack-webhook":
+        if len(sys.argv) < 3:
+            print("Usage: nexus slack-webhook start|stop")
+            print("  nexus slack-webhook start    Start the Slack webhook server")
+            print("  nexus slack-webhook stop     Stop the Slack webhook server")
+            sys.exit(1)
+
+        subcommand = sys.argv[2]
+
+        if subcommand == "start":
+            _start_slack_webhook()
+        elif subcommand == "stop":
+            _stop_slack_webhook()
+        else:
+            print(f"Unknown subcommand: {subcommand}")
+            print("Valid subcommands: start, stop")
+            sys.exit(1)
+
     else:
         print(__doc__)
+
+
+def _execute_findings(filter_type: str = "all", filter_value: str = ""):
+    """Execute analysis findings as rebuild tasks."""
+    import os as _os
+
+    # Determine target dir from analysis state
+    # Look in current dir and common locations
+    target_dir = None
+    for candidate in [_os.getcwd(), "/tmp/nexus-rebuild"]:
+        state_path = _os.path.join(candidate, ".claude", "analysis-state.json")
+        if _os.path.exists(state_path):
+            target_dir = candidate
+            break
+
+    if not target_dir:
+        print("Error: No analysis state found. Run 'nexus analyze <dir>' first.", file=sys.stderr)
+        sys.exit(1)
+
+    from src.agents.analyzer import (
+        get_finding_by_id,
+        get_findings_by_category,
+        get_findings_by_severity,
+        load_analysis_state,
+        update_finding_status,
+    )
+
+    state = load_analysis_state(target_dir)
+    if not state:
+        print("Error: Could not load analysis state.", file=sys.stderr)
+        sys.exit(1)
+
+    if filter_type == "all":
+        findings = [f for f in state["findings"] if f["status"] == "pending"]
+    elif filter_type == "severity":
+        findings = [f for f in get_findings_by_severity(target_dir, filter_value) if f["status"] == "pending"]
+    elif filter_type == "category":
+        findings = [f for f in get_findings_by_category(target_dir, filter_value) if f["status"] == "pending"]
+    elif filter_type == "item":
+        f = get_finding_by_id(target_dir, filter_value)
+        findings = [f] if f else []
+    else:
+        findings = []
+
+    if not findings:
+        print("No pending findings match the criteria.")
+        return
+
+    # Sort by severity priority
+    sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    findings.sort(key=lambda f: sev_order.get(f.get("severity", "LOW"), 3))
+
+    print(f"\nExecuting {len(findings)} finding(s):\n")
+    for f in findings:
+        fid = f["id"]
+        print(f"  [{f['severity']}] {fid}: {f['title']}")
+        print(f"    Remediation: {f['remediation'][:120]}...")
+        print(f"    Effort: {f['effort']} ({f['effort_hours']})")
+
+        # Mark as in-progress
+        update_finding_status(target_dir, fid, "in-progress")
+        print(f"    Status: in-progress")
+        print()
+
+    print(f"\n{len(findings)} finding(s) marked as in-progress.")
+    print("Use your preferred agent/workflow to implement the remediations.")
+    print(f"Update status with: nexus execute-item <ID> (after fixing)")
 
 
 if __name__ == "__main__":

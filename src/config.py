@@ -37,7 +37,7 @@ def load_keys() -> dict[str, str]:
         pass
     # Environment variables override file values
     for key in ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_CHANNEL",
-                "SLACK_OWNER_USER_ID",
+                "SLACK_OWNER_USER_ID", "SLACK_SIGNING_SECRET",
                 "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"]:
         val = os.environ.get(key)
         if val:

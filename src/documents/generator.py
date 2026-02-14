@@ -7,11 +7,14 @@ to create the actual files.
 """
 
 import json
+import logging
 import os
 import tempfile
 from datetime import datetime
 
 import google.genai as genai
+
+logger = logging.getLogger("nexus.documents")
 
 from src.config import get_key as _load_key  # consolidated key loading
 
@@ -53,7 +56,7 @@ Return ONLY the JSON array."""
         if isinstance(result, list):
             return [s for s in result if isinstance(s, str)]
     except Exception as e:
-        print(f"[Documents] Context classification failed: {e}")
+        logger.warning("Context classification failed: %s", e)
 
     # Fallback: include everything so we never produce an empty document
     return ["org", "architecture", "dependencies", "readme", "source_tree", "config"]
@@ -211,7 +214,7 @@ async def _gather_web_context(query: str) -> str:
                 "=== END WEB RESEARCH ===\n"
             )
     except Exception as e:
-        print(f"[Documents] Web search failed (non-fatal): {e}")
+        logger.warning("Web search failed (non-fatal): %s", e)
     return ""
 
 
@@ -229,7 +232,7 @@ def _ask_gemini(prompt: str, system: str = "") -> str:
             )
             return str(response.text)
         except Exception as e:
-            print(f"[Documents] Gemini failed ({e}), falling back to Claude")
+            logger.warning("Gemini failed (%s), falling back to Claude", e)
 
     # Claude fallback
     anthropic_key = _load_key("ANTHROPIC_API_KEY")
@@ -1275,7 +1278,7 @@ def _try_gemini_image_generation(description: str, output_path: str) -> bool:
 
     # Clean the prompt before sending to image models
     clean_prompt = _extract_image_prompt(description)
-    print(f"[Documents] Image prompt: {clean_prompt[:100]}...")
+    logger.info("Image prompt: %s...", clean_prompt[:100])
 
     models = ["gemini-2.5-flash-image", "gemini-3-pro-image-preview"]
 
@@ -1296,15 +1299,15 @@ def _try_gemini_image_generation(description: str, output_path: str) -> bool:
                 if part.inline_data is not None:
                     image = part.as_image()
                     image.save(output_path)  # type: ignore[union-attr]
-                    print(f"[Documents] Image generated with {model_name}")
+                    logger.info("Image generated with %s", model_name)
                     return True
 
-            print(f"[Documents] {model_name} returned no image data")
+            logger.warning("%s returned no image data", model_name)
 
         except Exception as e:
-            print(f"[Documents] {model_name} failed ({e})")
+            logger.warning("%s failed (%s)", model_name, e)
 
-    print("[Documents] All Gemini image models failed, falling back to PIL")
+    logger.warning("All Gemini image models failed, falling back to PIL")
     return False
 
 

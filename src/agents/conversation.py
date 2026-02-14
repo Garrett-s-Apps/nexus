@@ -3,8 +3,11 @@ NEXUS Conversation Engine — persistent memory version.
 """
 
 import asyncio
+import logging
 
 import anthropic
+
+logger = logging.getLogger("nexus.conversation")
 
 from src.agents.registry import registry
 from src.config import get_key as _load_key  # consolidated key loading
@@ -130,7 +133,7 @@ async def _auto_summarize(client):
         )
         memory.add_summary(resp.content[0].text, half[0].get("timestamp", ""), half[-1].get("timestamp", ""), len(half))
     except Exception as e:
-        print(f"[Memory] Summarization failed: {e}")
+        logger.error("Summarization failed: %s", e)
 
 
 def resolve_project(name):

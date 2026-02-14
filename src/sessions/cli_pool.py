@@ -22,10 +22,12 @@ import time
 from collections.abc import Awaitable, Callable
 
 from src.agents.task_result import TaskResult
+from src.config import CLI_DOCKER_ENABLED, CLI_DOCKER_IMAGE, get_key
 
 logger = logging.getLogger(__name__)
 
 CLAUDE_CMD = "claude"
+DOCKER_CMD = "docker"
 IDLE_TIMEOUT = 1800  # 30 minutes
 DEFAULT_TIMEOUT = 900  # 15 minutes
 
@@ -59,7 +61,9 @@ class CLISession:
         self._cancelled = False
 
     async def start(self) -> bool:
-        if not shutil.which(CLAUDE_CMD):
+        use_docker = CLI_DOCKER_ENABLED and shutil.which(DOCKER_CMD)
+
+        if not use_docker and not shutil.which(CLAUDE_CMD):
             logger.warning("Claude CLI not found, session unavailable")
             return False
 
@@ -74,25 +78,53 @@ class CLISession:
         self._cancelled = False
 
         try:
-            clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-            self.process = await asyncio.create_subprocess_exec(
-                CLAUDE_CMD, "--dangerously-skip-permissions", "--model", "opus",
-                "-p", "--output-format", "stream-json",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self.project_path,
-                env=clean_env,
-            )
+            if use_docker:
+                self.process = await self._start_docker()
+            else:
+                self.process = await self._start_native()
+
             self.last_used = time.monotonic()
+            mode = "docker" if use_docker else "native"
             logger.info(
-                "CLI session started for thread %s (pid=%s)",
-                self.thread_ts, self.process.pid,
+                "CLI session started (%s) for thread %s (pid=%s)",
+                mode, self.thread_ts, self.process.pid,
             )
             return True
         except OSError as e:
             logger.error("Failed to start CLI session: %s", e)
             return False
+
+    async def _start_native(self) -> asyncio.subprocess.Process:
+        """Start Claude CLI as a native subprocess."""
+        clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        return await asyncio.create_subprocess_exec(
+            CLAUDE_CMD, "--dangerously-skip-permissions", "--model", "opus",
+            "-p", "--verbose", "--output-format", "stream-json",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=self.project_path,
+            env=clean_env,
+        )
+
+    async def _start_docker(self) -> asyncio.subprocess.Process:
+        """Start Claude CLI inside a Docker container with project mounted."""
+        env_args: list[str] = []
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
+            val = get_key(key)
+            if val:
+                env_args.extend(["-e", f"{key}={val}"])
+
+        return await asyncio.create_subprocess_exec(
+            DOCKER_CMD, "run", "--rm", "-i",
+            "-v", f"{self.project_path}:/workspace",
+            *env_args,
+            "-e", f"NEXUS_CLI_TIMEOUT={DEFAULT_TIMEOUT}",
+            CLI_DOCKER_IMAGE,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
 
     def cancel(self):
         """Cancel the running send() — kills the process immediately."""

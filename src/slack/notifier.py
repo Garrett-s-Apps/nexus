@@ -82,7 +82,7 @@ def notify(message, blocks=None, thread_ts=None, tag_owner=True):
             kwargs["thread_ts"] = thread_ts
         client.chat_postMessage(**kwargs)
     except SlackApiError as e:
-        print(f"Slack notification failed: {e.response['error']}")
+        logger.error("Slack notification failed: %s", e.response['error'])
 
 
 def notify_demo(project, summary, screenshots=None, metrics=None):

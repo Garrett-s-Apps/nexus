@@ -9,12 +9,14 @@ Removes: old server routing, category formatting, in-memory history.
 """
 
 import asyncio
+import logging
 import os
 import re
 import tempfile
-import traceback
 
 import aiohttp
+
+logger = logging.getLogger("nexus.slack.listener")
 from slack_sdk.socket_mode.aiohttp import SocketModeClient
 from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
@@ -217,7 +219,7 @@ async def upload_file_to_slack(web_client: AsyncWebClient, channel: str,
             kwargs["thread_ts"] = thread_ts
         await web_client.files_upload_v2(**kwargs)  # type: ignore[arg-type]
     except Exception as e:
-        print(f"[Slack] File upload failed: {e}")
+        logger.error("File upload failed: %s", e)
 
 
 _web_client: AsyncWebClient | None = None
@@ -389,7 +391,7 @@ async def _fetch_thread_history(
         # Return only the most recent `limit` messages
         return history[-limit:]
     except Exception as e:
-        print(f"[Slack] Thread history fetch failed (non-fatal): {e}")
+        logger.warning("Thread history fetch failed (non-fatal): %s", e)
         return []
 
 
@@ -555,7 +557,7 @@ async def start_slack_listener():
     app_token = get_key("SLACK_APP_TOKEN")
 
     if not bot_token or not app_token:
-        print("[Slack] Missing tokens — Slack disabled")
+        logger.warning("Missing tokens — Slack disabled")
         return
 
     web_client = AsyncWebClient(token=bot_token)
@@ -569,9 +571,9 @@ async def start_slack_listener():
                 _channel_id = ch["id"]
                 break
         if not _channel_id:
-            print("[Slack] Channel #garrett-nexus not found")
+            logger.warning("Channel #garrett-nexus not found")
     except Exception as e:
-        print(f"[Slack] Channel lookup failed: {e}")
+        logger.error("Channel lookup failed: %s", e)
 
     auth = await web_client.auth_test()
     bot_user_id = auth["user_id"]
@@ -610,10 +612,10 @@ async def start_slack_listener():
         client_msg_id = event.get("client_msg_id", "")
         dedup_key = f"{channel_id}:{slack_ts}:{client_msg_id or ''}"
         if memory.is_message_processed(dedup_key):
-            print(f"[Slack] Duplicate message detected, skipping: {dedup_key}")
+            logger.debug("Duplicate message detected, skipping: %s", dedup_key)
             return
 
-        print(f"[Slack] Received: {text[:100]}")
+        logger.info("Received: %s", text[:100])
 
         thinking_msg = None
         thread_ts = event.get("thread_ts") or event.get("ts")
@@ -859,7 +861,7 @@ async def start_slack_listener():
                             response = f":warning: *Error:* {error_detail[:1000]}"
 
                 except Exception as e:
-                    print(f"[Slack] CLI error: {e}")
+                    logger.error("CLI error: %s", e)
                     response = f":warning: *Error:* {e}"
 
                 if not response or response == "(No response from CLI)":
@@ -877,7 +879,7 @@ async def start_slack_listener():
                                 thread_ts=thread_ts,
                             )
                     except Exception as e:
-                        print(f"[Slack] Execution report error: {e}")
+                        logger.warning("Execution report error: %s", e)
 
             elif intake_result.tool_called == "generate_document":
                 # Document generation — use existing generate_document flow
@@ -971,12 +973,11 @@ async def start_slack_listener():
             # Mark message as processed for idempotency
             memory.mark_message_processed(dedup_key, slack_ts, channel_id)
 
-            print(f"[Slack] Responded in thread {thread_ts}: {slack_text[:100]}...")
+            logger.info("Responded in thread %s: %s...", thread_ts, slack_text[:100])
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {str(e)[:200]}"
-            print(f"[Slack] Error: {error_msg}")
-            traceback.print_exc()
+            logger.error("Error: %s", error_msg, exc_info=True)
             # Remove thinking indicator on error
             if thinking_msg:
                 try:
@@ -993,10 +994,10 @@ async def start_slack_listener():
                 pass
 
     socket_client.socket_mode_request_listeners.append(handle_event)
-    print("[Slack] Connecting...")
+    logger.info("Connecting...")
     await socket_client.connect()
     cli_pool.start_cleanup_loop()
-    print("[Slack] Connected and listening. CLI session pool active.")
+    logger.info("Connected and listening. CLI session pool active.")
 
     while True:
         await asyncio.sleep(1)

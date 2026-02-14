@@ -14,11 +14,14 @@ Total: ~30-60 seconds for a small feature vs 10+ minutes through full graph.
 """
 
 import json
+import logging
 import os
 
 import anthropic
 
 from src.config import get_key as _load_key
+
+logger = logging.getLogger("nexus.executor")
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
@@ -33,7 +36,7 @@ async def execute_directive(directive: str, project_path: str, session_id: str =
 
     def _log(phase: str, msg: str):
         log.append(f"[{phase}] {msg}")
-        print(f"[Executor] [{phase}] {msg}")
+        logger.info("[%s] %s", phase, msg)
 
     # Notify Slack that we're starting
     from src.slack.notifier import notify

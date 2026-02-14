@@ -10,10 +10,13 @@ FastAPI on localhost:4200.
 
 import asyncio
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+
+logger = logging.getLogger("nexus.server")
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -66,7 +69,7 @@ def _register_background_jobs():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("[Server] Initializing...")
+    logger.info("Initializing...")
     memory.init()
     memory.emit_event("server", "starting", {})
 
@@ -80,11 +83,11 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_start_slack())
 
-    print("[Server] NEXUS v1 running on http://localhost:4200")
+    logger.info("NEXUS v1 running on http://localhost:4200")
     memory.emit_event("server", "ready", {"port": 4200})
     yield
 
-    print("[Server] Shutting down...")
+    logger.info("Shutting down...")
     from src.observability.background import scheduler as bg
     await bg.stop()
     from src.orchestrator.engine import engine as eng
@@ -97,7 +100,7 @@ async def _start_slack():
         from src.slack.listener import start_slack_listener
         await start_slack_listener()
     except Exception as e:
-        print(f"[Server] Slack failed (non-fatal): {e}")
+        logger.warning("Slack failed (non-fatal): %s", e)
 
 
 app = FastAPI(title="NEXUS", version="3.0.0", lifespan=lifespan)

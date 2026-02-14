@@ -19,6 +19,8 @@ from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
+from src.db.sqlite_store import connect_encrypted
+
 DB_PATH = os.path.expanduser("~/.nexus/registry.db")
 YAML_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "config", "agents.yaml")
 
@@ -123,9 +125,7 @@ class AgentRegistry:
         self._lock = asyncio.Lock()
 
     def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn = connect_encrypted(self.db_path)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS agents (
                 id TEXT PRIMARY KEY,
@@ -169,7 +169,7 @@ class AgentRegistry:
         conn.close()
 
     def is_initialized(self) -> bool:
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         count = conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
         conn.close()
         return bool(count > 0)
@@ -179,7 +179,7 @@ class AgentRegistry:
         with open(yaml_path) as f:
             config = yaml.safe_load(f)
 
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         now = time.time()
 
         for agent_id, agent_data in config["agents"].items():
@@ -214,7 +214,7 @@ class AgentRegistry:
     # ============================================
 
     def get_agent(self, agent_id: str) -> Agent | None:
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
         conn.close()
         if row:
@@ -222,7 +222,7 @@ class AgentRegistry:
         return None
 
     def get_active_agents(self) -> list[Agent]:
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         rows = conn.execute(
             "SELECT * FROM agents WHERE status = 'active' OR status = 'temporary'"
         ).fetchall()
@@ -249,7 +249,7 @@ class AgentRegistry:
         return [a for a in self.get_active_agents() if a.reports_to == manager_id]
 
     def get_agent_by_name(self, name: str) -> Agent | None:
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         row = conn.execute(
             "SELECT * FROM agents WHERE LOWER(name) = LOWER(?) AND status IN ('active', 'temporary')",
             (name,),
@@ -261,7 +261,7 @@ class AgentRegistry:
 
     def search_agents(self, query: str) -> list[Agent]:
         q = f"%{query.lower()}%"
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         rows = conn.execute(
             """SELECT * FROM agents
                WHERE status IN ('active', 'temporary')
@@ -296,7 +296,7 @@ class AgentRegistry:
             if temporary and temp_duration_hours:
                 temp_expiry = now + (temp_duration_hours * 3600)
 
-            conn = sqlite3.connect(self.db_path)
+            conn = connect_encrypted(self.db_path)
             conn.execute(
                 """INSERT INTO agents
                    (id, name, model, provider, layer, description, system_prompt,
@@ -327,7 +327,7 @@ class AgentRegistry:
 
     async def fire_agent(self, agent_id: str, reason: str = "") -> bool:
         async with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = connect_encrypted(self.db_path)
             agent = self.get_agent(agent_id)
             if not agent or agent.status not in ("active", "temporary"):
                 conn.close()
@@ -357,7 +357,7 @@ class AgentRegistry:
 
     async def reassign_agent(self, agent_id: str, new_manager_id: str) -> bool:
         async with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = connect_encrypted(self.db_path)
             conn.execute(
                 "UPDATE agents SET reports_to = ? WHERE id = ? AND status IN ('active', 'temporary')",
                 (new_manager_id, agent_id),
@@ -369,7 +369,7 @@ class AgentRegistry:
 
     async def update_agent(self, agent_id: str, **kwargs) -> bool:
         async with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = connect_encrypted(self.db_path)
             _AGENT_COLS = {
                 "name", "model", "provider", "layer", "description", "system_prompt",
                 "reports_to", "tools", "spawns_sdk", "metadata",
@@ -427,7 +427,7 @@ class AgentRegistry:
             self.fire_agent(aid, reason=f"Consolidated into {new_name}")
 
         all_orphans = []
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         for aid in agent_ids:
             orphans = conn.execute(
                 "SELECT id FROM agents WHERE reports_to = ? AND status IN ('active', 'temporary')",
@@ -495,7 +495,7 @@ class AgentRegistry:
         return line
 
     def get_changelog(self, limit: int = 20) -> list[dict]:
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         rows = conn.execute(
             "SELECT timestamp, action, agent_id, details FROM org_changelog ORDER BY id DESC LIMIT ?",
             (limit,),
@@ -522,7 +522,7 @@ class AgentRegistry:
 
     def record_circuit_event(self, agent_id: str, event_type: str, reason: str = ""):
         """Record a circuit breaker event for reliability tracking."""
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         conn.execute(
             "INSERT INTO circuit_events (agent_id, event_type, reason, timestamp) VALUES (?, ?, ?, ?)",
             (agent_id, event_type, reason, time.time()),
@@ -532,7 +532,7 @@ class AgentRegistry:
 
     def get_agent_reliability(self, agent_id: str, window_hours: int = 24) -> dict:
         """Get agent reliability metrics from circuit breaker events."""
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         cutoff = time.time() - (window_hours * 3600)
 
         trips = conn.execute(

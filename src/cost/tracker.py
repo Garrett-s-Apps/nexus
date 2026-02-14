@@ -16,6 +16,7 @@ import time
 from typing import Any
 
 from src.config import COST_DB_PATH
+from src.db.sqlite_store import connect_encrypted
 
 logger = logging.getLogger("nexus.cost.tracker")
 
@@ -74,9 +75,7 @@ class CostTracker:
         self._alerts_sent: set[str] = set()
 
     def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn = connect_encrypted(self.db_path)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS cost_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,7 +127,7 @@ class CostTracker:
         self.call_count += 1
 
         # Persist to NEXUS cost_events table
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         conn.execute(
             "INSERT INTO cost_events (timestamp, model, agent, project, tokens_in, tokens_out, cost_usd, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (time.time(), model, agent_name, project, tokens_in, tokens_out, cost, session_id),
@@ -239,7 +238,7 @@ class CostTracker:
         t = time.localtime(now)
         month_start = time.mktime((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, -1))
 
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         result = conn.execute(
             "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_events WHERE timestamp >= ?",
             (month_start,),
@@ -250,7 +249,7 @@ class CostTracker:
     def get_daily_breakdown(self, days: int = 7) -> list[dict]:
         """Cost breakdown by day for the last N days."""
         cutoff = time.time() - (days * 86400)
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         rows = conn.execute(
             """SELECT date(timestamp, 'unixepoch', 'localtime') as day,
                       SUM(cost_usd) as total,

@@ -1,4 +1,8 @@
-"""Tests for NEXUS ReasoningEngine — message handling, decomposition, and NLU."""
+"""Tests for NEXUS OrchestrationFacade — message handling, decomposition, and NLU.
+
+Updated for ARCH-001: Tests now target OrchestrationFacade (LangGraph-primary)
+instead of the retired ReasoningEngine tick-based loop.
+"""
 
 import json
 import asyncio
@@ -28,77 +32,77 @@ def mock_memory():
 
 
 @pytest.fixture
-def engine_with_mocks(mock_memory):
-    """Create a ReasoningEngine with all external deps mocked."""
+def facade_with_mocks(mock_memory):
+    """Create an OrchestrationFacade with all external deps mocked."""
     with patch("src.orchestrator.engine.memory", mock_memory), \
          patch("src.orchestrator.engine.notify_slack", new_callable=AsyncMock), \
-         patch("src.orchestrator.engine.allm_call", new_callable=AsyncMock) as mock_llm, \
-         patch("src.orchestrator.engine.create_all_agents", return_value={}):
+         patch("src.orchestrator.engine.allm_call", new_callable=AsyncMock) as mock_llm:
         mock_llm.return_value = ('{"intent": "chat", "summary": "test", "response": "Hello!"}', 0.001)
-        from src.orchestrator.engine import ReasoningEngine
-        eng = ReasoningEngine()
-        yield eng, mock_memory, mock_llm
+        from src.orchestrator.engine import OrchestrationFacade
+        facade = OrchestrationFacade()
+        yield facade, mock_memory, mock_llm
 
 
-class TestEngineStartStop:
+class TestFacadeStartStop:
     @pytest.mark.asyncio
-    async def test_engine_start_stop(self, engine_with_mocks):
-        """Engine should start and stop cleanly."""
-        eng, mock_mem, _ = engine_with_mocks
-        await eng.start()
-        assert eng.running is True
-        assert eng._task is not None
+    async def test_facade_start_stop(self, facade_with_mocks):
+        """Facade should start and stop cleanly."""
+        facade, mock_mem, _ = facade_with_mocks
+        await facade.start()
+        assert facade.running is True
 
-        await eng.stop()
-        assert eng.running is False
+        await facade.stop()
+        assert facade.running is False
 
 
 class TestHandleMessage:
     @pytest.mark.asyncio
-    async def test_handle_message_chat(self, engine_with_mocks):
+    async def test_handle_message_chat(self, facade_with_mocks):
         """Chat intent should return the LLM's response."""
-        eng, mock_mem, mock_llm = engine_with_mocks
+        facade, mock_mem, mock_llm = facade_with_mocks
         mock_llm.return_value = ('{"intent": "chat", "summary": "hello", "response": "Hey there!"}', 0.001)
 
-        response = await eng.handle_message("hello", source="slack")
+        response = await facade.handle_message("hello", source="slack")
         assert response == "Hey there!"
         assert mock_mem.add_message.call_count == 2  # user + assistant
 
     @pytest.mark.asyncio
-    async def test_handle_message_new_directive(self, engine_with_mocks):
-        """New directive intent should create a directive and return confirmation."""
-        eng, mock_mem, mock_llm = engine_with_mocks
+    async def test_handle_message_new_directive(self, facade_with_mocks):
+        """New directive intent should create a directive and launch LangGraph."""
+        facade, mock_mem, mock_llm = facade_with_mocks
         mock_llm.return_value = ('{"intent": "new_directive", "summary": "build app", "response": "Starting!", "urgency": "normal", "target": ""}', 0.001)
 
-        response = await eng.handle_message("Build me an app", source="slack")
-        assert "dir-" in response.lower() or "directive" in response.lower() or "created" in response.lower()
-        mock_mem.create_directive.assert_called_once()
+        # Mock the LangGraph execution to avoid actual graph invocation
+        with patch.object(facade, '_execute_directive_via_graph', new_callable=AsyncMock):
+            response = await facade.handle_message("Build me an app", source="slack")
+            assert "dir-" in response.lower() or "directive" in response.lower() or "langgraph" in response.lower()
+            mock_mem.create_directive.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_handle_message_status(self, engine_with_mocks):
+    async def test_handle_message_status(self, facade_with_mocks):
         """Status intent with no active directive should return standing by."""
-        eng, mock_mem, mock_llm = engine_with_mocks
+        facade, mock_mem, mock_llm = facade_with_mocks
         mock_llm.return_value = ('{"intent": "status", "summary": "check status", "response": ""}', 0.001)
 
-        response = await eng.handle_message("What's the status?", source="slack")
+        response = await facade.handle_message("What's the status?", source="slack")
         assert "standing by" in response.lower()
 
     @pytest.mark.asyncio
-    async def test_handle_message_stop(self, engine_with_mocks):
+    async def test_handle_message_stop(self, facade_with_mocks):
         """Stop intent with no active directive should indicate nothing to stop."""
-        eng, mock_mem, mock_llm = engine_with_mocks
+        facade, mock_mem, mock_llm = facade_with_mocks
         mock_llm.return_value = ('{"intent": "stop", "summary": "stop", "response": ""}', 0.001)
 
-        response = await eng.handle_message("Stop everything", source="slack")
+        response = await facade.handle_message("Stop everything", source="slack")
         assert "nothing" in response.lower() or "active" in response.lower()
 
     @pytest.mark.asyncio
-    async def test_handle_message_feedback_no_directive(self, engine_with_mocks):
+    async def test_handle_message_feedback_no_directive(self, facade_with_mocks):
         """Feedback with no active directive should say there's nothing active."""
-        eng, mock_mem, mock_llm = engine_with_mocks
+        facade, mock_mem, mock_llm = facade_with_mocks
         mock_llm.return_value = ('{"intent": "feedback", "summary": "change the color", "response": ""}', 0.001)
 
-        response = await eng.handle_message("Change the button color", source="slack")
+        response = await facade.handle_message("Change the button color", source="slack")
         assert "no active" in response.lower() or "nothing" in response.lower()
 
 
@@ -162,30 +166,47 @@ class TestUnderstandIntent:
             assert result["intent"] == "chat"
 
 
-class TestSafeRun:
+class TestDirectiveLifecycle:
     @pytest.mark.asyncio
-    async def test_safe_run_error_handling(self, engine_with_mocks):
-        """_safe_run should catch exceptions and log them without crashing."""
-        eng, mock_mem, _ = engine_with_mocks
+    async def test_stop_cancels_active_task(self, facade_with_mocks):
+        """Stopping a directive should cancel the LangGraph task."""
+        facade, mock_mem, mock_llm = facade_with_mocks
 
-        mock_agent = MagicMock()
-        mock_agent.name = "TestAgent"
-        mock_agent.execute = AsyncMock(side_effect=RuntimeError("Agent crashed"))
-        eng.agents["test_agent"] = mock_agent
+        # Simulate an active directive with a running task
+        mock_mem.get_active_directive.return_value = {
+            "id": "dir-abc", "text": "build something", "status": "building"
+        }
 
-        from src.orchestrator.engine import Decision
-        decision = Decision(act=True, action="Do work")
+        # Create a fake running task
+        async def long_task():
+            await asyncio.sleep(100)
 
-        # Should not raise
-        await eng._safe_run("test_agent", decision, "dir-test")
-        mock_mem.emit_event.assert_called()
+        facade._active_tasks["dir-abc"] = asyncio.create_task(long_task())
+
+        mock_llm.return_value = ('{"intent": "stop", "summary": "stop"}', 0.001)
+        response = await facade.handle_message("Stop everything", source="slack")
+
+        assert "cancelled" in response.lower()
+        assert "dir-abc" not in facade._active_tasks
+        mock_mem.update_directive.assert_called_with("dir-abc", status="cancelled")
 
     @pytest.mark.asyncio
-    async def test_safe_run_nonexistent_agent(self, engine_with_mocks):
-        """_safe_run with a nonexistent agent should do nothing."""
-        eng, mock_mem, _ = engine_with_mocks
-        from src.orchestrator.engine import Decision
-        decision = Decision(act=True, action="Do work")
+    async def test_pivot_cancels_and_relaunches(self, facade_with_mocks):
+        """Course correction should cancel old task and start new one."""
+        facade, mock_mem, mock_llm = facade_with_mocks
 
-        # Should not raise for missing agent
-        await eng._safe_run("nonexistent", decision, "dir-test")
+        mock_mem.get_active_directive.return_value = {
+            "id": "dir-abc", "text": "build old thing", "status": "building"
+        }
+
+        async def long_task():
+            await asyncio.sleep(100)
+
+        facade._active_tasks["dir-abc"] = asyncio.create_task(long_task())
+
+        mock_llm.return_value = ('{"intent": "course_correct", "summary": "change direction"}', 0.001)
+
+        with patch.object(facade, '_execute_directive_via_graph', new_callable=AsyncMock):
+            response = await facade.handle_message("Actually build something else", source="slack")
+
+        assert "pivot" in response.lower() or "langgraph" in response.lower()

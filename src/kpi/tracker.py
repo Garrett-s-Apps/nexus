@@ -10,6 +10,8 @@ import os
 import sqlite3
 import time
 
+from src.db.sqlite_store import connect_encrypted
+
 DB_PATH = os.path.expanduser("~/.nexus/kpi.db")
 
 
@@ -20,9 +22,7 @@ class KPITracker:
         self._init_db()
 
     def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn = connect_encrypted(self.db_path)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS kpi_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +41,7 @@ class KPITracker:
         conn.close()
 
     def record(self, category: str, metric: str, value: float, metadata: dict | None = None):
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
         conn.execute(
             "INSERT INTO kpi_snapshots (timestamp, category, metric, value, metadata) VALUES (?, ?, ?, ?, ?)",
             (time.time(), category, metric, value, json.dumps(metadata or {})),
@@ -66,7 +66,7 @@ class KPITracker:
 
     def get_summary(self, hours: float = 24) -> dict:
         cutoff = time.time() - (hours * 3600)
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_encrypted(self.db_path)
 
         tasks = conn.execute(
             "SELECT COUNT(*) FROM kpi_snapshots WHERE category='productivity' AND metric='task_completed' AND timestamp > ?",

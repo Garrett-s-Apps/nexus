@@ -1,0 +1,23 @@
+{
+  "decision_name": "Emergency bug fix: patch vs root cause",
+  "analysis": "Timeline: Decide now. Your window is closing.\nReversibility: You can undo this. Be bolder.\n\u26a0\ufe0f  You're deciding with incomplete information. Plan for learning.\nConstraints: Urgent - customer impact growing, Can't afford long downtime, Resources are limited (only 2 senior engineers available)",
+  "recommended_approach": "Try it, measure outcome, adjust\n\nFor this timeline:\n\u2022 Use pattern matching from recent experience\n\u2022 Minimize analysis paralysis\n\u2022 Trust your recent learning\n\u2022 Act decisively",
+  "key_questions": [
+    "What's my contingency if this fails?",
+    "What happens if I'm wrong about this decision?",
+    "What would I need to know to feel 80% confident?",
+    "Can I test this assumption before committing fully?",
+    "What's the worst case if this goes wrong?",
+    "What's the best case if this goes right?",
+    "How would I know if I made a good decision? (measurement)",
+    "Is the timing right for this decision now?",
+    "What patterns from past decisions apply here?"
+  ],
+  "risk_factors": [
+    "Incomplete information - hidden unknowns possible",
+    "High stakes - errors are costly",
+    "Time pressure - less analysis possible"
+  ],
+  "success_patterns": [],
+  "confidence_level": 0.44999999999999996
+}

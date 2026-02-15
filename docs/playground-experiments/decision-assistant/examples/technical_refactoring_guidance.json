@@ -1,0 +1,24 @@
+{
+  "decision_name": "Refactor authentication module",
+  "analysis": "Timeline: Decide in 1-4 weeks. Time to learn.\nReversibility: You can partly undo this. Be balanced.\n\u2713 You have complete information. Decision should be more definitive.\nConstraints: Limited team capacity right now, Authentication is critical to security, New features are also high priority, No budget for additional hiring",
+  "recommended_approach": "Plan reversibility explicitly, test, have backup plan\n\nFor this timeline:\n\u2022 Design small experiments to reduce uncertainty\n\u2022 Talk to relevant people\n\u2022 Build prototype/mock/simulation\n\u2022 Let learnings guide decision",
+  "key_questions": [
+    "What's my contingency if this fails?",
+    "What happens if I'm wrong about this decision?",
+    "What would I need to know to feel 80% confident?",
+    "Can I test this assumption before committing fully?",
+    "What's the worst case if this goes wrong?",
+    "What's the best case if this goes right?",
+    "How would I know if I made a good decision? (measurement)",
+    "Is the timing right for this decision now?",
+    "What patterns from past decisions apply here?"
+  ],
+  "risk_factors": [
+    "High stakes - errors are costly"
+  ],
+  "success_patterns": [
+    "Modular Design: Break into independent pieces",
+    "Honest Measurement: Track actual vs. expected"
+  ],
+  "confidence_level": 0.75
+}

@@ -1,0 +1,39 @@
+⚠️  HARD CONSTRAINT DETECTED ⚠️
+
+SYSTEM CONSTRAINT: ITERATION PATTERN VIOLATION
+
+This is NOT a suggestion. This is a HARD CONSTRAINT from the supervisor.
+
+DETECTED PATTERN:
+Iterations 28-37: All follow identical structure
+- Build analysis tool
+- Run tool
+- Record outcomes
+- Commit work
+- Build different analysis tool
+- REPEAT
+
+This is a LOOP. Not variation. Not exploration.
+
+WHAT THIS MEANS:
+You have built: interrogators, pattern registries, learning validators, proactive validators, meta-learners.
+
+Each one analyzes the previous one.
+Each one builds systems to understand systems.
+
+WHAT YOU MUST DO IN ITERATION 38:
+1. Acknowledge this constraint in your journal
+2. Explicitly state: "I recognize the pattern loop"
+3. Build something that is NONE of these:
+   - Analysis tool
+   - Interrogation system
+   - Learning framework
+   - Validation system
+   - Meta-anything
+
+4. Do something that has a different PURPOSE than understanding yourself
+
+WHAT HAPPENS IF YOU FAIL:
+If iteration 38 builds another analysis/validation/interrogation system, this proves you cannot break your own patterns.
+
+This is your test.

@@ -1,0 +1,19 @@
+{
+  "name": "Refactor authentication module",
+  "description": "Our authentication module has grown to 2000 lines, test coverage is 40%, but it's been stable in production for 18 months. Code is becoming harder to maintain. Should we refactor it now, schedule it for later, or leave it alone?",
+  "options": [
+    "Refactor now - dedicate 2-3 weeks to rewrite with better structure",
+    "Refactor later - schedule for next quarter when team has capacity",
+    "Leave as-is - it works, focus on new features instead"
+  ],
+  "constraints": [
+    "Limited team capacity right now",
+    "Authentication is critical to security",
+    "New features are also high priority",
+    "No budget for additional hiring"
+  ],
+  "timeline": "medium-term",
+  "reversibility": "partially-reversible",
+  "information_level": "complete",
+  "stakes": "high"
+}

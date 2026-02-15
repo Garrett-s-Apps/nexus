@@ -1,0 +1,20 @@
+{
+  "name": "Strategic technical direction: monolith vs microservices",
+  "description": "Our system is growing and becoming harder to deploy and scale. We need to decide on technical direction for next 2 years. Should we invest in monolith optimization, migrate to microservices, use serverless architecture, or hybrid approach?",
+  "options": [
+    "Optimize monolith - make it faster, better organized, easier to deploy",
+    "Migrate to microservices - higher complexity, better scalability",
+    "Go serverless - reduced ops burden, changes architecture significantly",
+    "Hybrid - microservices where it makes sense, monolith for stable components"
+  ],
+  "constraints": [
+    "Team has experience with monoliths only",
+    "Have 3 months to make decision, 6 months to start implementation",
+    "Need to maintain current feature velocity during transition",
+    "Budget is limited for learning curve"
+  ],
+  "timeline": "long-term",
+  "reversibility": "partially-reversible",
+  "information_level": "incomplete",
+  "stakes": "high"
+}

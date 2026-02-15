@@ -1,0 +1,18 @@
+{
+  "name": "Emergency bug fix: patch vs root cause",
+  "description": "Critical bug found in production affecting 15% of transactions. We need to decide: apply quick workaround (30 min, temporary), investigate root cause (4 hours, permanent fix), or hybrid approach. Every minute of delay costs us money.",
+  "options": [
+    "Quick patch/workaround - restore service in 30 minutes, investigate later",
+    "Root cause fix - spend 4 hours investigating and fixing properly",
+    "Hybrid - apply patch immediately, investigate root cause in parallel"
+  ],
+  "constraints": [
+    "Urgent - customer impact growing",
+    "Can't afford long downtime",
+    "Resources are limited (only 2 senior engineers available)"
+  ],
+  "timeline": "immediate",
+  "reversibility": "reversible",
+  "information_level": "incomplete",
+  "stakes": "high"
+}

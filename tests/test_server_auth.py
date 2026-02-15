@@ -63,8 +63,10 @@ def mock_dependencies():
 
 @pytest.fixture
 def mock_passphrase():
-    """Mock the passphrase to a known test value."""
-    with patch("src.security.auth_gate._get_passphrase", return_value="test-pass"):
+    """Mock the passphrase hash to the SHA-256 of 'test-pass'."""
+    import hashlib
+    test_hash = hashlib.sha256(b"test-pass").hexdigest()
+    with patch("src.security.auth_gate._get_passphrase_hash", return_value=test_hash):
         yield
 
 

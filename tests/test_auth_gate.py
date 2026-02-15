@@ -1,5 +1,6 @@
 """Tests for the dashboard auth gate — passphrase, sessions, fingerprinting."""
 
+import hashlib
 import time
 from unittest.mock import patch
 
@@ -24,15 +25,27 @@ def passphrase():
 
 
 @pytest.fixture
-def mock_passphrase(passphrase):
-    with patch.object(auth_gate, "_get_passphrase", return_value=passphrase):
+def passphrase_hash(passphrase):
+    """SHA-256 hash of the test passphrase — matches what's stored in config."""
+    return hashlib.sha256(passphrase.encode()).hexdigest()
+
+
+@pytest.fixture
+def mock_passphrase(passphrase, passphrase_hash):
+    with patch.object(auth_gate, "_get_passphrase_hash", return_value=passphrase_hash):
         yield passphrase
 
 
 # ---- Passphrase verification ----
 
-def test_verify_passphrase_correct(mock_passphrase):
+def test_verify_passphrase_correct_raw(mock_passphrase):
+    """Raw passphrase is hashed server-side and matches stored hash."""
     assert auth_gate.verify_passphrase(mock_passphrase) is True
+
+
+def test_verify_passphrase_correct_prehashed(mock_passphrase, passphrase_hash):
+    """Pre-hashed passphrase matches stored hash directly."""
+    assert auth_gate.verify_passphrase(passphrase_hash) is True
 
 
 def test_verify_passphrase_wrong(mock_passphrase):
@@ -41,6 +54,17 @@ def test_verify_passphrase_wrong(mock_passphrase):
 
 def test_verify_passphrase_empty(mock_passphrase):
     assert auth_gate.verify_passphrase("") is False
+
+
+# ---- Token hash verification (WebSocket auth) ----
+
+def test_verify_token_hash_correct(mock_passphrase, passphrase_hash):
+    """verify_token_hash accepts the stored hash."""
+    assert auth_gate.verify_token_hash(passphrase_hash) is True
+
+
+def test_verify_token_hash_wrong(mock_passphrase):
+    assert auth_gate.verify_token_hash("0" * 64) is False
 
 
 # ---- Session creation and verification ----

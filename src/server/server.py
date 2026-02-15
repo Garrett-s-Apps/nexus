@@ -14,7 +14,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger("nexus.server")
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,6 +32,7 @@ from src.security.auth_gate import (
     invalidate_session,
     verify_passphrase,
     verify_session,
+    verify_token_hash,
 )
 from src.security.jwt_auth import sign_response
 
@@ -346,6 +347,84 @@ async def event_stream(request: Request, last_id: int = 0, token: str = ""):
 
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — real-time event stream with hash-based auth
+# ---------------------------------------------------------------------------
+_ws_clients: set[WebSocket] = set()
+
+
+@app.websocket("/ws")
+async def websocket_events(ws: WebSocket, token: str = ""):
+    """Real-time WebSocket event stream. Authenticate via query param or first message.
+
+    Auth methods:
+    - Query param: ws://host/ws?token=<session_id_or_hash>
+    - First message: {"type": "auth", "token": "<session_id_or_hash>"}
+    """
+    await ws.accept()
+
+    # Try auth via query param first
+    authenticated = False
+    if token and (verify_session(token) or verify_token_hash(token)):
+        authenticated = True
+
+    # If not authenticated via query, wait for auth message
+    if not authenticated:
+        try:
+            raw = await asyncio.wait_for(ws.receive_text(), timeout=10.0)
+            msg = json.loads(raw)
+            if msg.get("type") == "auth":
+                auth_token = msg.get("token", "")
+                if verify_session(auth_token) or verify_token_hash(auth_token):
+                    authenticated = True
+        except (TimeoutError, json.JSONDecodeError, WebSocketDisconnect):
+            await ws.close(code=4001, reason="auth timeout")
+            return
+
+    if not authenticated:
+        await ws.send_json({"type": "error", "message": "unauthorized"})
+        await ws.close(code=4003, reason="unauthorized")
+        return
+
+    await ws.send_json({"type": "auth_ok"})
+    _ws_clients.add(ws)
+
+    try:
+        last_event_id = 0
+        while True:
+            events = memory.get_events_since(last_event_id, limit=50)
+            for event in events:
+                last_event_id = event["id"]
+                data = {
+                    "type": "event",
+                    "id": event["id"],
+                    "timestamp": event["timestamp"],
+                    "source": event["source"],
+                    "event_type": event["event_type"],
+                    "data": json.loads(event["data"]) if isinstance(event["data"], str) else event["data"],
+                }
+                await ws.send_json(data)
+
+            # Also listen for incoming messages (ping/pong, commands)
+            try:
+                raw = await asyncio.wait_for(ws.receive_text(), timeout=1.0)
+                msg = json.loads(raw)
+                if msg.get("type") == "ping":
+                    await ws.send_json({"type": "pong"})
+                elif msg.get("type") == "message":
+                    from src.orchestrator.engine import engine
+                    response = await engine.handle_message(msg.get("text", ""), source="websocket")
+                    await ws.send_json({"type": "response", "text": response})
+            except TimeoutError:
+                pass
+            except json.JSONDecodeError:
+                pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _ws_clients.discard(ws)
 
 
 @app.get("/state")

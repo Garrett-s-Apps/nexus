@@ -23,6 +23,8 @@ class WorkstreamTask(BaseModel):
     result: str | None = None
     token_cost: float = 0.0
     attempts: int = 0
+    blocks: list[str] = Field(default_factory=list)
+    blocked_by: list[str] = Field(default_factory=list)
 
 
 class PRReview(BaseModel):
@@ -63,6 +65,12 @@ class NexusState(BaseModel):
     executive_consensus: bool = False
     executive_loop_count: int = 0
 
+    # --- Spec-Driven Development (SDD) ---
+    formal_spec: str | None = None
+    spec_approved: bool = False
+    spec_loop_count: int = 0
+    spec_file_path: str | None = None
+
     # --- Technical Planning ---
     technical_design: str | None = None
     architecture_decisions: list[str] = Field(default_factory=list)
@@ -95,6 +103,17 @@ class NexusState(BaseModel):
     pr_approved: bool = False
     pr_loop_count: int = 0
 
+    # --- Approval Gates ---
+    architect_approved: bool = False
+    architect_feedback: str = ""
+    qa_verified: bool = False
+
+    # --- AI Team Approval (ARCH-013) ---
+    ai_team_approved: bool = False
+    ai_team_orchestrator_approval: bool = False
+    ai_team_architect_approval: bool = False
+    ai_team_rejection_reason: str = ""
+
     # --- Demo ---
     demo_summary: str | None = None
     demo_screenshots: list[str] = Field(default_factory=list)
@@ -110,10 +129,21 @@ class NexusState(BaseModel):
     retry_counts: dict[str, int] = Field(default_factory=dict)
     quality_gate_details: dict[str, bool] = Field(default_factory=dict)
 
+    # --- Codebase Analysis (MAINT-011) ---
+    analysis_findings: list[dict[str, Any]] = Field(default_factory=list)
+    analysis_summary: dict[str, Any] = Field(default_factory=dict)
+    analysis_state_path: str | None = None
+
+    # --- User Approval Gates ---
+    user_approval_received: bool = False
+    user_approval_context: dict[str, Any] = Field(default_factory=dict)
+
     # --- Flow Control ---
     current_phase: Literal[
         "intake",
         "executive_planning",
+        "spec_generation",
+        "spec_approval",
         "technical_planning",
         "decomposition",
         "implementation",
@@ -121,10 +151,18 @@ class NexusState(BaseModel):
         "pr_review",
         "demo",
         "complete",
-        "escalation"
+        "escalation",
+        "analysis"
     ] = "intake"
     error: str | None = None
     escalation_reason: str | None = None
+
+    # --- TDD Workflow Tracking ---
+    red_phase_complete: bool = False
+    green_phase_verified: bool = False
+    refactor_complete: bool = False
+    test_results_red: list[str] = Field(default_factory=list)
+    test_results_green: list[str] = Field(default_factory=list)
 
     # --- Messages (for LangGraph compatibility) ---
     messages: list[Any] = Field(default_factory=list)

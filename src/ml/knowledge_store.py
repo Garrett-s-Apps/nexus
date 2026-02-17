@@ -14,6 +14,7 @@ import time
 from datetime import datetime, timedelta
 
 from src.config import KNOWLEDGE_DB_PATH
+from src.db.sqlite_store import connect_encrypted
 
 
 class KnowledgeStore:
@@ -31,10 +32,8 @@ class KnowledgeStore:
 
     def init(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._conn = connect_encrypted(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
         self._create_tables()
 
     def _create_tables(self):

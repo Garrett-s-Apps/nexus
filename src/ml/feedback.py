@@ -130,15 +130,47 @@ def record_directive_complete(
         logger.warning("Failed to store directive embedding: %s", e)
 
 
-def find_similar_directives(directive_text: str, top_k: int = 5) -> list[dict]:
-    """Find past directives similar to the given text.
+async def record_directive_complete_async(
+    directive_id: str,
+    directive_text: str,
+    total_cost: float = 0,
+    total_tasks: int = 0,
+    total_duration_sec: float = 0,
+    outcome: str = "complete",
+):
+    """Async record a completed directive with its embedding for similarity search.
 
-    Returns list of similar directives with their cost/outcome history.
+    Call this when a directive reaches 'complete' status.
+    Uses async embedding to prevent event loop blocking.
     """
     try:
-        from src.ml.embeddings import encode, find_similar
+        from src.ml.embeddings import embedding_to_bytes, encode_async
 
-        query_embedding = encode(directive_text)
+        embedding = await encode_async(directive_text)
+        ml_store.store_embedding(
+            directive_id=directive_id,
+            directive_text=directive_text,
+            embedding=embedding_to_bytes(embedding),
+            total_cost=total_cost,
+            total_tasks=total_tasks,
+            total_duration_sec=total_duration_sec,
+            outcome=outcome,
+        )
+        logger.info("Stored directive embedding for %s", directive_id)
+    except Exception as e:
+        logger.warning("Failed to store directive embedding: %s", e)
+
+
+async def find_similar_directives_async(directive_text: str, top_k: int = 5) -> list[dict]:
+    """Async find past directives similar to the given text.
+
+    Returns list of similar directives with their cost/outcome history.
+    Uses async embedding to prevent event loop blocking.
+    """
+    try:
+        from src.ml.embeddings import encode_async, find_similar
+
+        query_embedding = await encode_async(directive_text)
         stored = ml_store.get_all_embeddings()
 
         if not stored:

@@ -1,9 +1,6 @@
 """Tests for NEXUS CostTracker — pricing, budgets, enforcement, and reporting."""
 
 import time
-from unittest.mock import patch
-
-from src.cost.tracker import CostTracker, MODEL_PRICING, DEFAULT_BUDGETS, DOWNGRADE_MAP
 
 
 class TestCalculateCost:

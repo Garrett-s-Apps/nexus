@@ -1,6 +1,6 @@
 """Tests for NEXUS Slack listener — pure function tests for md_to_slack and format_code_output."""
 
-from src.slack.listener import md_to_slack, format_code_output
+from src.slack.listener import format_code_output, md_to_slack
 
 
 class TestMdToSlackBold:

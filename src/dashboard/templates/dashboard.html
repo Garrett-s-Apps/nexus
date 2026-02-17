@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEXUS Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 20px;
+        }
+
+        header {
+            margin-bottom: 30px;
+            border-bottom: 2px solid #1e293b;
+            padding-bottom: 20px;
+        }
+
+        h1 {
+            font-size: 2em;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }
+
+        .directive {
+            font-size: 0.9em;
+            color: #94a3b8;
+            padding: 10px;
+            background: #1e293b;
+            border-radius: 6px;
+            margin-top: 10px;
+        }
+
+        .directive-status {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+
+        .status-received { background: #3b82f6; color: white; }
+        .status-planning { background: #8b5cf6; color: white; }
+        .status-executing { background: #10b981; color: white; }
+        .status-complete { background: #059669; color: white; }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            border: 1px solid #334155;
+        }
+
+        .card h2 {
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #cbd5e1;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .metric {
+            font-size: 2.5em;
+            font-weight: 700;
+            color: #f1f5f9;
+            margin-bottom: 10px;
+        }
+
+        .metric.green { color: #10b981; }
+        .metric.yellow { color: #f59e0b; }
+        .metric.red { color: #ef4444; }
+
+        .submetric {
+            font-size: 0.9em;
+            color: #94a3b8;
+            margin-top: 5px;
+        }
+
+        .progress {
+            height: 24px;
+            background: #0f172a;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-top: 10px;
+            border: 1px solid #334155;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #10b981 0%, #059669 100%);
+            border-radius: 12px;
+            transition: width 0.5s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 0.8em;
+            font-weight: 600;
+        }
+
+        .agent-list {
+            list-style: none;
+        }
+
+        .agent-item {
+            padding: 10px;
+            background: #0f172a;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            border-left: 3px solid #3b82f6;
+        }
+
+        .agent-name {
+            font-weight: 600;
+            color: #f1f5f9;
+            margin-bottom: 4px;
+        }
+
+        .agent-action {
+            font-size: 0.85em;
+            color: #94a3b8;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+
+        #mermaid-dag {
+            background: #0f172a;
+            padding: 20px;
+            border-radius: 8px;
+            overflow-x: auto;
+            min-height: 200px;
+        }
+
+        .loading {
+            text-align: center;
+            color: #94a3b8;
+            padding: 20px;
+        }
+
+        .error {
+            color: #ef4444;
+            background: #1e293b;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #ef4444;
+        }
+
+        .stats-row {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #334155;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.75em;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: 700;
+            color: #f1f5f9;
+            margin-top: 4px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+
+        .badge-success { background: #10b981; color: white; }
+        .badge-warning { background: #f59e0b; color: white; }
+        .badge-danger { background: #ef4444; color: white; }
+
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>🚀 NEXUS Dashboard</h1>
+        <div id="directive-display" class="directive">
+            Loading...
+        </div>
+    </header>
+
+    <div class="grid">
+        <div class="card">
+            <h2>📋 Tasks</h2>
+            <div class="metric" id="task-progress">0/0</div>
+            <div class="progress">
+                <div class="progress-bar" id="task-bar" style="width: 0%">0%</div>
+            </div>
+            <div class="stats-row">
+                <div class="stat-item">
+                    <div class="stat-label">In Progress</div>
+                    <div class="stat-value" id="tasks-in-progress">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Available</div>
+                    <div class="stat-value" id="tasks-available">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Blocked</div>
+                    <div class="stat-value" id="tasks-blocked">0</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>💰 Cost</h2>
+            <div class="metric" id="cost-total">$0.00</div>
+            <div class="submetric">
+                Hourly: <span id="hourly-rate">$0.00/hr</span>
+                <span id="budget-badge" class="badge badge-success">On Budget</span>
+            </div>
+            <div class="submetric" style="margin-top: 10px;">
+                Budget Remaining: <span id="budget-remaining">$0.00</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>🤖 Active Agents</h2>
+            <div class="metric" id="agent-count">0</div>
+            <ul id="agents" class="agent-list">
+                <li class="loading">No active agents</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="card full-width">
+        <h2>📊 Task Dependency Graph</h2>
+        <div id="mermaid-dag" class="loading">Loading DAG...</div>
+    </div>
+
+    <script>
+        // Initialize Mermaid
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: 'dark',
+            themeVariables: {
+                primaryColor: '#1e293b',
+                primaryTextColor: '#e2e8f0',
+                primaryBorderColor: '#334155',
+                lineColor: '#64748b',
+                secondaryColor: '#0f172a',
+                tertiaryColor: '#334155'
+            }
+        });
+
+        // Safe DOM manipulation helper
+        function setTextSafe(id, text) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = text;
+        }
+
+        function createElementSafe(tag, className, textContent) {
+            const el = document.createElement(tag);
+            if (className) el.className = className;
+            if (textContent) el.textContent = textContent;
+            return el;
+        }
+
+        // Fetch and update dashboard data
+        async function updateDashboard() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+
+                if (data.error) {
+                    console.error('Error fetching status:', data.error);
+                    return;
+                }
+
+                // Update directive display
+                const directiveDisplay = document.getElementById('directive-display');
+                directiveDisplay.textContent = '';
+
+                if (data.directive) {
+                    const strong = createElementSafe('strong', '', 'Current Directive: ');
+                    directiveDisplay.appendChild(strong);
+                    directiveDisplay.appendChild(document.createTextNode(data.directive.text));
+
+                    const statusBadge = createElementSafe('span', `directive-status status-${data.directive.status}`, data.directive.status);
+                    directiveDisplay.appendChild(statusBadge);
+                } else {
+                    const strong = createElementSafe('strong', '', 'Status: ');
+                    directiveDisplay.appendChild(strong);
+                    directiveDisplay.appendChild(document.createTextNode('Idle - No active directive'));
+                }
+
+                // Update task metrics
+                const tasks = data.tasks;
+                const progress = tasks.total > 0 ? (tasks.completed / tasks.total) * 100 : 0;
+
+                setTextSafe('task-progress', `${tasks.completed}/${tasks.total}`);
+                document.getElementById('task-bar').style.width = `${progress}%`;
+                setTextSafe('task-bar', `${Math.round(progress)}%`);
+                setTextSafe('tasks-in-progress', tasks.in_progress);
+                setTextSafe('tasks-available', tasks.available);
+                setTextSafe('tasks-blocked', tasks.blocked);
+
+                // Update cost metrics
+                const cost = data.cost;
+                setTextSafe('cost-total', `$${cost.total.toFixed(2)}`);
+                setTextSafe('hourly-rate', `$${cost.hourly_rate.toFixed(2)}/hr`);
+                setTextSafe('budget-remaining', `$${cost.budget_remaining.toFixed(2)}`);
+
+                // Update budget badge
+                const badge = document.getElementById('budget-badge');
+                if (cost.over_budget) {
+                    badge.className = 'badge badge-danger';
+                    badge.textContent = 'Over Budget!';
+                } else if (cost.hourly_rate > 1.5) {
+                    badge.className = 'badge badge-warning';
+                    badge.textContent = 'Warning';
+                } else {
+                    badge.className = 'badge badge-success';
+                    badge.textContent = 'On Budget';
+                }
+
+                // Color code the cost metric
+                const costMetric = document.getElementById('cost-total');
+                if (cost.over_budget) {
+                    costMetric.className = 'metric red';
+                } else if (cost.hourly_rate > 1.5) {
+                    costMetric.className = 'metric yellow';
+                } else {
+                    costMetric.className = 'metric green';
+                }
+
+                // Update agents
+                const agents = data.agents.active;
+                setTextSafe('agent-count', agents.length);
+
+                const agentList = document.getElementById('agents');
+                agentList.textContent = ''; // Clear list
+
+                if (agents.length === 0) {
+                    const li = createElementSafe('li', 'loading', 'No active agents');
+                    agentList.appendChild(li);
+                } else {
+                    agents.forEach(agent => {
+                        const li = createElementSafe('li', 'agent-item');
+                        const nameDiv = createElementSafe('div', 'agent-name', `${agent.name} (${agent.role})`);
+                        const actionDiv = createElementSafe('div', 'agent-action', agent.last_action || 'Idle');
+                        li.appendChild(nameDiv);
+                        li.appendChild(actionDiv);
+                        agentList.appendChild(li);
+                    });
+                }
+
+            } catch (error) {
+                console.error('Dashboard update error:', error);
+            }
+        }
+
+        // Load task DAG
+        async function loadDAG() {
+            try {
+                const res = await fetch('/api/task-dag');
+                const data = await res.json();
+
+                const dagElement = document.getElementById('mermaid-dag');
+
+                if (data.error) {
+                    dagElement.textContent = '';
+                    const errorDiv = createElementSafe('div', 'error', `Error loading DAG: ${data.error}`);
+                    dagElement.appendChild(errorDiv);
+                    return;
+                }
+
+                dagElement.textContent = '';
+                const mermaidDiv = createElementSafe('div', 'mermaid', data.mermaid);
+                dagElement.appendChild(mermaidDiv);
+
+                // Render mermaid diagram
+                await mermaid.run({
+                    querySelector: '#mermaid-dag .mermaid'
+                });
+
+            } catch (error) {
+                console.error('DAG load error:', error);
+                const dagElement = document.getElementById('mermaid-dag');
+                dagElement.textContent = '';
+                const errorDiv = createElementSafe('div', 'error', `Failed to load DAG: ${error.message}`);
+                dagElement.appendChild(errorDiv);
+            }
+        }
+
+        // Setup Server-Sent Events for real-time updates
+        function setupEventStream() {
+            const eventSource = new EventSource('/api/events');
+
+            eventSource.addEventListener('status', (event) => {
+                const data = JSON.parse(event.data);
+                console.log('Received status update:', data);
+                // Status is already being polled, but we could use this for instant updates
+            });
+
+            eventSource.addEventListener('error', (event) => {
+                console.error('EventSource error:', event);
+                // Auto-reconnect is handled by EventSource
+            });
+
+            return eventSource;
+        }
+
+        // Initialize dashboard
+        async function init() {
+            await updateDashboard();
+            await loadDAG();
+
+            // Setup polling (every 2 seconds)
+            setInterval(updateDashboard, 2000);
+
+            // Reload DAG every 10 seconds
+            setInterval(loadDAG, 10000);
+
+            // Setup event stream for real-time updates
+            setupEventStream();
+        }
+
+        // Start when page loads
+        init();
+    </script>
+</body>
+</html>

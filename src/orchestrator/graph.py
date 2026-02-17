@@ -26,7 +26,9 @@ from src.agents.sdk_bridge import (
     run_sdk_agent,
 )
 from src.agents.task_result import TaskResult
+from src.orchestrator.checkpoint import CheckpointManager
 from src.orchestrator.state import CostSnapshot, NexusState, PRReview, WorkstreamTask
+from src.slack import notifier
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,20 @@ async def _run_impl_agent(agent_key: str, agent_config: dict, prompt: str, proje
 
 
 async def safe_node(node_fn, state: NexusState, timeout: int = 300) -> dict:
-    """Wrap any node function with timeout and error handling."""
+    """Wrap any node function with timeout and error handling.
+
+    Auto-checkpoints before executing the node.
+    """
+    # Auto-checkpoint before node execution
+    try:
+        checkpoint_manager = CheckpointManager(state.project_path)
+        checkpoint_name = f"before-{node_fn.__name__}-{state.current_phase}"
+        checkpoint_manager.save_checkpoint(checkpoint_name, manual=False)
+        logger.debug("Auto-checkpoint created: %s", checkpoint_name)
+    except Exception as e:
+        logger.warning("Failed to create auto-checkpoint: %s", e)
+
+    # Execute node with timeout and error handling
     try:
         return await asyncio.wait_for(node_fn(state), timeout=timeout)
     except TimeoutError:
@@ -119,6 +134,8 @@ Output:
 
 async def cfo_node(state: NexusState) -> dict:
     """CFO allocates token budget for the work."""
+    from src.orchestrator.approval import request_budget_approval
+
     result = await run_planning_agent(
         "cfo",
         AGENTS["cfo"],
@@ -141,9 +158,62 @@ Recommend cost-saving approaches if needed (e.g., use Haiku for X, skip Y).
 Output a budget allocation as key:value pairs.""",
     )
 
+    budget_allocation = _parse_budget(result.output)
+
+    # Calculate total allocated budget
+    total_budget = sum(budget_allocation.values())
+    current_spend = cost_tracker.total_cost
+
+    # Budget enforcement logic
+    cfo_approved = True
+    budget_warnings = []
+
+    # Check if current spend already exceeds hourly hard cap
+    if cost_tracker.hourly_rate > cost_tracker.budgets["hourly_hard_cap"]:
+        cfo_approved = False
+        budget_warnings.append(
+            f"BUDGET EXCEEDED: Hourly rate ${cost_tracker.hourly_rate:.2f}/hr exceeds hard cap ${cost_tracker.budgets['hourly_hard_cap']:.2f}/hr"
+        )
+
+    # Check if projected spend would exceed session hard cap
+    projected_total = current_spend + total_budget
+    if projected_total > cost_tracker.budgets["session_hard_cap"]:
+        cfo_approved = False
+        budget_warnings.append(
+            f"BUDGET EXCEEDED: Projected total ${projected_total:.2f} exceeds session hard cap ${cost_tracker.budgets['session_hard_cap']:.2f}"
+        )
+
+    # High-cost operation warning (>$10)
+    if total_budget > 10.0:
+        budget_warnings.append(
+            f"HIGH COST WARNING: Allocated budget ${total_budget:.2f} exceeds $10.00. User approval required."
+        )
+
+    # Log warnings
+    if budget_warnings:
+        logger.warning("CFO Budget Warnings: %s", " | ".join(budget_warnings))
+        # Add warnings to budget allocation for visibility
+        budget_allocation["_warnings"] = " | ".join(budget_warnings)  # type: ignore[assignment]
+
+    # USER approval for budget > $50
+    if total_budget > 50.0:
+        user_approved = await request_budget_approval(
+            total_budget=total_budget,
+            breakdown=budget_allocation,
+            threshold=50.0,
+        )
+
+        if not user_approved:
+            return {
+                "cfo_budget_allocation": budget_allocation,
+                "cfo_approved": False,
+                "escalation_reason": "User rejected high budget allocation",
+                "cost": _update_cost(state.cost, result),
+            }
+
     return {
-        "cfo_budget_allocation": _parse_budget(result.output),
-        "cfo_approved": True,
+        "cfo_budget_allocation": budget_allocation,
+        "cfo_approved": cfo_approved,
         "cost": _update_cost(state.cost, result),
     }
 
@@ -187,6 +257,131 @@ async def executive_consensus_node(state: NexusState) -> dict:
         "executive_loop_count": state.executive_loop_count + 1,
     }
 
+
+
+
+async def spec_generation_node(state: NexusState) -> dict:
+    """CPO generates formal specification from strategic brief and requirements."""
+    import os
+
+    # Load spec template
+    template_path = os.path.join(state.project_path, "templates", "SPEC-TEMPLATE.md")
+    if not os.path.exists(template_path):
+        template_path = os.path.join(os.path.dirname(__file__), "..", "..", "templates", "SPEC-TEMPLATE.md")
+
+    spec_template = ""
+    if os.path.exists(template_path):
+        with open(template_path) as f:
+            spec_template = f.read()
+
+    result = await run_planning_agent(
+        "cpo",
+        AGENTS["cpo"],
+        f"""Generate a formal specification document for this project.
+
+Strategic brief from CEO: {state.strategic_brief}
+Requirements: {state.cpo_requirements}
+Acceptance criteria: {state.cpo_acceptance_criteria}
+Timeline: {state.cro_timeline}
+Budget: {state.cfo_budget_allocation}
+
+Use this template structure:
+{spec_template}
+
+Fill out ALL applicable sections with precise, unambiguous language optimized for LLM consumption.
+Focus on:
+1. Clear, measurable acceptance criteria
+2. Explicit security requirements
+3. Performance targets with numbers
+4. Complete API contracts and data models
+5. Test strategy with coverage targets
+
+Output a complete, implementation-ready specification document.""",
+    )
+
+    # Store spec in memory.db and save to file
+    spec_content = result.output
+    spec_dir = os.path.join(state.project_path, ".claude", "specs")
+    os.makedirs(spec_dir, exist_ok=True)
+
+    spec_filename = f"{state.session_id}.md"
+    spec_path = os.path.join(spec_dir, spec_filename)
+
+    with open(spec_path, "w") as f:
+        f.write(spec_content)
+
+    logger.info("Spec generated and saved to %s", spec_path)
+
+    return {
+        "formal_spec": spec_content,
+        "spec_file_path": spec_path,
+        "current_phase": "spec_approval",
+        "cost": _update_cost(state.cost, result),
+    }
+
+
+async def spec_approval_node(state: NexusState) -> dict:
+    """CEO reviews spec, then USER approves spec → dev transition."""
+    from src.orchestrator.approval import request_spec_to_dev_approval
+
+    # Step 1: CEO agent reviews (autonomous)
+    result = await run_planning_agent(
+        "ceo",
+        AGENTS["ceo"],
+        f"""Review this formal specification for completeness and clarity.
+
+SPECIFICATION:
+{state.formal_spec}
+
+Evaluate:
+1. Is the objective clear and measurable?
+2. Are requirements complete and unambiguous?
+3. Are acceptance criteria testable and specific?
+4. Is the technical design sufficient for implementation?
+5. Are security considerations comprehensive?
+6. Are performance targets realistic and measurable?
+
+This is an AGENT-TO-AGENT approval. DO NOT ask for user approval.
+You have authority to approve or reject this spec.
+
+If the spec is complete and clear, respond with: APPROVED
+If the spec needs refinement, respond with: REJECTED and list specific issues to address.
+
+Maximum 2 refinement loops allowed.""",
+    )
+
+    ceo_approved = "APPROVED" in result.output.upper() and "REJECTED" not in result.output.upper()
+
+    if not ceo_approved:
+        return {
+            "spec_approved": False,
+            "spec_loop_count": state.spec_loop_count + 1,
+            "ceo_approved": False,
+            "cost": _update_cost(state.cost, result),
+        }
+
+    # Step 2: USER approval for strategic transition
+    total_budget = sum(state.cfo_budget_allocation.values())
+    spec_summary = state.formal_spec[:500] if state.formal_spec else "No spec available"
+
+    user_approved = await request_spec_to_dev_approval(
+        spec_summary=spec_summary,
+        estimated_cost=total_budget,
+        acceptance_criteria=state.cpo_acceptance_criteria,
+    )
+
+    return {
+        "spec_approved": user_approved,
+        "spec_loop_count": state.spec_loop_count + 1,
+        "ceo_approved": ceo_approved,
+        "user_approval_received": user_approved,
+        "user_approval_context": {
+            "gate": "spec_to_dev",
+            "timestamp": "now",
+            "approved": user_approved,
+        },
+        "cost": _update_cost(state.cost, result),
+    }
 
 async def vp_engineering_node(state: NexusState) -> dict:
     """VP Eng translates strategy into technical design."""
@@ -248,6 +443,105 @@ If not, say NEEDS_REVISION and list specific changes needed.""",
     }
 
 
+async def ai_team_approval_node(state: NexusState) -> dict:
+    """Dual approval gate for AI/ML tasks (ARCH-013).
+
+    Agent-to-agent approval only:
+    1. Orchestrator (VP Engineering) requests approval
+    2. Architect reviews architectural implications
+    3. Both must approve for AI Team invocation
+    """
+    # Identify AI/ML tasks
+    ai_keywords = ["ml", "ai", "machine learning", "neural", "model", "training", "dataset", "prediction"]
+    ai_tasks = [
+        t for t in state.workstreams
+        if any(kw in t.description.lower() for kw in ai_keywords)
+    ]
+
+    if not ai_tasks:
+        return {"ai_team_approved": True}  # No AI tasks, skip gate
+
+    # Step 1: Orchestrator (VP Engineering) approval request
+    orchestrator_request = await run_planning_agent(
+        "vp_engineering",
+        AGENTS["vp_engineering"],
+        f"""Review these AI/ML tasks for technical feasibility:
+
+{chr(10).join(f"- {t.description}" for t in ai_tasks)}
+
+As orchestrator, do you approve invoking the AI Team?
+
+Consider:
+- Data requirements and availability
+- Model complexity and training resources
+- Timeline impact and resource allocation
+- Integration with existing systems
+
+Respond with APPROVED or REJECTED followed by your reasoning.
+This is agent-to-agent approval - no user prompts."""
+    )
+
+    orchestrator_approved = "APPROVED" in orchestrator_request.output.upper() and "REJECTED" not in orchestrator_request.output.upper()
+
+    if not orchestrator_approved:
+        logger.warning("AI Team rejected by orchestrator: %s", orchestrator_request.output[:200])
+        return {
+            "ai_team_approved": False,
+            "ai_team_orchestrator_approval": False,
+            "ai_team_architect_approval": False,
+            "ai_team_rejection_reason": "Orchestrator rejected AI Team invocation",
+            "cost": _update_cost(state.cost, orchestrator_request),
+        }
+
+    # Step 2: Architect reviews architectural implications
+    architect_review = await run_planning_agent(
+        "chief_architect",
+        AGENTS["chief_architect"],
+        f"""Review AI/ML architectural implications:
+
+{chr(10).join(f"- {t.description}" for t in ai_tasks)}
+
+Orchestrator (VP Engineering) has approved.
+As Chief Architect, do you approve?
+
+Consider:
+- ML technical debt and long-term maintenance burden
+- Model versioning and lifecycle management
+- Infrastructure cost (training, serving, storage)
+- Risk of model drift and monitoring requirements
+- Explainability and compliance requirements
+
+Respond with APPROVED or REJECTED followed by your reasoning.
+This is agent-to-agent approval - no user prompts."""
+    )
+
+    architect_approved = "APPROVED" in architect_review.output.upper() and "REJECTED" not in architect_review.output.upper()
+
+    # Both must approve
+    dual_approved = orchestrator_approved and architect_approved
+
+    # Log to audit trail
+    logger.info(
+        "AI Team approval: orchestrator=%s, architect=%s, dual_approved=%s",
+        orchestrator_approved, architect_approved, dual_approved
+    )
+
+    rejection_reason = ""
+    if not dual_approved:
+        if not architect_approved:
+            rejection_reason = "Architect rejected AI Team invocation"
+        else:
+            rejection_reason = "Orchestrator rejected AI Team invocation"
+
+    return {
+        "ai_team_approved": dual_approved,
+        "ai_team_orchestrator_approval": orchestrator_approved,
+        "ai_team_architect_approval": architect_approved,
+        "ai_team_rejection_reason": rejection_reason,
+        "cost": _update_cost_multi(state.cost, [orchestrator_request, architect_review]),
+    }
+
+
 async def decomposition_node(state: NexusState) -> dict:
     """Engineering managers decompose work into specific tasks (parallel)."""
     em_names = ["em_frontend", "em_backend", "em_platform"]
@@ -260,8 +554,11 @@ async def decomposition_node(state: NexusState) -> dict:
 Your domain: {AGENTS[em_name]['name']}
 
 Break down the work in YOUR domain into specific, implementable tasks.
+Specify dependencies between tasks: if task B requires task A to be done first,
+list A's id in B's "dependencies" array.
+
 Output as a JSON array:
-[{{"id": "unique_id", "description": "what to do", "assigned_agent": "agent_key", "language": "python", "dependencies": []}}]
+[{{"id": "unique_id", "description": "what to do", "assigned_agent": "agent_key", "language": "python", "dependencies": ["id_of_prerequisite_task"]}}]
 
 If you cannot produce JSON, output a bullet list with one task per line.""",
         )
@@ -291,6 +588,149 @@ If you cannot produce JSON, output a bullet list with one task per line.""",
     }
 
 
+async def test_first_node(state: NexusState) -> dict:
+    """TDD RED phase: Write failing tests BEFORE implementation."""
+
+    test_tasks = []
+    total_cost = state.cost
+
+    for task in state.workstreams:
+        if task.status != "completed":
+            # Determine which test agent to use
+            agent_key = "test_frontend" if "frontend" in task.assigned_agent.lower() else "test_backend"
+
+            result = await _run_impl_agent(
+                agent_key,
+                AGENTS[agent_key],
+                f"""TDD RED PHASE: Write tests for this task BEFORE implementation.
+
+Task: {task.description}
+Requirements: {state.cpo_requirements}
+Acceptance criteria: {state.cpo_acceptance_criteria}
+
+Write tests that will FAIL initially (RED phase).
+The tests should verify the feature works once implemented.
+Run the tests and VERIFY they fail.
+
+CRITICAL: Tests MUST fail initially. If they pass, they're not testing the right thing!
+
+Output:
+1. The test code you wrote
+2. The test execution output showing FAILURES
+3. Confirmation that RED phase is complete for this task""",
+                state.project_path,
+            )
+
+            # Verify tests failed
+            output_lower = result.output.lower()
+            if ("0 failed" in output_lower and "failed" in output_lower) or \
+               ("all tests passed" in output_lower) or \
+               ("pass" in output_lower and "fail" not in output_lower):
+                return {
+                    "error": f"RED phase failed for task {task.id}: Tests passed before implementation!",
+                    "current_phase": "implementation",
+                }
+
+            test_tasks.append(result.output)
+            total_cost = _update_cost(total_cost, result)
+
+    return {
+        "red_phase_complete": True,
+        "test_results_red": test_tasks,
+        "current_phase": "implementation",
+        "cost": total_cost,
+    }
+
+
+async def verify_green_phase(state: NexusState) -> dict:
+    """TDD GREEN phase: Verify tests NOW PASS after implementation."""
+
+    test_results = []
+    total_cost = state.cost
+
+    for task in state.workstreams:
+        if task.status == "completed":
+            # Re-run the same tests that failed in RED phase
+            agent_key = "test_frontend" if "frontend" in task.assigned_agent.lower() else "test_backend"
+
+            result = await _run_impl_agent(
+                agent_key,
+                AGENTS[agent_key],
+                f"""TDD GREEN PHASE: Re-run tests to verify implementation is complete.
+
+Task: {task.description}
+
+Re-run the tests you wrote in the RED phase.
+They MUST pass now that implementation is complete.
+
+If they still fail, the implementation is incomplete.
+
+Output:
+1. Test execution results
+2. Confirmation that all tests PASS (GREEN phase complete)""",
+                state.project_path,
+            )
+
+            # Verify tests passed
+            output_lower = result.output.lower()
+            if "failed" in output_lower or "error" in output_lower:
+                has_failures = True
+                # Check if it's just reporting 0 failed
+                if "0 failed" in output_lower or "0 error" in output_lower:
+                    has_failures = False
+
+                if has_failures:
+                    return {
+                        "error": f"GREEN phase failed for task {task.id}: Tests still failing after implementation!",
+                        "green_phase_verified": False,
+                        "current_phase": "implementation",
+                    }
+
+            test_results.append(result.output)
+            total_cost = _update_cost(total_cost, result)
+
+    return {
+        "green_phase_verified": True,
+        "test_results_green": test_results,
+        "cost": total_cost,
+    }
+
+
+async def refactor_node(state: NexusState) -> dict:
+    """TDD REFACTOR phase: Clean up code while keeping tests green."""
+
+    result = await _run_impl_agent(
+        "tech_lead",
+        AGENTS["tech_lead"],
+        f"""TDD REFACTOR PHASE: Review the implementation for refactoring opportunities.
+
+Technical design: {state.technical_design}
+Requirements: {state.cpo_requirements}
+
+Look for:
+- Duplicated code that can be extracted
+- Unclear variable/function names that need improvement
+- Complex logic that can be simplified
+- Missing comments that explain WHY (not WHAT)
+- Opportunities to improve readability without changing behavior
+
+CRITICAL: Tests must stay GREEN. Run tests after each refactor.
+
+If no refactoring is needed, say "No refactoring needed" and explain why the code is already clean.
+
+Output:
+1. Refactoring changes made (if any)
+2. Test results confirming tests still pass
+3. Confirmation that REFACTOR phase is complete""",
+        state.project_path,
+    )
+
+    return {
+        "refactor_complete": True,
+        "cost": _update_cost(state.cost, result),
+    }
+
+
 async def implementation_node(state: NexusState) -> dict:
     """Execute implementation tasks via Agent SDK sessions with per-task tracking."""
     updated_tasks = []
@@ -299,8 +739,15 @@ async def implementation_node(state: NexusState) -> dict:
     retry_counts = dict(state.retry_counts)
     defect_ids = list(state.defect_ids)
 
+    completed_ids = {t.id for t in state.workstreams if t.status == "completed"}
+
     for fork_group in state.parallel_forks:
-        parallel_tasks = [t for t in state.workstreams if t.id in fork_group and t.status != "completed"]
+        parallel_tasks = [
+            t for t in state.workstreams
+            if t.id in fork_group
+            and t.status != "completed"
+            and not (set(t.blocked_by) - completed_ids)  # all deps must be complete
+        ]
 
         coros = []
         task_index = []
@@ -410,8 +857,19 @@ Run: eslint, ruff, or appropriate linter for each file type found.""",
 
     any_violations = result.output.lower().count("type:any") + result.output.lower().count("type: any")
 
+    # Count ALL warnings - warnings are now treated as blocking errors
+    lint_output = result.output.lower()
+    warnings_count = (
+        lint_output.count('warning') +
+        lint_output.count('warn:') +
+        lint_output.count('[warn]')
+    )
+
+    # ANY warning is a blocking error
+    blocking_issues = 'BLOCKING' in result.output or warnings_count > 0
+
     return {
-        "lint_results": {"output": result.output, "passed": "BLOCKING" not in result.output},
+        "lint_results": {"output": result.output, "passed": not blocking_issues},
         "any_type_violations": any_violations,
         "cost": _update_cost(state.cost, result),
     }
@@ -506,6 +964,24 @@ Be specific about any issues found and recommend exact fixes.""",
     }
 
 
+def _count_warnings(lint_results: dict, test_results: dict) -> int:
+    """Count all warnings in lint and test output."""
+    warnings = 0
+    if lint_results:
+        output = lint_results.get('output', '').lower()
+        warnings += output.count('warning')
+        warnings += output.count('warn:')
+        warnings += output.count('[warn]')
+    if test_results:
+        for output in test_results.values():
+            if isinstance(output, str):
+                output_lower = output.lower()
+                warnings += output_lower.count('warning')
+                warnings += output_lower.count('warn:')
+                warnings += output_lower.count('[warn]')
+    return warnings
+
+
 async def quality_gate_node(state: NexusState) -> dict:
     """QA Lead determines if quality is sufficient to proceed to PR."""
     gate_details = {}
@@ -530,11 +1006,19 @@ async def quality_gate_node(state: NexusState) -> dict:
     no_failed_tasks = len(state.failed_tasks) == 0
     gate_details["no_failed_tasks"] = no_failed_tasks
 
+    # Check for warnings - zero tolerance
+    warnings_found = _count_warnings(state.lint_results, state.test_results)
+    gate_details["zero_warnings"] = warnings_found == 0
+
     # Calculate quality score (0-100)
-    checks = [lint_ran, lint_passed, tests_ran, security_ran, security_ok, no_any_violations, no_failed_tasks]
+    checks = [lint_ran, lint_passed, tests_ran, security_ran, security_ok, no_any_violations, no_failed_tasks, warnings_found == 0]
     quality_score = round((sum(checks) / len(checks)) * 100, 1)
 
-    all_passed = lint_passed and no_any_violations and security_ok and lint_ran and tests_ran and security_ran
+    # Architect and QA gate checks (enforced at graph level, tracked here)
+    gate_details["architect_approved"] = state.architect_approved
+    gate_details["qa_verified"] = state.qa_verified
+
+    all_passed = lint_passed and no_any_violations and security_ok and lint_ran and tests_ran and security_ran and warnings_found == 0
 
     if not all_passed:
         failed_gates = [k for k, v in gate_details.items() if not v]
@@ -601,6 +1085,153 @@ If rejected, respond with REJECTED and specific feedback on what to fix.""",
         "pr_approved": all_approved,
         "pr_loop_count": state.pr_loop_count + 1,
         "cost": _update_cost_multi(state.cost, [r for r in results if isinstance(r, TaskResult)]),
+    }
+
+
+
+async def qa_verification_node(state: NexusState) -> dict:
+    """QA agent verifies all quality criteria before architect review.
+
+    Checks: all tests pass, coverage >80%, no security issues.
+    Agent decision only — no user prompts.
+    If failed: escalates to Tech Lead agent for review.
+    """
+    issues = []
+
+    # Check test results
+    tests_ran = bool(state.test_results)
+    if not tests_ran:
+        issues.append('Tests did not run')
+
+    # Check security scan
+    security_clean = (
+        bool(state.security_scan_results)
+        and 'CRITICAL' not in str(state.security_scan_results)
+        and 'HIGH' not in str(state.security_scan_results)
+    )
+    if not security_clean:
+        issues.append('Security scan has critical/high findings or did not run')
+
+    # Check lint
+    lint_passed = state.lint_results.get('passed', False) if state.lint_results else False
+    if not lint_passed:
+        issues.append('Linting did not pass')
+
+    # Check no type:any violations
+    if state.any_type_violations > 0:
+        issues.append(f'{state.any_type_violations} type:any violation(s)')
+
+    # Check no failed tasks
+    if state.failed_tasks:
+        issues.append(f'{len(state.failed_tasks)} failed task(s)')
+
+    # QA agent makes the decision
+    if issues:
+        # Escalate to Tech Lead for review
+        result = await run_planning_agent(
+            'tech_lead',
+            AGENTS['tech_lead'],
+            f"""QA verification FAILED. Review these issues and decide if we can proceed:
+
+Issues found:
+{chr(10).join(f'- {i}' for i in issues)}
+
+Quality score: {state.quality_score}/100
+Test results: {state.test_results}
+Security scan: {state.security_scan_results}
+
+If the issues are minor and acceptable, respond with PROCEED.
+If the issues are blocking, respond with BLOCK and explain why.""",
+        )
+
+        # Tech Lead can override minor issues
+        tech_lead_approves = 'PROCEED' in result.output.upper() and 'BLOCK' not in result.output.upper()
+
+        return {
+            'qa_verified': tech_lead_approves,
+            'cost': _update_cost(state.cost, result),
+        }
+
+    return {'qa_verified': True}
+
+
+async def architect_approval_node(state: NexusState) -> dict:
+    """Architect agent reviews all changes for final approval.
+
+    Input: pr_reviews, test_results, security_scan_results, technical_design
+    Output: architect_approved (bool), architect_feedback (str)
+    Blocking: If not approved, returns to implementation.
+    Agent-to-agent only — no user prompts.
+
+    For high-risk or high-cost work, sends an interactive Slack approval UI
+    to allow manual Slack-based approval before final merge.
+    """
+    result = await run_planning_agent(
+        'chief_architect',
+        AGENTS['chief_architect'],
+        f"""You are the ARCHITECT — final authority on all code changes.
+Your decision is FINAL. No user override. Review everything and decide.
+
+TECHNICAL DESIGN:
+{state.technical_design or 'No design document'}
+
+PR REVIEWS:
+{chr(10).join(f'[{r.reviewer}] {r.status}: {r.feedback[:300] if r.feedback else ""}' for r in state.pr_reviews) if state.pr_reviews and isinstance(state.pr_reviews, list) else 'No PR reviews'}
+
+TEST RESULTS:
+{state.test_results or 'No test results'}
+
+SECURITY SCAN:
+{state.security_scan_results or 'No security scan'}
+
+QA VERIFIED: {state.qa_verified}
+QUALITY SCORE: {state.quality_score}/100
+TOTAL COST: ${state.cost.total_cost_usd:.2f}
+
+Evaluate:
+1. Architecture soundness — does implementation match the approved design?
+2. Security — are all scan findings addressed?
+3. Performance — any bottlenecks in the implementation?
+4. Quality — is the code production-ready?
+
+If ALL criteria pass, respond: APPROVED followed by a brief assessment.
+If ANY criteria fail, respond: REJECTED followed by specific required changes.
+
+Be decisive. Your word is final.""",
+    )
+
+    approved = 'APPROVED' in result.output.upper() and 'REJECTED' not in result.output.upper()
+
+    # Send Slack approval request for high-cost or critical approvals
+    if approved and (state.cost.total_cost_usd > 10.0 or state.quality_score < 75):
+        try:
+            approval_id = f"ARCH-{state.session_id[:8]}"
+            notifier.send_approval_request(
+                title="Architecture Review Complete - Final Approval Required",
+                context={
+                    "description": f"""Architecture review complete and approved by Chief Architect.
+
+**Summary:** {result.output[:300]}
+
+**Quality Score:** {state.quality_score}/100
+**Total Cost:** ${state.cost.total_cost_usd:.2f}
+**PR Status:** {len([r for r in state.pr_reviews if r.status == 'approved'])}/{len(state.pr_reviews)} approved
+
+Click below to confirm final approval to proceed with merge.""",
+                    "requester": "Chief Architect",
+                    "severity": "Critical" if state.cost.total_cost_usd > 10.0 else "High",
+                },
+                approval_id=approval_id,
+            )
+            logger.info("Sent Slack approval request for architect decision: %s", approval_id)
+        except Exception as e:
+            logger.warning("Failed to send Slack approval request: %s", e)
+            # Continue anyway - don't block on Slack notification failures
+
+    return {
+        'architect_approved': approved,
+        'architect_feedback': result.output,
+        'cost': _update_cost(state.cost, result),
     }
 
 
@@ -672,6 +1303,108 @@ This is a DEMO, not a request for review. Be confident and direct.""",
     }
 
 
+async def rebuild_analysis_node(state: NexusState) -> dict:
+    """Analyze the project codebase for self-improvement (MAINT-011).
+
+    Runs the AnalyzerAgent on the project directory and stores findings
+    in the state for downstream execution or reporting.
+    """
+    from src.agents.analyzer import Finding, save_analysis_state
+    from src.orchestrator.approval import request_rebuild_start_approval
+
+    # Use the project path from state, or fall back to a default
+    target_dir = state.project_path or "/tmp/nexus-rebuild"  # noqa: S108 - safe temporary test directory
+
+    # USER approval before starting rebuild analysis
+    user_approved = await request_rebuild_start_approval(
+        project_path=target_dir,
+        estimated_cost="Analysis: ~$2-5, Implementation: TBD based on findings",
+    )
+
+    if not user_approved:
+        logger.warning("User rejected rebuild analysis start for %s", target_dir)
+        return {
+            "analysis_findings": [],
+            "analysis_summary": {"status": "rejected_by_user", "reason": "User did not approve rebuild analysis"},
+            "analysis_state_path": None,
+            "escalation_reason": "User rejected rebuild analysis",
+        }
+
+    result = await run_planning_agent(
+        "chief_architect",
+        AGENTS["chief_architect"],
+        f"""Analyze the codebase at {target_dir} for self-improvement opportunities.
+
+Scan for issues across these categories:
+- SEC: Security vulnerabilities
+- PERF: Performance bottlenecks
+- ARCH: Architecture issues
+- CODE: Code quality
+- MAINT: Maintainability
+
+Focus on HIGH and CRITICAL severity issues that would have the most impact.
+Produce findings as a JSON array. Each finding must have:
+- id, category, severity, title, description, location, impact, remediation,
+  effort, effort_hours, dependencies, risk
+
+Project path: {target_dir}
+Current phase: {state.current_phase}
+Quality score: {state.quality_score}""",
+    )
+
+    # Parse findings from architect analysis and store as analysis state
+    findings_data = []
+    try:
+        text = result.output
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start >= 0 and end > start:
+            findings_data = json.loads(text[start:end])
+    except (ValueError, json.JSONDecodeError):
+        pass
+
+    # Build summary
+    summary = {
+        "totalFindings": len(findings_data),
+        "source": "rebuild_analysis_node",
+        "raw_output": result.output[:2000],
+    }
+
+    # Save state file if we got structured findings
+    state_path = None
+    if findings_data:
+        try:
+            parsed_findings = []
+            for i, item in enumerate(findings_data):
+                if isinstance(item, dict):
+                    item.setdefault("id", f"SELF-{i+1:03d}")
+                    item.setdefault("category", "MAINT")
+                    item.setdefault("severity", "MEDIUM")
+                    item.setdefault("title", "Untitled finding")
+                    item.setdefault("description", "")
+                    item.setdefault("location", "unknown")
+                    item.setdefault("impact", "")
+                    item.setdefault("remediation", "")
+                    item.setdefault("effort", "M")
+                    item.setdefault("effort_hours", "4-8 hours")
+                    item.setdefault("dependencies", [])
+                    item.setdefault("status", "pending")
+                    item.setdefault("risk", "")
+                    parsed_findings.append(Finding.from_dict(item))
+
+            if parsed_findings:
+                state_path = save_analysis_state(parsed_findings, target_dir, "NEXUS Self-Analysis")
+        except Exception as e:
+            logger.warning("Failed to save analysis state: %s", e)
+
+    return {
+        "analysis_findings": findings_data,
+        "analysis_summary": summary,
+        "analysis_state_path": state_path,
+        "cost": _update_cost(state.cost, result),
+    }
+
+
 # ============================================
 # ROUTING FUNCTIONS
 # These control the flow through the graph.
@@ -680,11 +1413,21 @@ This is a DEMO, not a request for review. Be confident and direct.""",
 
 def route_after_executive_consensus(state: NexusState) -> str:
     if state.executive_consensus:
-        return "vp_engineering"
+        return "spec_generation"
     if state.executive_loop_count >= 3:
         logger.warning("Executive consensus not reached after 3 loops, proceeding anyway")
-        return "vp_engineering"
+        return "spec_generation"
     return "ceo"
+
+
+def route_after_spec_approval(state: NexusState) -> str:
+    """Route after CEO spec approval (agent-to-agent)."""
+    if state.spec_approved:
+        return "vp_engineering"
+    if state.spec_loop_count >= 2:
+        logger.warning("Spec not approved after 2 loops, proceeding with warnings")
+        return "vp_engineering"
+    return "spec_generation"
 
 
 def route_after_tech_review(state: NexusState) -> str:
@@ -707,19 +1450,42 @@ def route_after_quality_gate(state: NexusState) -> str:
 
 def route_after_pr_review(state: NexusState) -> str:
     if state.pr_approved:
-        return "demo"
+        return 'qa_verification'
     if state.pr_loop_count >= 3:
         if state.quality_score < 70:
-            logger.warning("PR not approved after 3 loops with quality %s/100, escalating", state.quality_score)
-            return "escalation"
-        logger.warning("PR not approved after 3 loops, proceeding to demo with warnings")
-        return "demo"
-    return "implementation"
+            logger.warning('PR not approved after 3 loops with quality %s/100, escalating', state.quality_score)
+            return 'escalation'
+        logger.warning('PR not approved after 3 loops, proceeding to qa_verification with warnings')
+        return 'qa_verification'
+    return 'implementation'
+
+
+def route_after_qa_verification(state: NexusState) -> str:
+    """Route after QA verification. Proceed to architect or back to implementation."""
+    if state.qa_verified:
+        return 'architect_approval'
+    return 'implementation'
+
+
+def route_after_architect_approval(state: NexusState) -> str:
+    """Route after architect approval. Proceed to demo or back to implementation."""
+    if state.architect_approved:
+        return 'demo'
+    return 'implementation'
 
 
 def route_after_escalation(state: NexusState) -> str:
     """After escalation, proceed to demo with warnings logged."""
     return "demo"
+
+
+def route_after_cfo(state: NexusState) -> str:
+    """Route after CFO budget approval. Block if budget exceeded."""
+    if state.cfo_approved:
+        return "cro"
+    # Budget exceeded - escalate for approval
+    logger.warning("CFO budget not approved. Routing to escalation for user approval.")
+    return "escalation"
 
 
 # ============================================
@@ -740,18 +1506,27 @@ def build_nexus_graph() -> StateGraph:
     graph.add_node("cfo", cfo_node)
     graph.add_node("cro", cro_node)
     graph.add_node("executive_consensus", executive_consensus_node)
+    graph.add_node("spec_generation", spec_generation_node)
+    graph.add_node("spec_approval", spec_approval_node)
     graph.add_node("vp_engineering", vp_engineering_node)
     graph.add_node("tech_lead_review", tech_lead_review_node)
     graph.add_node("decomposition", decomposition_node)
+    graph.add_node("ai_team_approval", ai_team_approval_node)
+    graph.add_node("test_first", test_first_node)
     graph.add_node("implementation", implementation_node)
+    graph.add_node("verify_green", verify_green_phase)
+    graph.add_node("refactor", refactor_node)
     graph.add_node("linting", linting_node)
     graph.add_node("testing", testing_node)
     graph.add_node("security_scan", security_scan_node)
     graph.add_node("visual_qa", visual_qa_node)
     graph.add_node("quality_gate", quality_gate_node)
     graph.add_node("pr_review", pr_review_node)
+    graph.add_node("qa_verification", qa_verification_node)
+    graph.add_node("architect_approval", architect_approval_node)
     graph.add_node("demo", demo_node)
     graph.add_node("escalation", escalation_node)
+    graph.add_node("rebuild_analysis", rebuild_analysis_node)
 
     # --- Define edges (the org chart as a flow) ---
 
@@ -762,14 +1537,29 @@ def build_nexus_graph() -> StateGraph:
     graph.add_edge("intake", "ceo")
     graph.add_edge("ceo", "cpo")
     graph.add_edge("cpo", "cfo")
-    graph.add_edge("cfo", "cro")
+    # CFO → conditional routing based on budget approval
+    graph.add_conditional_edges(
+        "cfo",
+        route_after_cfo,
+        {"cro": "cro", "escalation": "escalation"},
+    )
     graph.add_edge("cro", "executive_consensus")
 
-    # Executive consensus → either loop back or proceed
+    # Executive consensus → either loop back or proceed to spec generation
     graph.add_conditional_edges(
         "executive_consensus",
         route_after_executive_consensus,
-        {"ceo": "ceo", "vp_engineering": "vp_engineering"},
+        {"ceo": "ceo", "spec_generation": "spec_generation"},
+    )
+
+    # Spec generation → Spec approval
+    graph.add_edge("spec_generation", "spec_approval")
+
+    # Spec approval → either loop back to spec generation or proceed to VP Eng
+    graph.add_conditional_edges(
+        "spec_approval",
+        route_after_spec_approval,
+        {"spec_generation": "spec_generation", "vp_engineering": "vp_engineering"},
     )
 
     # VP Eng → Tech Lead Review
@@ -782,14 +1572,26 @@ def build_nexus_graph() -> StateGraph:
         {"vp_engineering": "vp_engineering", "decomposition": "decomposition"},
     )
 
-    # Decomposition → Implementation
-    graph.add_edge("decomposition", "implementation")
+    # Decomposition → AI Team Approval Gate
+    graph.add_edge("decomposition", "ai_team_approval")
 
-    # Implementation → Quality checks (parallel)
-    graph.add_edge("implementation", "linting")
-    graph.add_edge("implementation", "testing")
-    graph.add_edge("implementation", "security_scan")
-    graph.add_edge("implementation", "visual_qa")
+    # AI Team Approval → Test First (RED phase)
+    graph.add_edge("ai_team_approval", "test_first")
+
+    # Test First (RED) → Implementation (GREEN)
+    graph.add_edge("test_first", "implementation")
+
+    # Implementation → Verify Green Phase
+    graph.add_edge("implementation", "verify_green")
+
+    # Verify Green → Refactor
+    graph.add_edge("verify_green", "refactor")
+
+    # Refactor → Quality checks (parallel)
+    graph.add_edge("refactor", "linting")
+    graph.add_edge("refactor", "testing")
+    graph.add_edge("refactor", "security_scan")
+    graph.add_edge("refactor", "visual_qa")
 
     # Quality checks → Quality Gate
     graph.add_edge("linting", "quality_gate")
@@ -804,11 +1606,25 @@ def build_nexus_graph() -> StateGraph:
         {"pr_review": "pr_review", "implementation": "implementation", "escalation": "escalation"},
     )
 
-    # PR Review → Demo, back to Implementation, or Escalation
+    # PR Review → QA Verification, back to Implementation, or Escalation
     graph.add_conditional_edges(
         "pr_review",
         route_after_pr_review,
-        {"demo": "demo", "implementation": "implementation", "escalation": "escalation"},
+        {"qa_verification": "qa_verification", "implementation": "implementation", "escalation": "escalation"},
+    )
+
+    # QA Verification → Architect Approval or back to Implementation
+    graph.add_conditional_edges(
+        "qa_verification",
+        route_after_qa_verification,
+        {"architect_approval": "architect_approval", "implementation": "implementation"},
+    )
+
+    # Architect Approval → Demo or back to Implementation
+    graph.add_conditional_edges(
+        "architect_approval",
+        route_after_architect_approval,
+        {"demo": "demo", "implementation": "implementation"},
     )
 
     # Escalation → Demo (always proceed after escalation)
@@ -820,6 +1636,9 @@ def build_nexus_graph() -> StateGraph:
 
     # Demo → End
     graph.add_edge("demo", END)
+
+    # Rebuild Analysis → End (standalone node for self-improvement, MAINT-011)
+    graph.add_edge("rebuild_analysis", END)
 
     return graph
 
@@ -907,14 +1726,25 @@ def _parse_tasks(text: str, em_source: str) -> list[WorkstreamTask]:
             raw = json.loads(text[start:end])
             tasks = []
             for i, item in enumerate(raw):
+                task_id = item.get("id", f"{em_source}_{i + 1}")
+                deps = item.get("dependencies", []) or []
                 tasks.append(
                     WorkstreamTask(
-                        id=item.get("id", f"{em_source}_{i + 1}"),
+                        id=task_id,
                         description=item.get("description", ""),
                         assigned_agent=item.get("assigned_agent", _infer_agent(item.get("description", ""), em_source)),
                         language=item.get("language") or _infer_language(item.get("description", "")),
+                        blocked_by=deps,
                     )
                 )
+            # Build forward edges (blocks) from blocked_by
+            id_set = {t.id for t in tasks}
+            for t in tasks:
+                for dep_id in t.blocked_by:
+                    if dep_id in id_set:
+                        dep_task = next(x for x in tasks if x.id == dep_id)
+                        if t.id not in dep_task.blocks:
+                            dep_task.blocks.append(t.id)
             if tasks:
                 return tasks
     except (json.JSONDecodeError, KeyError, TypeError):
@@ -966,25 +1796,54 @@ def _infer_language(task_text: str) -> str | None:
 
 
 def _identify_parallel_groups(tasks: list[WorkstreamTask]) -> list[list[str]]:
-    """Group tasks by dependency depth for parallel execution.
+    """Group tasks by dependency depth for parallel execution using topological sort.
 
-    Level 0: tasks with no dependencies → run in parallel
-    Level 1: tasks depending on level 0 → run after level 0 completes
+    Level 0: tasks with no dependencies -> run in parallel
+    Level 1: tasks depending on level 0 -> run after level 0 completes
     etc.
+
+    Uses actual blocked_by fields from tasks. Falls back to EM-based grouping
+    when no explicit dependencies exist.
     """
     if not tasks:
         return []
 
-    # Build dependency graph from task descriptions (heuristic: tasks from same EM
-    # with sequential IDs may depend on prior tasks if they reference them)
-    # For now, group by EM source so each EM's tasks run sequentially
+    # Check if any tasks have explicit dependencies
+    has_deps = any(t.blocked_by for t in tasks)
+
+    if has_deps:
+        # Topological sort using Kahn's algorithm
+        all_ids = {t.id for t in tasks}
+        task_deps: dict[str, set[str]] = {}
+        for t in tasks:
+            # Only consider deps within this task set
+            task_deps[t.id] = set(t.blocked_by) & all_ids
+
+        remaining = dict(task_deps)
+        levels: list[list[str]] = []
+        placed: set[str] = set()
+
+        while remaining:
+            level = [tid for tid, deps in remaining.items() if not (deps - placed)]
+            if not level:
+                # Cycle detected -- place all remaining in final level
+                logger.warning("Cycle detected in task dependencies: %s", list(remaining.keys()))
+                levels.append(list(remaining.keys()))
+                break
+            levels.append(level)
+            placed.update(level)
+            for tid in level:
+                del remaining[tid]
+
+        return levels if levels else [[t.id for t in tasks]]
+
+    # Fallback: group by EM source so each EM's tasks run sequentially
     # but different EMs run in parallel
     em_groups: dict[str, list[str]] = {}
     for t in tasks:
         prefix = t.id.rsplit("_", 1)[0] if "_" in t.id else "default"
         em_groups.setdefault(prefix, []).append(t.id)
 
-    # Build levels: first task from each EM at level 0, second at level 1, etc.
     max_depth = max(len(v) for v in em_groups.values()) if em_groups else 1
     levels = []
     for depth in range(max_depth):

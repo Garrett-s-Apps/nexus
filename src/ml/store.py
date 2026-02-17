@@ -8,6 +8,7 @@ Stores:
 - Trained model artifacts (serialized sklearn pipelines)
 
 All tables live in ~/.nexus/ml.db to keep ML data separate from core state.
+Connection Pooling: AsyncSQLitePool with 6 connections for parallel ML operations
 """
 
 import json
@@ -18,6 +19,8 @@ import threading
 import time
 
 from src.config import NEXUS_DIR
+from src.db.pool import AsyncSQLitePool
+from src.db.sqlite_store import connect_encrypted
 
 ML_DB_PATH = os.path.join(NEXUS_DIR, "ml.db")
 
@@ -29,6 +32,7 @@ class MLStore:
         self.db_path = db_path
         self._conn: sqlite3.Connection | None = None
         self._lock = threading.Lock()
+        self._pool: AsyncSQLitePool | None = None
 
     @property
     def _db(self) -> sqlite3.Connection:
@@ -38,11 +42,24 @@ class MLStore:
 
     def init(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._conn = connect_encrypted(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
         self._create_tables()
+
+    async def init_pool(self, pool_size: int = 6):
+        """Initialize async connection pool for parallel ML operations.
+
+        Args:
+            pool_size: Number of connections to maintain (default 6).
+        """
+        self._pool = AsyncSQLitePool(self.db_path, pool_size=pool_size)
+        await self._pool.init()
+
+    async def close_pool(self):
+        """Close the connection pool."""
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
 
     def _create_tables(self):
         c = self._db.cursor()
@@ -166,6 +183,55 @@ class MLStore:
             "avg_cost": float(avg_cost),
             "avg_defects": float(avg_defects),
         }
+
+    def get_agent_success_rates_batch(self, agent_ids: list[str]) -> dict[str, dict]:
+        """Batch load agent success rates. Returns dict mapping agent_id -> stats."""
+        if not agent_ids:
+            return {}
+
+        c = self._db.cursor()
+        ph = ",".join("?" for _ in agent_ids)
+
+        # Get all stats in a single query using GROUP BY
+        # Safe: ph contains only "?" placeholders, no user input in query structure
+        rows = c.execute(
+            f"""SELECT
+                agent_id,
+                COUNT(*) as total_tasks,
+                SUM(CASE WHEN outcome='complete' THEN 1 ELSE 0 END) as successes,
+                COALESCE(AVG(cost_usd), 0) as avg_cost,
+                COALESCE(AVG(defect_count), 0) as avg_defects
+            FROM task_outcomes
+            WHERE agent_id IN ({ph})
+            GROUP BY agent_id""",  # noqa: S608
+            agent_ids
+        ).fetchall()
+
+        result = {}
+        for row in rows:
+            agent_id = row[0]
+            total = row[1]
+            successes = row[2]
+            result[agent_id] = {
+                "agent_id": agent_id,
+                "total_tasks": total,
+                "success_rate": successes / total if total > 0 else 0,
+                "avg_cost": float(row[3]),
+                "avg_defects": float(row[4]),
+            }
+
+        # Fill in missing agents with zero stats
+        for agent_id in agent_ids:
+            if agent_id not in result:
+                result[agent_id] = {
+                    "agent_id": agent_id,
+                    "total_tasks": 0,
+                    "success_rate": 0,
+                    "avg_cost": 0.0,
+                    "avg_defects": 0.0,
+                }
+
+        return result
 
     # === DIRECTIVE EMBEDDINGS ===
     def store_embedding(

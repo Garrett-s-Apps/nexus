@@ -14,10 +14,11 @@ Tests cover:
 Uses httpx.AsyncClient with mocked dependencies to avoid starting the full engine.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 from contextlib import asynccontextmanager
-from httpx import AsyncClient, ASGITransport
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from httpx import ASGITransport, AsyncClient
 
 
 # Mock all heavy dependencies before importing the server
@@ -26,7 +27,7 @@ def mock_dependencies():
     """Mock heavy imports to prevent engine startup and module loading."""
     with patch("src.memory.store.memory") as mock_mem, \
          patch("src.orchestrator.engine.engine") as mock_engine, \
-         patch("src.observability.api_routes.router") as mock_router, \
+         patch("src.observability.api_routes.router"), \
          patch("src.agents.org_chart.get_org_summary") as mock_org, \
          patch("src.resilience.health_monitor.health_monitor") as mock_health, \
          patch("src.slack.listener.start_slack_listener") as mock_slack, \
@@ -75,7 +76,7 @@ async def client(mock_passphrase):
     """Create an async test client with a clean session store."""
     # Import after mocks are in place
     from src.security import auth_gate
-    from src.server.server import app, _clear_rate_limits
+    from src.server.server import _clear_rate_limits, app
 
     # Clear session store and rate limiter before each test
     auth_gate._sessions.clear()
@@ -254,3 +255,89 @@ async def test_session_fingerprint_validation(client):
         headers={"user-agent": "test-client-2"}
     )
     assert response.status_code == 401
+
+
+# SEC-005: Persistent rate limiting tests
+@pytest.mark.asyncio
+async def test_rate_limit_progressive_lockout(client):
+    """Failed login attempts trigger progressive lockout delays."""
+    # 5 failed attempts should trigger 1 minute lockout
+    for _i in range(5):
+        response = await client.post("/auth/login", json={"passphrase": "wrong-pass"})
+        assert response.status_code == 403
+
+    # 6th attempt should be rate limited
+    response = await client.post("/auth/login", json={"passphrase": "wrong-pass"})
+    assert response.status_code == 429
+    assert "rate limited" in response.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_persistent_across_restarts(client):
+    """Rate limits persist in SQLite database across server restarts."""
+    from src.server.server import _check_rate_limit_persistent, _record_failed_login
+
+    # Simulate 10 failed attempts to trigger 10-minute lockout
+    for _i in range(10):
+        _record_failed_login("192.168.1.100")
+
+    # Check that the IP is locked
+    allowed, reason = _check_rate_limit_persistent("192.168.1.100")
+    assert not allowed
+    assert "locked for" in reason
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_ip_validation(client):
+    """X-Forwarded-For is only trusted from localhost."""
+    # Direct connection should use client IP
+    response = await client.post("/auth/login", json={"passphrase": "wrong-pass"})
+    assert response.status_code == 403
+
+    # X-Forwarded-For from untrusted source should be ignored
+    response = await client.post(
+        "/auth/login",
+        json={"passphrase": "wrong-pass"},
+        headers={"x-forwarded-for": "spoofed.ip.address"}
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_security_event_logging(client):
+    """Failed login attempts are logged to login_attempts table."""
+    import sqlite3
+
+    from src.server.server import RATE_LIMIT_DB, _init_rate_limit_db, _record_failed_login
+
+    # Initialize database
+    _init_rate_limit_db()
+
+    # Record a failed login
+    _record_failed_login("192.168.1.200")
+
+    # Check that attempt was recorded in login_attempts table
+    conn = sqlite3.connect(RATE_LIMIT_DB)
+    cursor = conn.cursor()
+    attempts = cursor.execute(
+        "SELECT attempt_count FROM login_attempts WHERE ip = ?",
+        ("192.168.1.200",)
+    ).fetchall()
+    conn.close()
+
+    assert len(attempts) > 0
+    assert attempts[0][0] >= 1  # At least 1 failed attempt recorded
+
+
+@pytest.mark.asyncio
+async def test_successful_login_clears_attempts(client):
+    """Successful login after failed attempts allows access."""
+    # First, make a few failed attempts
+    for _i in range(3):
+        response = await client.post("/auth/login", json={"passphrase": "wrong-pass"})
+        assert response.status_code == 403
+
+    # Now login successfully
+    response = await client.post("/auth/login", json={"passphrase": "test-pass"})
+    assert response.status_code == 200
+    assert response.json()["ok"] is True

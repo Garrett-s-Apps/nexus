@@ -20,10 +20,26 @@ pytest tests/           # run test suite
 
 - Python >= 3.11
 - Keys file: `~/.nexus/.env.keys` (loaded by `src/config.py`)
-- Required keys: `ANTHROPIC_API_KEY`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL`, `SLACK_OWNER_USER_ID`
-- Optional keys: `OPENAI_API_KEY`, `GOOGLE_API_KEY`
-- Databases: `~/.nexus/*.db` (memory, cost, kpi, sessions, knowledge — SQLite)
+- Required keys:
+  - `ANTHROPIC_API_KEY` - Claude API key
+  - `SLACK_BOT_TOKEN` - Slack bot token (`xoxb-...`)
+  - `SLACK_APP_TOKEN` - Slack app token (`xapp-...`)
+  - `SLACK_CHANNEL` - Slack channel ID
+  - `SLACK_OWNER_USER_ID` - Your Slack user ID
+  - `NEXUS_MASTER_SECRET` - Master secret for database encryption (generate: `python -c "import secrets; print(secrets.token_urlsafe(32))"`)
+  - `ALLOWED_TUNNEL_IDS` - Comma-separated Cloudflare tunnel IDs for CORS whitelist
+- Optional keys: `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `GITHUB_TOKEN`
+- Databases: `~/.nexus/*.db` (memory, cost, kpi, sessions, knowledge, registry, ml — SQLite with AES-256-CBC encryption)
+- Rate limit tracking: `~/.nexus/rate_limits.db` (persistent login attempt records with progressive delays)
+- Encryption salt: `~/.nexus/.db_salt` (PBKDF2 salt for key derivation)
 - Server: `http://localhost:4200` (dashboard at `/dashboard`, health at `/health`)
+
+**Security:**
+- All databases encrypted at rest with SQLCipher using `NEXUS_MASTER_SECRET`
+- CLI sessions run in hardened Docker containers (`--read-only`, `--security-opt=no-new-privileges`, `--cap-drop=ALL`)
+- Rate limiting persistent across restarts (progressive exponential backoff)
+- CORS validation against whitelisted Cloudflare tunnel IDs
+- JWT tokens bound to client fingerprint (User-Agent + IP)
 
 ## Directory Structure
 

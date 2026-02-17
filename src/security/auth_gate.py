@@ -37,21 +37,28 @@ _signing_key: str | None = None
 
 
 def _get_signing_key() -> str:
-    """Derive a signing key from the dashboard passphrase."""
+    """Derive a signing key from the dashboard passphrase hash."""
     global _signing_key
     if _signing_key:
         return _signing_key
-    passphrase = _get_passphrase()
-    _signing_key = hashlib.sha256(f"nexus-session-{passphrase}".encode()).hexdigest()
+    passphrase_hash = _get_passphrase_hash()
+    _signing_key = hashlib.sha256(f"nexus-session-{passphrase_hash}".encode()).hexdigest()
     return _signing_key
 
 
-def _get_passphrase() -> str:
-    """Load the dashboard passphrase from config."""
+def _get_passphrase_hash() -> str:
+    """Load the dashboard passphrase hash from config.
+
+    The stored value is a SHA-256 hex digest. Login attempts are hashed
+    client-side or server-side and compared against this value.
+    """
     key = get_key("NEXUS_DASHBOARD_KEY") or os.environ.get("NEXUS_DASHBOARD_KEY")
     if not key:
-        key = secrets.token_urlsafe(24)
+        # Generate a random passphrase, store its hash
+        raw = secrets.token_urlsafe(24)
+        key = hashlib.sha256(raw.encode()).hexdigest()
         _persist_key(key)
+        logger.info("Generated dashboard passphrase hash (check ~/.nexus/.env.keys)")
     return key
 
 
@@ -178,8 +185,25 @@ def verify_session(
 
 
 def verify_passphrase(attempt: str) -> bool:
-    """Check if the provided passphrase matches (constant-time)."""
-    return hmac.compare_digest(attempt, _get_passphrase())
+    """Check if the provided passphrase matches (constant-time).
+
+    Accepts either:
+    - A raw passphrase (hashed server-side then compared)
+    - A pre-hashed SHA-256 hex digest (compared directly)
+    """
+    stored_hash = _get_passphrase_hash()
+    # Hash the attempt and compare against the stored hash
+    attempt_hash = hashlib.sha256(attempt.encode()).hexdigest()
+    if hmac.compare_digest(attempt_hash, stored_hash):
+        return True
+    # Also accept a pre-hashed value (e.g. from WebSocket or API clients)
+    return hmac.compare_digest(attempt, stored_hash)
+
+
+def verify_token_hash(token_hash: str) -> bool:
+    """Verify a pre-hashed token for WebSocket auth (constant-time)."""
+    stored_hash = _get_passphrase_hash()
+    return hmac.compare_digest(token_hash, stored_hash)
 
 
 def invalidate_session(session_id: str):

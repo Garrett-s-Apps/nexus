@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -44,6 +44,7 @@ from src.security.auth_gate import (
     invalidate_session,
     verify_passphrase,
     verify_session,
+    verify_token_hash,
 )
 from src.security.jwt_auth import sign_response
 
@@ -665,6 +666,84 @@ async def event_stream(request: Request, last_id: int = 0, token: str = ""):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+# ---------------------------------------------------------------------------
+# WebSocket — real-time event stream with hash-based auth
+# ---------------------------------------------------------------------------
+_ws_clients: set[WebSocket] = set()
+
+
+@app.websocket("/ws")
+async def websocket_events(ws: WebSocket, token: str = ""):
+    """Real-time WebSocket event stream. Authenticate via query param or first message.
+
+    Auth methods:
+    - Query param: ws://host/ws?token=<session_id_or_hash>
+    - First message: {"type": "auth", "token": "<session_id_or_hash>"}
+    """
+    await ws.accept()
+
+    # Try auth via query param first
+    authenticated = False
+    if token and (verify_session(token) or verify_token_hash(token)):
+        authenticated = True
+
+    # If not authenticated via query, wait for auth message
+    if not authenticated:
+        try:
+            raw = await asyncio.wait_for(ws.receive_text(), timeout=10.0)
+            msg = json.loads(raw)
+            if msg.get("type") == "auth":
+                auth_token = msg.get("token", "")
+                if verify_session(auth_token) or verify_token_hash(auth_token):
+                    authenticated = True
+        except (TimeoutError, json.JSONDecodeError, WebSocketDisconnect):
+            await ws.close(code=4001, reason="auth timeout")
+            return
+
+    if not authenticated:
+        await ws.send_json({"type": "error", "message": "unauthorized"})
+        await ws.close(code=4003, reason="unauthorized")
+        return
+
+    await ws.send_json({"type": "auth_ok"})
+    _ws_clients.add(ws)
+
+    try:
+        last_event_id = 0
+        while True:
+            events = memory.get_events_since(last_event_id, limit=50)
+            for event in events:
+                last_event_id = event["id"]
+                data = {
+                    "type": "event",
+                    "id": event["id"],
+                    "timestamp": event["timestamp"],
+                    "source": event["source"],
+                    "event_type": event["event_type"],
+                    "data": json.loads(event["data"]) if isinstance(event["data"], str) else event["data"],
+                }
+                await ws.send_json(data)
+
+            # Also listen for incoming messages (ping/pong, commands)
+            try:
+                raw = await asyncio.wait_for(ws.receive_text(), timeout=1.0)
+                msg = json.loads(raw)
+                if msg.get("type") == "ping":
+                    await ws.send_json({"type": "pong"})
+                elif msg.get("type") == "message":
+                    from src.orchestrator.engine import engine
+                    response = await engine.handle_message(msg.get("text", ""), source="websocket")
+                    await ws.send_json({"type": "response", "text": response})
+            except TimeoutError:
+                pass
+            except json.JSONDecodeError:
+                pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _ws_clients.discard(ws)
+
+
 @app.get("/state")
 async def get_state():
     snapshot = memory.get_world_snapshot()
@@ -1117,4 +1196,112 @@ async def ml_agent_stats(agent_id: str):
     return {
         "success_rate": ml_store.get_agent_success_rate(agent_id),
         "reliability": registry.get_agent_reliability(agent_id),
+    }
+
+
+# === RAG Knowledge Search Endpoints (for nexus-plugin semantic-search skill) ===
+
+class SearchRequest(BaseModel):
+    query: str
+    mode: str = "all"
+    domain: str = ""
+    top_k: int = 5
+    threshold: float = 0.35
+
+
+@app.post("/ml/rag/search")
+async def rag_search(req: SearchRequest):
+    """Semantic search over the RAG knowledge base.
+
+    Modes: all, errors, tasks, code, conversations
+    Domain filter: frontend, backend, devops, security, testing
+    """
+    from src.ml.rag import retrieve
+
+    mode_to_types: dict[str, list[str] | None] = {
+        "all": None,
+        "errors": ["error_resolution"],
+        "tasks": ["task_outcome"],
+        "code": ["code_change"],
+        "conversations": ["conversation"],
+    }
+    chunk_types = mode_to_types.get(req.mode)
+    domain_tag = req.domain if req.domain else None
+
+    results = retrieve(
+        query=req.query,
+        top_k=req.top_k,
+        threshold=req.threshold,
+        chunk_types=chunk_types,
+        domain_tag=domain_tag,
+    )
+    return {"query": req.query, "mode": req.mode, "results": results, "count": len(results)}
+
+
+@app.get("/ml/rag/status")
+async def rag_status():
+    """Get RAG knowledge base status — chunk counts by type."""
+    from src.ml.rag import rag_status as _rag_status
+    return _rag_status()
+
+
+class DebugRequest(BaseModel):
+    error: str
+    file_path: str = ""
+    domain: str = ""
+
+
+@app.post("/ml/debug")
+async def debug_investigate(req: DebugRequest):
+    """Semantic debug investigation — search past errors and correlate with code changes.
+
+    Returns similar past errors, their resolutions, and related code changes.
+    Used by the nexus-plugin debug-investigate skill.
+    """
+    from src.ml.rag import retrieve
+    from src.ml.similarity import analyze_new_directive
+
+    # Phase 1: Search for similar past errors (wider net for debugging)
+    error_results = retrieve(
+        query=req.error,
+        top_k=5,
+        threshold=0.30,
+        chunk_types=["error_resolution"],
+        domain_tag=req.domain if req.domain else None,
+    )
+
+    # Phase 2: Search for related task outcomes
+    task_results = retrieve(
+        query=req.error,
+        top_k=3,
+        threshold=0.35,
+        chunk_types=["task_outcome"],
+        domain_tag=req.domain if req.domain else None,
+    )
+
+    # Phase 3: Search for recent code changes to affected files
+    code_query = f"{req.error} {req.file_path}" if req.file_path else req.error
+    code_results = retrieve(
+        query=code_query,
+        top_k=3,
+        threshold=0.30,
+        chunk_types=["code_change"],
+    )
+
+    # Phase 4: Directive-level similarity analysis
+    directive_analysis = analyze_new_directive(req.error)
+
+    # Check if any past resolution has high confidence
+    has_proven_fix = any(r["raw_similarity"] >= 0.70 for r in error_results)
+
+    return {
+        "error": req.error,
+        "file_path": req.file_path,
+        "domain": req.domain,
+        "past_errors": error_results,
+        "related_tasks": task_results,
+        "recent_code_changes": code_results,
+        "directive_analysis": directive_analysis,
+        "has_proven_fix": has_proven_fix,
+        "proven_fix": error_results[0] if has_proven_fix and error_results else None,
     }

@@ -881,3 +881,111 @@ async def ml_agent_stats(agent_id: str):
         "success_rate": ml_store.get_agent_success_rate(agent_id),
         "reliability": registry.get_agent_reliability(agent_id),
     }
+
+
+# === RAG Knowledge Search Endpoints (for nexus-plugin semantic-search skill) ===
+
+class SearchRequest(BaseModel):
+    query: str
+    mode: str = "all"
+    domain: str = ""
+    top_k: int = 5
+    threshold: float = 0.35
+
+
+@app.post("/ml/rag/search")
+async def rag_search(req: SearchRequest):
+    """Semantic search over the RAG knowledge base.
+
+    Modes: all, errors, tasks, code, conversations
+    Domain filter: frontend, backend, devops, security, testing
+    """
+    from src.ml.rag import retrieve
+
+    mode_to_types: dict[str, list[str] | None] = {
+        "all": None,
+        "errors": ["error_resolution"],
+        "tasks": ["task_outcome"],
+        "code": ["code_change"],
+        "conversations": ["conversation"],
+    }
+    chunk_types = mode_to_types.get(req.mode)
+    domain_tag = req.domain if req.domain else None
+
+    results = retrieve(
+        query=req.query,
+        top_k=req.top_k,
+        threshold=req.threshold,
+        chunk_types=chunk_types,
+        domain_tag=domain_tag,
+    )
+    return {"query": req.query, "mode": req.mode, "results": results, "count": len(results)}
+
+
+@app.get("/ml/rag/status")
+async def rag_status():
+    """Get RAG knowledge base status — chunk counts by type."""
+    from src.ml.rag import rag_status as _rag_status
+    return _rag_status()
+
+
+class DebugRequest(BaseModel):
+    error: str
+    file_path: str = ""
+    domain: str = ""
+
+
+@app.post("/ml/debug")
+async def debug_investigate(req: DebugRequest):
+    """Semantic debug investigation — search past errors and correlate with code changes.
+
+    Returns similar past errors, their resolutions, and related code changes.
+    Used by the nexus-plugin debug-investigate skill.
+    """
+    from src.ml.rag import retrieve
+    from src.ml.similarity import analyze_new_directive
+
+    # Phase 1: Search for similar past errors (wider net for debugging)
+    error_results = retrieve(
+        query=req.error,
+        top_k=5,
+        threshold=0.30,
+        chunk_types=["error_resolution"],
+        domain_tag=req.domain if req.domain else None,
+    )
+
+    # Phase 2: Search for related task outcomes
+    task_results = retrieve(
+        query=req.error,
+        top_k=3,
+        threshold=0.35,
+        chunk_types=["task_outcome"],
+        domain_tag=req.domain if req.domain else None,
+    )
+
+    # Phase 3: Search for recent code changes to affected files
+    code_query = f"{req.error} {req.file_path}" if req.file_path else req.error
+    code_results = retrieve(
+        query=code_query,
+        top_k=3,
+        threshold=0.30,
+        chunk_types=["code_change"],
+    )
+
+    # Phase 4: Directive-level similarity analysis
+    directive_analysis = analyze_new_directive(req.error)
+
+    # Check if any past resolution has high confidence
+    has_proven_fix = any(r["raw_similarity"] >= 0.70 for r in error_results)
+
+    return {
+        "error": req.error,
+        "file_path": req.file_path,
+        "domain": req.domain,
+        "past_errors": error_results,
+        "related_tasks": task_results,
+        "recent_code_changes": code_results,
+        "directive_analysis": directive_analysis,
+        "has_proven_fix": has_proven_fix,
+        "proven_fix": error_results[0] if has_proven_fix and error_results else None,
+    }

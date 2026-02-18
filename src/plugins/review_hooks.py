@@ -81,7 +81,7 @@ async def _run_cli_review(prompt: str, project_path: str) -> str:
     cmd = [
         claude_bin,
         "--dangerously-skip-permissions",
-        "--model", "claude-sonnet-4-5-20250929",
+        "--model", "claude-sonnet-4-6-20250929",
         "--output-format", "text",
         "-p", prompt,
     ]

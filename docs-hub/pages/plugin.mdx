@@ -1,0 +1,504 @@
+import { Grid, Stack, Box, Row } from '../components/layoutkit'
+
+# NEXUS Claude Code Plugin
+
+The NEXUS plugin brings the power of a 56-agent autonomous software engineering organization directly into Claude Code. Instead of single-agent assistance, you get an entire org with executives, managers, engineers, and specialists.
+
+## Installation
+
+### From Claude Code Plugin Marketplace
+
+1. Open Claude Code
+2. Go to Settings → Plugins
+3. Search for "NEXUS"
+4. Install "NEXUS - Enterprise Multi-Agent Orchestration"
+5. Restart Claude Code
+
+### Manual Installation
+
+```bash
+# Clone the plugin
+git clone https://github.com/Garrett-s-Apps/nexus-plugin.git ~/.claude/plugins/nexus
+
+# Install to Claude Code
+claude plugin install ~/.claude/plugins/nexus
+```
+
+## Plugin Architecture
+
+The NEXUS plugin consists of three main components:
+
+### 1. Skills (Auto-Triggered)
+
+Skills automatically activate based on your natural language input:
+
+<Grid cols={2} gap="md" responsive minChildWidth="320px" className="my-6">
+  <Box className="bg-gradient-to-br from-blue-900/50 to-indigo-900/30 border border-blue-700/40 rounded-xl p-5">
+    <Stack gap="xs">
+      <Row gap="sm" className="items-center">
+        <span className="text-white font-bold">autonomous-build</span>
+        <span className="text-xs bg-purple-800/60 text-purple-200 px-2 py-0.5 rounded-full">Opus</span>
+      </Row>
+      <div className="text-gray-400 text-sm">Full feature implementation with org orchestration</div>
+      <div className="text-blue-300 text-xs mt-1">&quot;build me&quot;, &quot;create a&quot;, &quot;implement&quot;</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gradient-to-br from-green-900/50 to-emerald-900/30 border border-green-700/40 rounded-xl p-5">
+    <Stack gap="xs">
+      <Row gap="sm" className="items-center">
+        <span className="text-white font-bold">code-review-org</span>
+        <span className="text-xs bg-blue-800/60 text-blue-200 px-2 py-0.5 rounded-full">Sonnet</span>
+      </Row>
+      <div className="text-gray-400 text-sm">Multi-perspective code review with 4 specialized reviewers</div>
+      <div className="text-green-300 text-xs mt-1">&quot;review this code&quot;, &quot;check my code&quot;</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gradient-to-br from-amber-900/50 to-orange-900/30 border border-amber-700/40 rounded-xl p-5">
+    <Stack gap="xs">
+      <Row gap="sm" className="items-center">
+        <span className="text-white font-bold">debug-investigate</span>
+        <span className="text-xs bg-blue-800/60 text-blue-200 px-2 py-0.5 rounded-full">Sonnet</span>
+      </Row>
+      <div className="text-gray-400 text-sm">Deep debugging with semantic search over past errors</div>
+      <div className="text-amber-300 text-xs mt-1">&quot;debug&quot;, &quot;investigate&quot;, &quot;root cause&quot;</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gradient-to-br from-cyan-900/50 to-blue-900/30 border border-cyan-700/40 rounded-xl p-5">
+    <Stack gap="xs">
+      <Row gap="sm" className="items-center">
+        <span className="text-white font-bold">semantic-search</span>
+        <span className="text-xs bg-gray-700/60 text-gray-200 px-2 py-0.5 rounded-full">Haiku</span>
+      </Row>
+      <div className="text-gray-400 text-sm">Search past knowledge and error resolutions</div>
+      <div className="text-cyan-300 text-xs mt-1">&quot;search knowledge&quot;, &quot;have we done this&quot;</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gradient-to-br from-pink-900/50 to-rose-900/30 border border-pink-700/40 rounded-xl p-5">
+    <Stack gap="xs">
+      <Row gap="sm" className="items-center">
+        <span className="text-white font-bold">cost-report</span>
+        <span className="text-xs bg-gray-700/60 text-gray-200 px-2 py-0.5 rounded-full">Haiku</span>
+      </Row>
+      <div className="text-gray-400 text-sm">Comprehensive cost analysis and budget tracking</div>
+      <div className="text-pink-300 text-xs mt-1">&quot;cost report&quot;, &quot;show costs&quot;, &quot;burn rate&quot;</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gradient-to-br from-violet-900/50 to-purple-900/30 border border-violet-700/40 rounded-xl p-5">
+    <Stack gap="xs">
+      <Row gap="sm" className="items-center">
+        <span className="text-white font-bold">context-rules</span>
+        <span className="text-xs bg-gray-700/60 text-gray-200 px-2 py-0.5 rounded-full">Haiku</span>
+      </Row>
+      <div className="text-gray-400 text-sm">Auto-attach project rules based on file patterns</div>
+      <div className="text-violet-300 text-xs mt-1">Always active</div>
+    </Stack>
+  </Box>
+</Grid>
+
+### 2. Commands (Manual Invocation)
+
+Slash commands for direct access to NEXUS capabilities:
+
+<Grid cols={2} gap="sm" responsive minChildWidth="300px" className="my-6">
+  <Box className="bg-gray-800/80 border border-gray-700/50 rounded-lg p-4">
+    <Stack gap="xs">
+      <code className="text-blue-400 font-bold text-sm">/nexus-status</code>
+      <div className="text-gray-300 text-sm">Show org status and system health</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gray-800/80 border border-gray-700/50 rounded-lg p-4">
+    <Stack gap="xs">
+      <code className="text-blue-400 font-bold text-sm">/nexus-cost</code>
+      <div className="text-gray-300 text-sm">Quick cost summary for current session</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gray-800/80 border border-gray-700/50 rounded-lg p-4">
+    <Stack gap="xs">
+      <code className="text-blue-400 font-bold text-sm">/nexus-hire &lt;specialist&gt;</code>
+      <div className="text-gray-300 text-sm">Add specialist agent to session team</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gray-800/80 border border-gray-700/50 rounded-lg p-4">
+    <Stack gap="xs">
+      <code className="text-blue-400 font-bold text-sm">/nexus-debug --domain &lt;area&gt;</code>
+      <div className="text-gray-300 text-sm">Launch semantic debug investigation</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gray-800/80 border border-gray-700/50 rounded-lg p-4">
+    <Stack gap="xs">
+      <code className="text-blue-400 font-bold text-sm">/nexus-search --mode &lt;type&gt;</code>
+      <div className="text-gray-300 text-sm">Search knowledge base</div>
+    </Stack>
+  </Box>
+</Grid>
+
+### 3. Agent Integration
+
+The plugin includes specialized agents that extend Claude Code's capabilities:
+
+- **VP Engineering**: Strategic planning and technical architecture
+- **Senior Engineer**: Implementation and code quality
+- **QA Lead**: Quality assurance and testing strategy
+- **Security Engineer**: Security review and vulnerability analysis
+- **Debug Investigator**: Root cause analysis and error investigation
+
+## Skills Deep Dive
+
+### Autonomous Build Skill
+
+**What it does**: Transforms high-level requests into complete feature implementations using the full NEXUS organization.
+
+**Example usage**:
+```
+User: "Build me a user authentication API with React frontend"
+```
+
+**What happens**:
+1. **Planning Phase**: VP of Engineering analyzes requirements
+2. **Team Building**: Dynamically hires specialists (Security Engineer for auth, Frontend Engineer for React)
+3. **Implementation**: Multi-agent parallel execution across backend API, frontend components, database schema
+4. **Quality Gates**: QA Lead reviews, Security Engineer validates
+5. **Completion**: Working code committed to Git with cost report
+
+**Key Features**:
+- **Dynamic team composition**: VP decides which specialists to hire based on requirements
+- **Session persistence**: Hired agents stay available for follow-up requests
+- **Parallel workstreams**: Frontend, backend, testing, and documentation happen simultaneously
+- **Zero-tolerance quality**: Warnings = errors, comprehensive review gates
+
+### Code Review Organization
+
+**What it does**: Provides multi-perspective code review using 4 specialized reviewers running in parallel.
+
+**Reviewers**:
+- **Style Reviewer**: Formatting, naming conventions, code idioms
+- **Quality Reviewer**: Logic defects, maintainability, anti-patterns
+- **Security Reviewer**: Vulnerabilities, trust boundaries, authentication
+- **Performance Reviewer**: Algorithmic complexity, memory usage, optimization opportunities
+
+**Output**: Comprehensive review report with severity ratings and actionable recommendations.
+
+### Debug Investigation Skill
+
+**What it does**: Deep debugging that leverages NEXUS's cross-session memory to find similar past errors and their resolutions.
+
+**Process**:
+1. **Error Analysis**: Classify the error type and domain
+2. **Knowledge Retrieval**: Search RAG database for similar past errors
+3. **Pattern Recognition**: Identify common failure patterns
+4. **Solution Synthesis**: Combine past solutions with current context
+5. **Prevention**: Suggest changes to prevent similar issues
+
+**Knowledge Sources**:
+- Past error resolutions (weighted 1.3x for high value)
+- Task outcomes and lessons learned
+- Code change history and their impacts
+- Cross-session conversation memory
+
+### Semantic Search Skill
+
+**What it does**: Search institutional knowledge using semantic similarity rather than keyword matching.
+
+**Search Modes**:
+- `errors`: Past error resolutions and debugging sessions
+- `tasks`: Completed task outcomes and agent performance
+- `code`: Code changes and their impacts
+- `conversations`: Past Q&A and decision discussions
+- `all`: Search across all knowledge types
+
+**Example**:
+```
+/nexus-search --mode errors --domain backend "rate limiting"
+```
+
+Returns:
+- Similar past errors with their resolutions
+- Agents who successfully handled similar issues
+- Cost estimates based on historical data
+- Recommended approaches and gotchas to avoid
+
+## Commands Reference
+
+### /nexus-status
+
+Shows comprehensive organization status:
+
+```markdown
+# 🏢 NEXUS Organization Status
+
+## Agents (56 total)
+✓ Executive Layer (4): Chief of Staff, CPO, CFO, CRO
+✓ Management Layer (5): VP Eng, Tech Leads, EMs
+✓ Senior Layer (4): Senior Engineers, Architects
+✓ Implementation Layer (6): FE/BE/DevOps Engineers
+✓ Quality Layer (4): QA Leads, Test Engineers
+✓ Consultant Layer (4): Security, UX, Systems, Cost
+
+## System Health: ✓ Healthy
+- Server: ✓ Running on port 4200
+- Databases: ✓ 7 encrypted databases connected
+- ML Models: ✓ Agent router, cost predictor trained
+- RAG Knowledge: ✓ 1,247 chunks indexed
+
+## Recent Activity (last 5 tasks)
+1. [2024-01-15 14:30] Build auth API ($0.42, 45s) ✓
+2. [2024-01-15 13:15] Code review PR #123 ($0.18, 22s) ✓
+```
+
+### /nexus-hire
+
+Adds specialist agents to your current session:
+
+```bash
+# Add a security engineer
+/nexus-hire security-engineer
+
+# Add a performance engineer
+/nexus-hire performance-engineer
+
+# Add a frontend specialist
+/nexus-hire frontend-engineer
+```
+
+**Available Specialists**:
+- `security-engineer`: Authentication, encryption, vulnerability analysis
+- `performance-engineer`: Optimization, caching, scalability
+- `frontend-engineer`: React, Vue, Angular, UI/UX
+- `backend-engineer`: APIs, databases, microservices
+- `devops-engineer`: CI/CD, Docker, Kubernetes
+- `database-architect`: Schema design, queries, migrations
+
+### /nexus-debug
+
+Launches targeted debug investigations:
+
+```bash
+# Debug with domain filtering
+/nexus-debug --domain backend "API returning 500 errors"
+
+# Debug with specific error context
+/nexus-debug --context "authentication failing after login"
+
+# Debug with file scope
+/nexus-debug --files "src/auth/login.py" "login timeout issues"
+```
+
+**Parameters**:
+- `--domain`: Filter knowledge by domain (frontend, backend, devops, security)
+- `--context`: Additional context for the investigation
+- `--files`: Specific files to focus the investigation on
+
+### /nexus-search
+
+Search the knowledge base with advanced filtering:
+
+```bash
+# Search for error resolutions
+/nexus-search --mode errors "database connection timeout"
+
+# Search task outcomes
+/nexus-search --mode tasks --domain frontend "React component optimization"
+
+# Search code changes
+/nexus-search --mode code "authentication middleware"
+
+# Search conversations
+/nexus-search --mode conversations "deployment strategy"
+```
+
+## Context Rules System
+
+The plugin automatically attaches relevant project context based on file patterns and @mentions:
+
+### File Pattern Rules
+
+<table>
+<thead>
+<tr><th>Pattern</th><th>Context Attached</th></tr>
+</thead>
+<tbody>
+<tr><td><code>{'**/*.py'}</code></td><td>Python coding standards, Django/Flask patterns</td></tr>
+<tr><td><code>{'**/*.ts'}</code>, <code>{'**/*.tsx'}</code></td><td>TypeScript strict mode, React/Next.js patterns</td></tr>
+<tr><td><code>{'**/*.js'}</code>, <code>{'**/*.jsx'}</code></td><td>JavaScript best practices, Node.js patterns</td></tr>
+<tr><td><code>{'**/test/**'}</code></td><td>Testing strategies, QA requirements</td></tr>
+<tr><td><code>{'**/docs/**'}</code></td><td>Documentation standards, technical writing</td></tr>
+</tbody>
+</table>
+
+### @Mention Rules
+
+<table>
+<thead>
+<tr><th>Mention</th><th>Agent Activated</th><th>Context</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@security</code></td><td>Security Engineer</td><td>OWASP Top 10, security scanning</td></tr>
+<tr><td><code>@performance</code></td><td>Performance Engineer</td><td>Optimization patterns, profiling</td></tr>
+<tr><td><code>@qa</code></td><td>QA Lead</td><td>Testing strategies, quality gates</td></tr>
+<tr><td><code>@architect</code></td><td>Systems Architect</td><td>Design patterns, scalability</td></tr>
+</tbody>
+</table>
+
+## Integration with NEXUS Server
+
+When the NEXUS server is running (localhost:4200), the plugin provides enhanced capabilities:
+
+### Server-Connected Features
+
+- **Real-time cost tracking**: Live budget monitoring and alerts
+- **Cross-session memory**: Access to full RAG knowledge base
+- **ML predictions**: Cost estimation and agent routing recommendations
+- **Organizational persistence**: Hired agents persist across Claude Code sessions
+- **Advanced analytics**: Performance metrics and optimization suggestions
+
+### Offline Mode
+
+When the server isn't available, the plugin operates with reduced functionality:
+- Basic skills work with simplified logic
+- No cross-session memory or RAG search
+- No cost prediction or ML routing
+- Limited to single-session agent interactions
+
+## Configuration
+
+### Plugin Settings
+
+Configure the plugin via `.claude-plugin/config.json`:
+
+```json
+{
+  "nexusServerUrl": "http://localhost:4200",
+  "defaultModel": "sonnet",
+  "maxCostPerSession": 5.00,
+  "autoAttachRules": true,
+  "enableMLRouting": true,
+  "logLevel": "info"
+}
+```
+
+### Environment Variables
+
+```bash
+# NEXUS server connection
+export NEXUS_SERVER_URL=http://localhost:4200
+export NEXUS_API_KEY=your-api-key
+
+# Model preferences
+export NEXUS_DEFAULT_MODEL=sonnet
+export NEXUS_PLANNING_MODEL=opus
+export NEXUS_QA_MODEL=haiku
+
+# Cost controls
+export NEXUS_MAX_SESSION_COST=5.00
+export NEXUS_ENABLE_COST_ALERTS=true
+```
+
+## Use Cases
+
+### 1. Full Feature Development
+
+```
+User: "Build me a blog system with user auth, posts, and comments"
+```
+
+The autonomous-build skill activates, hiring specialists and delivering:
+- Backend API with authentication
+- Database schema with migrations
+- Frontend components in React/Vue
+- Test suites for all components
+- Security review and performance optimization
+- Complete deployment configuration
+
+### 2. Code Quality Assurance
+
+```
+User: "Review this authentication module"
+```
+
+The code-review-org skill provides:
+- Style and formatting review
+- Security vulnerability analysis
+- Performance optimization suggestions
+- Logic error detection
+- Maintainability improvements
+
+### 3. Debugging Complex Issues
+
+```
+User: "Debug why our API is randomly timing out"
+```
+
+The debug-investigate skill:
+- Searches past similar timeout issues
+- Analyzes code patterns and dependencies
+- Provides resolution steps based on past successes
+- Suggests monitoring and prevention measures
+
+### 4. Knowledge Discovery
+
+```
+User: "Have we built anything like a rate limiter before?"
+```
+
+The semantic-search skill finds:
+- Past rate limiting implementations
+- Cost and complexity estimates
+- Successful approaches and gotchas
+- Agent recommendations based on past performance
+
+## Best Practices
+
+### Getting Maximum Value
+
+1. **Be Specific**: "Build a REST API with JWT auth" works better than "build an API"
+2. **Use Natural Language**: The plugin understands intent, not just commands
+3. **Leverage Specialists**: Let the VP hire appropriate experts for complex tasks
+4. **Review Recommendations**: The plugin learns from feedback and corrections
+5. **Connect to Server**: Run the NEXUS server for full capabilities
+
+### Cost Optimization
+
+1. **Use Appropriate Models**: Haiku for simple tasks, Opus for complex planning
+2. **Set Budget Limits**: Configure cost alerts and hard caps
+3. **Leverage Learning**: The system gets more efficient as it learns your patterns
+4. **Batch Related Work**: Group similar tasks to maximize specialist efficiency
+
+### Security Considerations
+
+1. **Review Generated Code**: Always review security-sensitive implementations
+2. **Use Security Engineer**: Explicitly hire security engineers for auth/crypto work
+3. **Follow Compliance**: The plugin supports enterprise security workflows when server is connected
+4. **Audit Trails**: All actions are logged when connected to NEXUS server
+
+## Troubleshooting
+
+### Common Issues
+
+**Plugin not activating skills**:
+- Check trigger phrases match exactly
+- Verify plugin is properly installed and enabled
+- Restart Claude Code after configuration changes
+
+**Server connection issues**:
+- Verify NEXUS server is running on localhost:4200
+- Check firewall settings allow connections
+- Validate API key configuration
+
+**High costs**:
+- Set budget limits in configuration
+- Use cheaper models for simple tasks (Haiku instead of Opus)
+- Enable cost alerts and monitoring
+
+**Poor quality outputs**:
+- Provide more specific requirements
+- Use the code-review-org skill for quality assurance
+- Connect to NEXUS server for ML-improved routing
+
+### Getting Help
+
+1. **Documentation**: Full docs at [buildwithnexus.dev](https://buildwithnexus.dev)
+2. **Community**: Join the NEXUS Discord for support and discussion
+3. **Issues**: Report bugs on [GitHub Issues](https://github.com/Garrett-s-Apps/nexus-plugin/issues)
+4. **Enterprise**: Contact enterprise@nexus.dev for commercial support
+
+The NEXUS plugin transforms Claude Code from a single-agent assistant into a complete autonomous software engineering organization. Experience the difference of having an entire org working on your projects.

@@ -1,0 +1,146 @@
+# Install
+
+Get NEXUS running on your machine in one command.
+
+## Quick Start
+
+```bash
+npx buildwithnexus init
+```
+
+Or install globally:
+
+```bash
+npm install -g buildwithnexus
+buildwithnexus init
+```
+
+<a href="https://www.npmjs.com/package/buildwithnexus" target="_blank" rel="noopener noreferrer" style={{display:'inline-block',marginBottom:'1rem'}}>
+  <img src="https://img.shields.io/npm/v/buildwithnexus?style=flat-square&color=blue" alt="npm version" />
+</a>
+
+## What Happens
+
+The `init` command walks you through a 10-phase setup:
+
+1. **API Key Collection** — Anthropic (required), OpenAI, Google (optional)
+2. **VM Resource Allocation** — RAM, CPUs, disk
+3. **QEMU Installation** — auto-installs via Homebrew/apt if missing
+4. **VM Image Download** — Ubuntu 24.04 cloud image with SHA256 verification
+5. **SSH Key Generation** — ed25519 key pair with TOFU host pinning
+6. **Cloud-Init ISO** — injects keys and config into the VM
+7. **VM Boot** — QEMU launches with KVM acceleration
+8. **Docker Setup** — hardened container runtime inside the VM
+9. **NEXUS Deployment** — server + agent system on port 4200
+10. **Cloudflare Tunnel** — optional public URL for remote access
+
+First run takes ~10-25 minutes. Subsequent starts take ~30 seconds.
+
+## Requirements
+
+| Requirement | Details |
+|------------|---------|
+| **Node.js** | >= 18 |
+| **RAM** | ~4 GB available for the VM |
+| **Disk** | ~20 GB available |
+| **API Key** | Anthropic (`sk-ant-...`) |
+
+### macOS (ARM or Intel)
+
+QEMU is installed automatically via Homebrew. If Homebrew isn't present, get it at [brew.sh](https://brew.sh).
+
+```bash
+npx buildwithnexus init
+```
+
+### Linux (x64)
+
+QEMU is installed automatically via apt. Requires `sudo` for package installation.
+
+```bash
+npx buildwithnexus init
+```
+
+### Windows (via WSL2)
+
+Native Windows is not supported. Use WSL2 with Ubuntu:
+
+1. Install WSL2: `wsl --install -d Ubuntu`
+2. Open Ubuntu terminal
+3. Install Node.js: `curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs`
+4. Run: `npx buildwithnexus init`
+
+Ensure KVM nested virtualization is enabled in BIOS/UEFI.
+
+## Architecture
+
+```
+Host (your machine)
+  └─ QEMU VM (Ubuntu 24.04)
+       ├─ Docker (nexus-cli-sandbox)
+       ├─ KVM / libvirt (inner VMs)
+       └─ NEXUS server (:4200)
+```
+
+Triple-nested isolation is mandatory — NEXUS refuses to start unless it detects proper nesting.
+
+**Port forwarding:** SSH `localhost:2222`, NEXUS `localhost:4200`, HTTPS `localhost:8443`.
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `buildwithnexus init` | Full scaffolding + VM boot |
+| `buildwithnexus start` | Start an existing VM + server |
+| `buildwithnexus stop` | Graceful shutdown |
+| `buildwithnexus status` | VM / Docker / server / tunnel health |
+| `buildwithnexus doctor` | Diagnose QEMU, ports, SSH, disk |
+| `buildwithnexus logs [-f]` | Stream server logs (auto-redacted) |
+| `buildwithnexus update` | Upload latest release, rebuild, restart |
+| `buildwithnexus destroy [--force]` | Remove VM + all data |
+| `buildwithnexus keys set\|list` | Manage API keys |
+| `buildwithnexus ssh` | Direct SSH into the VM |
+| `buildwithnexus brainstorm [idea]` | Brainstorm an idea with the Chief of Staff |
+
+## Built-In Security (DLP Layer)
+
+Every data path is protected by a zero-dependency Data Loss Prevention system:
+
+- **Input Sanitization** — YAML escaping and shell injection prevention via tagged templates
+- **Output Redaction** — API keys auto-redacted from logs, errors, and stdout
+- **Secret Validation** — format + injection character checks on all API keys
+- **File Integrity** — HMAC-SHA256 tamper detection on key files
+- **Audit Trail** — every sensitive operation logged with timestamps
+- **Environment Scrubbing** — child processes never inherit secrets
+- **SSH TOFU** — host key pinned on first connect, verified on every subsequent connection
+
+All active by default. Zero configuration required.
+
+## Update Notifier
+
+The CLI checks for new versions every 4 hours and shows a banner when updates are available:
+
+```
+  Update available: 0.1.0 → 0.2.0
+  Run: npm update -g buildwithnexus
+```
+
+## Clean Reinstall
+
+To wipe everything and start fresh:
+
+```bash
+# Stop the VM if running
+buildwithnexus destroy --force
+
+# Remove all local data
+rm -rf ~/.buildwithnexus
+
+# Reinstall latest version
+npx buildwithnexus@latest init
+```
+
+## Source
+
+- **npm:** [npmjs.com/package/buildwithnexus](https://www.npmjs.com/package/buildwithnexus)
+- **GitHub:** [github.com/Garrett-s-Apps/buildwithnexus](https://github.com/Garrett-s-Apps/buildwithnexus)

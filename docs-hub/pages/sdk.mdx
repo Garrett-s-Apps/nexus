@@ -54,7 +54,7 @@ from nexus_sdk.providers.openai_provider import OpenAIProvider
 provider = OpenAIProvider(api_key="sk-...")
 
 # Same interface, different backend
-agent = registry.register(id="engineer", model="gpt-4")
+agent = registry.register(id="engineer", model="gpt-5")
 result = await agent.execute("Build a REST API")
 ```
 
@@ -92,13 +92,13 @@ result = await provider.execute(prompt, model="haiku")   # Fastest/cheapest
 ```
 
 **Claude Model Mapping**:
-- `opus` → `claude-opus-4-6` (latest Opus)
-- `sonnet` → `claude-sonnet-4-20250514` (latest Sonnet)
-- `haiku` → `claude-haiku-4-5-20251001` (latest Haiku)
+- `opus` → `claude-opus-4-6` (latest Opus 4.6)
+- `sonnet` → `claude-sonnet-4-6` (latest Sonnet 4.6)
+- `haiku` → `claude-haiku-4-5-20251001` (latest Haiku 4.5)
 
 ### OpenAI Provider
 
-Support for GPT-4, GPT-3.5, o1 series:
+Support for GPT-5, o3, and o4-mini series:
 
 ```python
 from nexus_sdk.providers.openai_provider import OpenAIProvider
@@ -106,9 +106,10 @@ from nexus_sdk.providers.openai_provider import OpenAIProvider
 provider = OpenAIProvider(api_key="sk-...")
 
 # Model selection
-result = await provider.execute(prompt, model="gpt-4")
-result = await provider.execute(prompt, model="gpt-3.5-turbo")
-result = await provider.execute(prompt, model="o1-preview")
+result = await provider.execute(prompt, model="gpt-5")        # Most capable
+result = await provider.execute(prompt, model="o3")            # Reasoning
+result = await provider.execute(prompt, model="o4-mini")       # Fast reasoning
+result = await provider.execute(prompt, model="gpt-4.1")       # Balanced
 ```
 
 ### Gemini Provider
@@ -482,7 +483,7 @@ async def compare_providers():
 
     # OpenAI implementation
     openai_provider = OpenAIProvider(api_key="openai-key")
-    openai_result = await openai_provider.execute(task, model="gpt-4")
+    openai_result = await openai_provider.execute(task, model="gpt-5")
 
     print(f"Claude: ${claude_result.cost_usd:.4f}, {claude_result.elapsed_seconds:.1f}s")
     print(f"OpenAI: ${openai_result.cost_usd:.4f}, {openai_result.elapsed_seconds:.1f}s")

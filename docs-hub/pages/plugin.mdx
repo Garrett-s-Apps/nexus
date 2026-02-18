@@ -1,3 +1,5 @@
+import { Grid, Stack, Box, Row } from '../components/layoutkit'
+
 # NEXUS Claude Code Plugin
 
 The NEXUS plugin brings the power of a 56-agent autonomous software engineering organization directly into Claude Code. Instead of single-agent assistance, you get an entire org with executives, managers, engineers, and specialists.
@@ -30,26 +32,105 @@ The NEXUS plugin consists of three main components:
 
 Skills automatically activate based on your natural language input:
 
-| Skill | Triggers | Model | Purpose |
-|-------|----------|-------|---------|
-| **autonomous-build** | "build me", "create a", "implement" | Opus | Full feature implementation with org orchestration |
-| **code-review-org** | "review this code", "check my code" | Sonnet | Multi-perspective code review with 4 specialized reviewers |
-| **debug-investigate** | "debug", "investigate", "root cause" | Sonnet | Deep debugging with semantic search over past errors |
-| **semantic-search** | "search knowledge", "have we done this" | Haiku | Search past knowledge and error resolutions |
-| **cost-report** | "cost report", "show costs", "burn rate" | Haiku | Comprehensive cost analysis and budget tracking |
-| **context-rules** | (Always active) | Haiku | Auto-attach project rules based on file patterns |
+<Grid cols={2} gap="md" responsive minChildWidth="320px" className="my-6">
+  <Box className="bg-gradient-to-br from-blue-900/50 to-indigo-900/30 border border-blue-700/40 rounded-xl p-5">
+    <Stack gap="xs">
+      <Row gap="sm" className="items-center">
+        <span className="text-white font-bold">autonomous-build</span>
+        <span className="text-xs bg-purple-800/60 text-purple-200 px-2 py-0.5 rounded-full">Opus</span>
+      </Row>
+      <div className="text-gray-400 text-sm">Full feature implementation with org orchestration</div>
+      <div className="text-blue-300 text-xs mt-1">&quot;build me&quot;, &quot;create a&quot;, &quot;implement&quot;</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gradient-to-br from-green-900/50 to-emerald-900/30 border border-green-700/40 rounded-xl p-5">
+    <Stack gap="xs">
+      <Row gap="sm" className="items-center">
+        <span className="text-white font-bold">code-review-org</span>
+        <span className="text-xs bg-blue-800/60 text-blue-200 px-2 py-0.5 rounded-full">Sonnet</span>
+      </Row>
+      <div className="text-gray-400 text-sm">Multi-perspective code review with 4 specialized reviewers</div>
+      <div className="text-green-300 text-xs mt-1">&quot;review this code&quot;, &quot;check my code&quot;</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gradient-to-br from-amber-900/50 to-orange-900/30 border border-amber-700/40 rounded-xl p-5">
+    <Stack gap="xs">
+      <Row gap="sm" className="items-center">
+        <span className="text-white font-bold">debug-investigate</span>
+        <span className="text-xs bg-blue-800/60 text-blue-200 px-2 py-0.5 rounded-full">Sonnet</span>
+      </Row>
+      <div className="text-gray-400 text-sm">Deep debugging with semantic search over past errors</div>
+      <div className="text-amber-300 text-xs mt-1">&quot;debug&quot;, &quot;investigate&quot;, &quot;root cause&quot;</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gradient-to-br from-cyan-900/50 to-blue-900/30 border border-cyan-700/40 rounded-xl p-5">
+    <Stack gap="xs">
+      <Row gap="sm" className="items-center">
+        <span className="text-white font-bold">semantic-search</span>
+        <span className="text-xs bg-gray-700/60 text-gray-200 px-2 py-0.5 rounded-full">Haiku</span>
+      </Row>
+      <div className="text-gray-400 text-sm">Search past knowledge and error resolutions</div>
+      <div className="text-cyan-300 text-xs mt-1">&quot;search knowledge&quot;, &quot;have we done this&quot;</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gradient-to-br from-pink-900/50 to-rose-900/30 border border-pink-700/40 rounded-xl p-5">
+    <Stack gap="xs">
+      <Row gap="sm" className="items-center">
+        <span className="text-white font-bold">cost-report</span>
+        <span className="text-xs bg-gray-700/60 text-gray-200 px-2 py-0.5 rounded-full">Haiku</span>
+      </Row>
+      <div className="text-gray-400 text-sm">Comprehensive cost analysis and budget tracking</div>
+      <div className="text-pink-300 text-xs mt-1">&quot;cost report&quot;, &quot;show costs&quot;, &quot;burn rate&quot;</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gradient-to-br from-violet-900/50 to-purple-900/30 border border-violet-700/40 rounded-xl p-5">
+    <Stack gap="xs">
+      <Row gap="sm" className="items-center">
+        <span className="text-white font-bold">context-rules</span>
+        <span className="text-xs bg-gray-700/60 text-gray-200 px-2 py-0.5 rounded-full">Haiku</span>
+      </Row>
+      <div className="text-gray-400 text-sm">Auto-attach project rules based on file patterns</div>
+      <div className="text-violet-300 text-xs mt-1">Always active</div>
+    </Stack>
+  </Box>
+</Grid>
 
 ### 2. Commands (Manual Invocation)
 
 Slash commands for direct access to NEXUS capabilities:
 
-| Command | Purpose | Usage |
-|---------|---------|--------|
-| `/nexus-status` | Show org status and system health | `/nexus-status` |
-| `/nexus-cost` | Quick cost summary for current session | `/nexus-cost` |
-| `/nexus-hire` | Add specialist agent to session team | `/nexus-hire security-engineer` |
-| `/nexus-debug` | Launch semantic debug investigation | `/nexus-debug --domain backend "API timeout"` |
-| `/nexus-search` | Search knowledge base | `/nexus-search --mode errors "authentication"` |
+<Grid cols={2} gap="sm" responsive minChildWidth="300px" className="my-6">
+  <Box className="bg-gray-800/80 border border-gray-700/50 rounded-lg p-4">
+    <Stack gap="xs">
+      <code className="text-blue-400 font-bold text-sm">/nexus-status</code>
+      <div className="text-gray-300 text-sm">Show org status and system health</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gray-800/80 border border-gray-700/50 rounded-lg p-4">
+    <Stack gap="xs">
+      <code className="text-blue-400 font-bold text-sm">/nexus-cost</code>
+      <div className="text-gray-300 text-sm">Quick cost summary for current session</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gray-800/80 border border-gray-700/50 rounded-lg p-4">
+    <Stack gap="xs">
+      <code className="text-blue-400 font-bold text-sm">/nexus-hire &lt;specialist&gt;</code>
+      <div className="text-gray-300 text-sm">Add specialist agent to session team</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gray-800/80 border border-gray-700/50 rounded-lg p-4">
+    <Stack gap="xs">
+      <code className="text-blue-400 font-bold text-sm">/nexus-debug --domain &lt;area&gt;</code>
+      <div className="text-gray-300 text-sm">Launch semantic debug investigation</div>
+    </Stack>
+  </Box>
+  <Box className="bg-gray-800/80 border border-gray-700/50 rounded-lg p-4">
+    <Stack gap="xs">
+      <code className="text-blue-400 font-bold text-sm">/nexus-search --mode &lt;type&gt;</code>
+      <div className="text-gray-300 text-sm">Search knowledge base</div>
+    </Stack>
+  </Box>
+</Grid>
 
 ### 3. Agent Integration
 

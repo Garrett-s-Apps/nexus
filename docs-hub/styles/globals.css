@@ -101,33 +101,63 @@ a {
 
 .prose table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   margin: 1.5rem 0;
   background-color: #1f2937;
-  border-radius: 0.5rem;
+  border-radius: 0.75rem;
   overflow: hidden;
+  border: 1px solid #374151;
+  display: table;
 }
 
 .prose thead {
-  background-color: #374151;
+  background: linear-gradient(135deg, #1e3a5f, #2d1b4e);
 }
 
 .prose th {
-  padding: 0.75rem;
+  padding: 0.875rem 1rem;
   text-align: left;
   font-weight: 600;
-  color: #ffffff;
-  border-bottom: 1px solid #4b5563;
+  color: #e0e7ff;
+  border-bottom: 2px solid #4b5563;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .prose td {
-  padding: 0.75rem;
-  border-bottom: 1px solid #374151;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #2d3748;
   color: #d1d5db;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.prose tbody tr {
+  transition: background-color 0.15s ease;
+}
+
+.prose tbody tr:hover {
+  background-color: rgba(59, 130, 246, 0.08);
 }
 
 .prose tbody tr:last-child td {
   border-bottom: none;
+}
+
+.prose td:first-child,
+.prose th:first-child {
+  font-weight: 500;
+  color: #f3f4f6;
+}
+
+/* Table responsive wrapper */
+.table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 1.5rem 0;
+  border-radius: 0.75rem;
 }
 
 .prose ul, .prose ol {
@@ -196,11 +226,16 @@ a {
   }
 
   .prose table {
-    font-size: 0.875rem;
+    font-size: 0.8rem;
   }
 
   .prose th,
   .prose td {
-    padding: 0.5rem;
+    padding: 0.5rem 0.625rem;
+    white-space: nowrap;
+  }
+
+  .prose th {
+    font-size: 0.75rem;
   }
 }

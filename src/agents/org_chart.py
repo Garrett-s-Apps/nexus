@@ -12,7 +12,7 @@ Model tiers:
 """
 
 OPUS = "claude-opus-4-6"
-SONNET = "claude-sonnet-4-5-20250929"
+SONNET = "claude-sonnet-4-6-20250929"
 HAIKU = "claude-haiku-4-5-20251001"
 O3 = "o3"
 

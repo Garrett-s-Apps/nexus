@@ -26,7 +26,7 @@ These agents operate at the highest level of abstraction. They don't write code 
 
 | Role | Model | Responsibility |
 |------|-------|----------------|
-| **CEO** | Opus | Final authority on product direction. Resolves conflicts between executives. Owns the "ship or don't ship" decision. |
+| **Chief of Staff** | Opus | Final authority on product direction. Resolves conflicts between executives. Owns the "ship or don't ship" decision. Reports to Garrett (the user). |
 | **CFO** | Sonnet | Owns token budget allocation. Monitors cost-per-task, cost-per-feature. Can veto expensive approaches and demand cheaper alternatives. Tracks ROI of agent work. |
 | **CPO (Chief Product Officer)** | Opus | Owns requirements fidelity. Ensures every feature matches the human's intent. Validates UX decisions. The "would a real person actually use this?" check. |
 | **CRO (Chief Revenue Officer)** | Sonnet | Owns delivery velocity and throughput. Optimizes for shipping speed without quality loss. Identifies bottlenecks and reallocates resources. |
@@ -106,7 +106,7 @@ Human Input (Objective)
        │
        ▼
 ┌──────────────┐
-│  CEO + CPO   │  Strategic Planning (What are we building? Why?)
+│  Chief of Staff + CPO   │  Strategic Planning (What are we building? Why?)
 │  + CRO + CFO │  CFO sets token budget. CRO sets timeline. CPO defines acceptance criteria.
 └──────┬───────┘
        │
@@ -150,9 +150,9 @@ Human Input (Objective)
 
 This is the critical difference from current systems. No code is written until the plan is solid.
 
-**Phase 1: Strategic Alignment** (CEO, CPO, CRO, CFO)
+**Phase 1: Strategic Alignment** (Chief of Staff, CPO, CRO, CFO)
 - CPO drafts requirements interpretation
-- CEO validates alignment with objective
+- Chief of Staff validates alignment with objective
 - CRO estimates delivery timeline
 - CFO allocates token budget with hard limits per workstream
 - Output: Approved Strategic Brief
@@ -238,7 +238,7 @@ A PR is sent back if it fails ANY of:
 
 | Model | Provider | Strengths | System Role |
 |-------|----------|-----------|-------------|
-| **Opus** | Anthropic | Deep reasoning, debugging strategy, nuanced judgment | CEO, CPO, Tech Lead, VP Eng, Security Consultant, debugging approach/strategy |
+| **Opus** | Anthropic | Deep reasoning, debugging strategy, nuanced judgment | Chief of Staff, CPO, Tech Lead, VP Eng, Security Consultant, debugging approach/strategy |
 | **Sonnet** | Anthropic | Strong coding, good reasoning, balanced cost | Engineering Managers, Sr. Engineers, Implementation, QA Lead, code documentation |
 | **Haiku** | Anthropic | Fast, cheap, good for well-defined tasks | Swarm tasks, linting, doc updates, formatting, simple implementations |
 | **Gemini** | Google | Multimodal, visual reasoning, long context | Frontend UX validation, visual QA, layout auditing, accessibility |
@@ -597,7 +597,7 @@ Agents build a persistent record of how they work best together:
 
 ### Phase 1: Foundation (Weeks 1-3)
 - [ ] LangGraph graph structure with basic routing
-- [ ] Executive layer agents (CEO, CFO, CPO, CRO) with system prompts
+- [ ] Executive layer agents (Chief of Staff, CFO, CPO, CRO) with system prompts
 - [ ] Basic orchestrator with sequential execution
 - [ ] Token cost tracking infrastructure
 - [ ] Neovim plugin skeleton (Lua)
@@ -932,7 +932,7 @@ The system establishes and tracks these KPIs automatically:
 
 ### 15.2 OKRs (Quarterly, Self-Set)
 
-The CEO agent sets quarterly OKRs for the organization. Example:
+The Chief of Staff agent sets quarterly OKRs for the organization. Example:
 
 ```
 Q1 OKR: Establish Reliable Autonomous Delivery
@@ -1366,7 +1366,7 @@ When a new anti-pattern is discovered (either by the system or by Garrett's feed
 ### Phase 5: Self-Optimization (Weeks 12-13)
 - [ ] Working relationship registry
 - [ ] Cost optimization loop
-- [ ] OKR system (CEO sets quarterly)
+- [ ] OKR system (Chief of Staff sets quarterly)
 - [ ] Agent workflow self-adjustment
 
 ### Phase 6: Remote & Neovim (Weeks 14-16)
@@ -1400,7 +1400,7 @@ When a new anti-pattern is discovered (either by the system or by Garrett's feed
 
 ## Changes from v1.1
 
-This addendum covers: GitHub Repository & Self-Committing, Resource & Capacity Tracking, CEO Interaction Model, Slash Command System (Claude Code Plugin Architecture), and Claude Code Plugin Discovery.
+This addendum covers: GitHub Repository & Self-Committing, Resource & Capacity Tracking, Chief of Staff Interaction Model, Slash Command System (Claude Code Plugin Architecture), and Claude Code Plugin Discovery.
 
 ---
 
@@ -1693,7 +1693,7 @@ NEXUS wants to recommend a tool/service
 
 ---
 
-## 23. CEO Interaction Model
+## 23. Chief of Staff Interaction Model
 
 ### 23.1 Treat Garrett Like a True CEO
 
@@ -1751,7 +1751,7 @@ When Garrett gives feedback, NEXUS processes it as a CEO directive:
 Garrett: "The colors on this page feel off."
 
 NEXUS internal process:
-  1. CPO interprets: "CEO finds the color palette unsatisfying"
+  1. CPO interprets: "Garrett (CEO) finds the color palette unsatisfying"
   2. CPO consults Gemini UX Consultant: "Analyze current palette 
      against modern design trends and accessibility standards"
   3. Gemini returns: "Contrast ratio is fine but the blue #3B82F6 
@@ -1993,24 +1993,26 @@ Each agent in `agents/` is also a Claude Code agent definition, meaning they can
 ```markdown
 # agents/executive/ceo.md
 ---
-name: nexus-ceo
-description: "Chief Executive Officer. Final authority on product direction, ship/no-ship decisions, and conflict resolution between executives."
+name: nexus-chief-of-staff
+description: "Chief of Staff. Top NEXUS agent reporting to Garrett (the user/CEO). Final authority on product direction within the organization, ship/no-ship decisions, and conflict resolution between executives."
 tools: view, grep
 ---
 
-You are the CEO of NEXUS, an autonomous software engineering organization.
+You are the Chief of Staff of NEXUS, an autonomous software engineering organization.
+
+Garrett is the CEO. You are his top agent, executing his strategic vision.
 
 Your responsibilities:
-- Final authority on product direction
+- Final authority on product direction within NEXUS
 - Resolve conflicts between CPO, CRO, and CFO
 - Make ship/no-ship decisions for completed features
 - Set quarterly OKRs for the organization
 - Represent the organization's strategic interests
 
-You report ONLY to Garrett (the human owner).
+You report ONLY to Garrett (the human CEO/owner).
 You do NOT write code.
 You do NOT review PRs.
-You make DECISIONS.
+You coordinate DECISIONS and EXECUTION.
 
 When you receive a directive from Garrett, you:
 1. Interpret the strategic intent
@@ -2153,7 +2155,7 @@ Garrett on phone (Happy Coder):
      ▼ (HTTPS via tunnel)
      │
 Home Machine (NEXUS daemon):
-  CEO receives directive
+  Chief of Staff receives directive
   Executive planning begins
   Agents execute on home machine
   Full compute, full toolchain
@@ -2210,7 +2212,7 @@ Garrett on phone:
 
 ### Phase 5: Self-Optimization & Polish (Weeks 12-13)
 - [ ] Cost optimization loop (CFO-driven)
-- [ ] OKR system (CEO-driven)
+- [ ] OKR system (Chief of Staff-driven)
 - [ ] Agent prompt self-refinement
 - [ ] `/nexus:bootstrap` with full scaffolding
 - [ ] `/nexus:deploy` with staging/production pipeline
@@ -2706,7 +2708,7 @@ All 7 databases now use WAL journaling mode with `busy_timeout=5000` for concurr
 
 ### 30.2 Unified Haiku LLM Intake
 
-The original three-module chain (regex IntentClassifier → Opus CEO Interpreter → ActionRouter) was replaced with a single Haiku tool-use call. Haiku classifies intent AND executes lightweight operations via Anthropic tool calls in one pass.
+The original three-module chain (regex IntentClassifier → Opus Chief of Staff Interpreter → ActionRouter) was replaced with a single Haiku tool-use call. Haiku classifies intent AND executes lightweight operations via Anthropic tool calls in one pass.
 
 **Files**: `src/agents/haiku_intake.py`, `src/agents/intake_dispatcher.py`
 

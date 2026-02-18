@@ -8,7 +8,7 @@ _Auto-generated from live registry at 2026-02-11 11:43:49_
 GARRETT (Human CEO)
   Sets direction, reviews demos, gives feedback
   │
-  CEO [opus]
+  Chief of Staff [opus]
     Chief Product Officer [opus]
       UX Consultant [gemini]
     Chief Financial Officer [opus]
@@ -43,16 +43,16 @@ GARRETT (Human CEO)
 
 | Agent | ID | Model | Reports To | Status |
 |-------|----|-------|------------|--------|
-| CEO | `ceo` | anthropic/opus | Garrett | active |
-| Chief Product Officer | `cpo` | anthropic/opus | CEO | active |
-| Chief Financial Officer | `cfo` | anthropic/opus | CEO | active |
-| Chief Revenue Officer | `cro` | anthropic/opus | CEO | active |
+| Chief of Staff | `chief_of_staff` | anthropic/opus | Garrett | active |
+| Chief Product Officer | `cpo` | anthropic/opus | Chief of Staff | active |
+| Chief Financial Officer | `cfo` | anthropic/opus | Chief of Staff | active |
+| Chief Revenue Officer | `cro` | anthropic/opus | Chief of Staff | active |
 
 ### Management Layer
 
 | Agent | ID | Model | Reports To | Status |
 |-------|----|-------|------------|--------|
-| VP of Engineering | `vp_engineering` | anthropic/opus | CEO | active |
+| VP of Engineering | `vp_engineering` | anthropic/opus | Chief of Staff | active |
 | Tech Lead | `tech_lead` | anthropic/opus | VP of Engineering | active |
 | Engineering Manager - Frontend | `em_frontend` | anthropic/sonnet | VP of Engineering | active |
 | Engineering Manager - Backend | `em_backend` | anthropic/sonnet | VP of Engineering | active |

@@ -312,22 +312,32 @@ The plugin automatically attaches relevant project context based on file pattern
 
 ### File Pattern Rules
 
-| Pattern | Context Attached |
-|---------|------------------|
-| `**/*.py` | Python coding standards, Django/Flask patterns |
-| `**/*.ts`, `**/*.tsx` | TypeScript strict mode, React/Next.js patterns |
-| `**/*.js`, `**/*.jsx` | JavaScript best practices, Node.js patterns |
-| `**/test/**` | Testing strategies, QA requirements |
-| `**/docs/**` | Documentation standards, technical writing |
+<table>
+<thead>
+<tr><th>Pattern</th><th>Context Attached</th></tr>
+</thead>
+<tbody>
+<tr><td><code>{'**/*.py'}</code></td><td>Python coding standards, Django/Flask patterns</td></tr>
+<tr><td><code>{'**/*.ts'}</code>, <code>{'**/*.tsx'}</code></td><td>TypeScript strict mode, React/Next.js patterns</td></tr>
+<tr><td><code>{'**/*.js'}</code>, <code>{'**/*.jsx'}</code></td><td>JavaScript best practices, Node.js patterns</td></tr>
+<tr><td><code>{'**/test/**'}</code></td><td>Testing strategies, QA requirements</td></tr>
+<tr><td><code>{'**/docs/**'}</code></td><td>Documentation standards, technical writing</td></tr>
+</tbody>
+</table>
 
 ### @Mention Rules
 
-| Mention | Agent Activated | Context |
-|---------|----------------|---------|
-| `@security` | Security Engineer | OWASP Top 10, security scanning |
-| `@performance` | Performance Engineer | Optimization patterns, profiling |
-| `@qa` | QA Lead | Testing strategies, quality gates |
-| `@architect` | Systems Architect | Design patterns, scalability |
+<table>
+<thead>
+<tr><th>Mention</th><th>Agent Activated</th><th>Context</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@security</code></td><td>Security Engineer</td><td>OWASP Top 10, security scanning</td></tr>
+<tr><td><code>@performance</code></td><td>Performance Engineer</td><td>Optimization patterns, profiling</td></tr>
+<tr><td><code>@qa</code></td><td>QA Lead</td><td>Testing strategies, quality gates</td></tr>
+<tr><td><code>@architect</code></td><td>Systems Architect</td><td>Design patterns, scalability</td></tr>
+</tbody>
+</table>
 
 ## Integration with NEXUS Server
 

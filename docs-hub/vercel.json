@@ -4,15 +4,6 @@
       "docs/buildwithnexus-hub": true
     }
   },
-  "buildCommand": "npm run build",
-  "outputDirectory": "out",
-  "trailingSlash": true,
-  "rewrites": [
-    {
-      "source": "/",
-      "destination": "/index.html"
-    }
-  ],
   "headers": [
     {
       "source": "/(.*)",

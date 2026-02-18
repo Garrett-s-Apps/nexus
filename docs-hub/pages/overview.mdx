@@ -1,0 +1,176 @@
+# System Overview
+
+NEXUS is an enterprise multi-agent orchestration system that operates as a complete autonomous software engineering organization. Instead of a single AI assistant, NEXUS deploys 56 specialized agents organized into a hierarchical org chart — from C-suite executives to implementation engineers.
+
+## How It Works
+
+```
+Human Input (Slack, CLI, API, Neovim)
+         |
+         v
+Authentication & Rate Limiting
+         |
+         v
+Haiku LLM Intake (natural language -> intent classification)
+         |
+         +---> Tool Execution (simple queries: status, org, cost)
+         |
+         +---> Directive Workflow (build/change requests)
+                  |
+                  v
+Strategic Planning Gate (CEO, CPO, CFO, CRO)
+                  |
+                  v
+Technical Design (VP Engineering + Tech Lead)
+                  |
+                  v
+ML Intelligence Briefing (cost prediction, risk, similar work)
+                  |
+                  v
+Task Decomposition & Parallel Assignment
+                  |
+                  v
+Parallel Execution (multiple agents, multiple workstreams)
+                  |
+                  v
+Quality Gates (zero-tolerance: warnings = errors)
+                  |
+                  v
+Code Review (senior engineers)
+                  |
+                  v
+Completion & Learning (feedback loop, ML retraining)
+```
+
+## The Organization
+
+NEXUS operates with **56 active agents** organized into 6 hierarchical layers:
+
+| Layer | Count | Models | Responsibility |
+|-------|-------|--------|----------------|
+| **Executive** | 10 | Opus/Sonnet | CEO, C-suite — strategy, budget, quality bar |
+| **Management** | 10 | Opus/Sonnet | Engineering managers, tech leads — architecture, coordination |
+| **Senior** | 12 | Sonnet | Senior engineers — code review, design systems, API contracts |
+| **Implementation** | 15 | Sonnet | Frontend, backend, full-stack, DevOps developers |
+| **Quality** | 6 | Sonnet/Haiku | QA leads, test engineers — quality gates |
+| **Consultant** | 3 | Opus/Gemini/o3 | Security, UX, systems architecture |
+
+**Dynamic Org Management**: Hire, fire, promote, reassign — all through natural language.
+
+## Orchestration Engine
+
+The LangGraph orchestration engine manages a **27-node execution DAG** that handles:
+
+- **Strategic Planning**: Executive approval gates before any work begins
+- **Technical Design**: Architecture design documents and API contracts
+- **Task Decomposition**: Automatic identification of parallel workstreams
+- **ML Agent Routing**: Learned task-to-agent matching based on historical success
+- **Parallel Execution**: Independent workstreams execute simultaneously
+- **TDD Workflow**: Test-first development enforcement
+- **Quality Gates**: Zero-tolerance policy — warnings equal errors
+- **Code Review**: Senior engineer validation before completion
+
+## Machine Learning System
+
+NEXUS learns from every execution. Five ML models continuously improve:
+
+| Model | Algorithm | Purpose |
+|-------|-----------|---------|
+| **Agent Router** | TF-IDF + RandomForest | Routes tasks to the best agent based on history |
+| **Cost Predictor** | TF-IDF + RandomForest Regressor | Estimates cost before execution with confidence intervals |
+| **Quality Predictor** | TF-IDF + GradientBoosting | Predicts first-pass approval probability |
+| **Escalation Predictor** | TF-IDF + GradientBoosting | Flags agents at risk of needing escalation |
+| **Directive Similarity** | Sentence-Transformers | Finds semantically similar past work |
+
+### Cold-Start Design
+
+Every ML feature degrades gracefully when training data is insufficient:
+
+| Feature | Cold Start | After Training |
+|---------|-----------|---------------|
+| Agent routing | Keyword matching | ML routing (after 20+ samples) |
+| Cost prediction | No estimate | Prediction + confidence interval (after 15+ samples) |
+| Directive similarity | No matches | Semantic search across all past directives |
+
+### Auto-Retraining
+
+After every 10 new task outcomes, all models retrain automatically (throttled to once per hour).
+
+## RAG Knowledge Base
+
+CLI subprocesses run in one-shot pipe mode with no persistent memory. The RAG system provides cross-session memory by storing knowledge from every interaction:
+
+| Chunk Type | Weight | Source |
+|-----------|--------|--------|
+| `error_resolution` | 1.3x | Past debugging sessions and fixes |
+| `task_outcome` | 1.1x | Task results with agent and cost data |
+| `conversation` | 1.0x | Slack Q&A exchanges |
+| `code_change` | 0.9x | File modifications and their context |
+| `directive_summary` | 0.8x | High-level project outcomes |
+
+### Retrieval Pipeline
+
+1. Encode query via sentence-transformers (384-dim vectors)
+2. SQL pre-filter by chunk type, domain tag, and age
+3. Cosine similarity against filtered candidates
+4. Weight by chunk type importance
+5. Apply recency boost (up to 10% for recent chunks)
+6. Return top-8 results within character budget
+
+## Data Persistence
+
+Seven encrypted SQLite databases store all system state:
+
+| Database | Purpose |
+|----------|---------|
+| `registry.db` | Agent configurations, org structure, circuit breakers |
+| `memory.db` | Directives, tasks, events, peer decisions |
+| `cost.db` | Per-API-call token usage and costs |
+| `kpi.db` | Productivity and quality metrics |
+| `ml.db` | Task outcomes, embeddings, model artifacts |
+| `knowledge.db` | RAG knowledge chunks (dedicated for cosine similarity) |
+| `sessions.db` | CLI session state, thread mapping, async history |
+
+All databases are encrypted with **AES-256-CBC** using SQLCipher with **PBKDF2 key derivation** (256,000 iterations).
+
+## Interfaces
+
+NEXUS supports multiple input interfaces:
+
+### Slack (Primary)
+Send natural language messages in your configured channel. NEXUS handles everything from "Build me a landing page" to "What's our burn rate?"
+
+### Neovim Plugin
+`:Nexus`, `:NexusTalk`, `:NexusOrg`, `:NexusStatus`, `:NexusKpi` — direct IDE integration.
+
+### REST API
+Full API at `localhost:4200` with endpoints for messaging, ML status, agent stats, org management, and more.
+
+### CLI
+`python nexus_cli.py status|talk|message` for terminal-based interaction.
+
+## Tech Stack
+
+| Category | Technology |
+|----------|-----------|
+| **Orchestration** | LangGraph + Claude Agent SDK |
+| **Server** | FastAPI + Uvicorn |
+| **Persistence** | SQLite with SQLCipher encryption |
+| **Communication** | Slack Socket Mode |
+| **Models** | Claude Opus/Sonnet/Haiku, Gemini, OpenAI o3 |
+| **ML** | scikit-learn, sentence-transformers, numpy |
+| **IDE** | Neovim Lua plugin |
+| **Security** | SOC 2 Type II controls, JWT auth, Docker sandboxing |
+
+## Quality Standards
+
+NEXUS enforces a **zero-tolerance policy** for all warnings:
+
+- Linter warnings = build failure
+- Test warnings = build failure
+- Security warnings = critical blocker
+- Type violations = build failure
+
+**Zero acceptable warnings. Fix it or don't ship it.**
+
+This policy is enforced at the quality gate in the orchestration pipeline. Only when ALL checks pass can code proceed to review and deployment.

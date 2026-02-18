@@ -81,14 +81,40 @@ The CLI runs inside a hardened `nexus-cli-sandbox` container with strict securit
 
 Every CLI session runs with enterprise-grade isolation:
 
-| Control | Setting |
-|---------|---------|
-| **Filesystem** | Read-only root (`--read-only`) |
-| **Privileges** | No new privileges (`--security-opt=no-new-privileges`) |
-| **Capabilities** | All dropped (`--cap-drop=ALL`) |
-| **Network** | Isolated bridge network |
-| **Resources** | CPU and memory limits enforced |
-| **Workspace** | Ephemeral volume, destroyed on reset |
+<table>
+  <thead>
+    <tr>
+      <th>Control</th>
+      <th>Setting</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Filesystem</strong></td>
+      <td>Read-only root (<code>--read-only</code>)</td>
+    </tr>
+    <tr>
+      <td><strong>Privileges</strong></td>
+      <td>No new privileges (<code>--security-opt=no-new-privileges</code>)</td>
+    </tr>
+    <tr>
+      <td><strong>Capabilities</strong></td>
+      <td>All dropped (<code>--cap-drop=ALL</code>)</td>
+    </tr>
+    <tr>
+      <td><strong>Network</strong></td>
+      <td>Isolated bridge network</td>
+    </tr>
+    <tr>
+      <td><strong>Resources</strong></td>
+      <td>CPU and memory limits enforced</td>
+    </tr>
+    <tr>
+      <td><strong>Workspace</strong></td>
+      <td>Ephemeral volume, destroyed on reset</td>
+    </tr>
+  </tbody>
+</table>
 
 ### Supervisor Loop
 

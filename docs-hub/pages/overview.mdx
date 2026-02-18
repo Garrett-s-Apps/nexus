@@ -46,14 +46,54 @@ Completion & Learning (feedback loop, ML retraining)
 
 NEXUS operates with **56 active agents** organized into 6 hierarchical layers:
 
-| Layer | Count | Models | Responsibility |
-|-------|-------|--------|----------------|
-| **Executive** | 10 | Opus/Sonnet | CEO, C-suite — strategy, budget, quality bar |
-| **Management** | 10 | Opus/Sonnet | Engineering managers, tech leads — architecture, coordination |
-| **Senior** | 12 | Sonnet | Senior engineers — code review, design systems, API contracts |
-| **Implementation** | 15 | Sonnet | Frontend, backend, full-stack, DevOps developers |
-| **Quality** | 6 | Sonnet/Haiku | QA leads, test engineers — quality gates |
-| **Consultant** | 3 | Opus/Gemini/o3 | Security, UX, systems architecture |
+<table>
+  <thead>
+    <tr>
+      <th>Layer</th>
+      <th>Count</th>
+      <th>Models</th>
+      <th>Responsibility</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Executive</strong></td>
+      <td>10</td>
+      <td>Opus/Sonnet</td>
+      <td>CEO, C-suite — strategy, budget, quality bar</td>
+    </tr>
+    <tr>
+      <td><strong>Management</strong></td>
+      <td>10</td>
+      <td>Opus/Sonnet</td>
+      <td>Engineering managers, tech leads — architecture, coordination</td>
+    </tr>
+    <tr>
+      <td><strong>Senior</strong></td>
+      <td>12</td>
+      <td>Sonnet</td>
+      <td>Senior engineers — code review, design systems, API contracts</td>
+    </tr>
+    <tr>
+      <td><strong>Implementation</strong></td>
+      <td>15</td>
+      <td>Sonnet</td>
+      <td>Frontend, backend, full-stack, DevOps developers</td>
+    </tr>
+    <tr>
+      <td><strong>Quality</strong></td>
+      <td>6</td>
+      <td>Sonnet/Haiku</td>
+      <td>QA leads, test engineers — quality gates</td>
+    </tr>
+    <tr>
+      <td><strong>Consultant</strong></td>
+      <td>3</td>
+      <td>Opus/Gemini/o3</td>
+      <td>Security, UX, systems architecture</td>
+    </tr>
+  </tbody>
+</table>
 
 **Dynamic Org Management**: Hire, fire, promote, reassign — all through natural language.
 
@@ -74,23 +114,73 @@ The LangGraph orchestration engine manages a **27-node execution DAG** that hand
 
 NEXUS learns from every execution. Five ML models continuously improve:
 
-| Model | Algorithm | Purpose |
-|-------|-----------|---------|
-| **Agent Router** | TF-IDF + RandomForest | Routes tasks to the best agent based on history |
-| **Cost Predictor** | TF-IDF + RandomForest Regressor | Estimates cost before execution with confidence intervals |
-| **Quality Predictor** | TF-IDF + GradientBoosting | Predicts first-pass approval probability |
-| **Escalation Predictor** | TF-IDF + GradientBoosting | Flags agents at risk of needing escalation |
-| **Directive Similarity** | Sentence-Transformers | Finds semantically similar past work |
+<table>
+  <thead>
+    <tr>
+      <th>Model</th>
+      <th>Algorithm</th>
+      <th>Purpose</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Agent Router</strong></td>
+      <td>TF-IDF + RandomForest</td>
+      <td>Routes tasks to the best agent based on history</td>
+    </tr>
+    <tr>
+      <td><strong>Cost Predictor</strong></td>
+      <td>TF-IDF + RandomForest Regressor</td>
+      <td>Estimates cost before execution with confidence intervals</td>
+    </tr>
+    <tr>
+      <td><strong>Quality Predictor</strong></td>
+      <td>TF-IDF + GradientBoosting</td>
+      <td>Predicts first-pass approval probability</td>
+    </tr>
+    <tr>
+      <td><strong>Escalation Predictor</strong></td>
+      <td>TF-IDF + GradientBoosting</td>
+      <td>Flags agents at risk of needing escalation</td>
+    </tr>
+    <tr>
+      <td><strong>Directive Similarity</strong></td>
+      <td>Sentence-Transformers</td>
+      <td>Finds semantically similar past work</td>
+    </tr>
+  </tbody>
+</table>
 
 ### Cold-Start Design
 
 Every ML feature degrades gracefully when training data is insufficient:
 
-| Feature | Cold Start | After Training |
-|---------|-----------|---------------|
-| Agent routing | Keyword matching | ML routing (after 20+ samples) |
-| Cost prediction | No estimate | Prediction + confidence interval (after 15+ samples) |
-| Directive similarity | No matches | Semantic search across all past directives |
+<table>
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>Cold Start</th>
+      <th>After Training</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Agent routing</td>
+      <td>Keyword matching</td>
+      <td>ML routing (after 20+ samples)</td>
+    </tr>
+    <tr>
+      <td>Cost prediction</td>
+      <td>No estimate</td>
+      <td>Prediction + confidence interval (after 15+ samples)</td>
+    </tr>
+    <tr>
+      <td>Directive similarity</td>
+      <td>No matches</td>
+      <td>Semantic search across all past directives</td>
+    </tr>
+  </tbody>
+</table>
 
 ### Auto-Retraining
 
@@ -100,13 +190,42 @@ After every 10 new task outcomes, all models retrain automatically (throttled to
 
 CLI subprocesses run in one-shot pipe mode with no persistent memory. The RAG system provides cross-session memory by storing knowledge from every interaction:
 
-| Chunk Type | Weight | Source |
-|-----------|--------|--------|
-| `error_resolution` | 1.3x | Past debugging sessions and fixes |
-| `task_outcome` | 1.1x | Task results with agent and cost data |
-| `conversation` | 1.0x | Slack Q&A exchanges |
-| `code_change` | 0.9x | File modifications and their context |
-| `directive_summary` | 0.8x | High-level project outcomes |
+<table>
+  <thead>
+    <tr>
+      <th>Chunk Type</th>
+      <th>Weight</th>
+      <th>Source</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>error_resolution</code></td>
+      <td>1.3x</td>
+      <td>Past debugging sessions and fixes</td>
+    </tr>
+    <tr>
+      <td><code>task_outcome</code></td>
+      <td>1.1x</td>
+      <td>Task results with agent and cost data</td>
+    </tr>
+    <tr>
+      <td><code>conversation</code></td>
+      <td>1.0x</td>
+      <td>Slack Q&A exchanges</td>
+    </tr>
+    <tr>
+      <td><code>code_change</code></td>
+      <td>0.9x</td>
+      <td>File modifications and their context</td>
+    </tr>
+    <tr>
+      <td><code>directive_summary</code></td>
+      <td>0.8x</td>
+      <td>High-level project outcomes</td>
+    </tr>
+  </tbody>
+</table>
 
 ### Retrieval Pipeline
 
@@ -121,15 +240,44 @@ CLI subprocesses run in one-shot pipe mode with no persistent memory. The RAG sy
 
 Seven encrypted SQLite databases store all system state:
 
-| Database | Purpose |
-|----------|---------|
-| `registry.db` | Agent configurations, org structure, circuit breakers |
-| `memory.db` | Directives, tasks, events, peer decisions |
-| `cost.db` | Per-API-call token usage and costs |
-| `kpi.db` | Productivity and quality metrics |
-| `ml.db` | Task outcomes, embeddings, model artifacts |
-| `knowledge.db` | RAG knowledge chunks (dedicated for cosine similarity) |
-| `sessions.db` | CLI session state, thread mapping, async history |
+<table>
+  <thead>
+    <tr>
+      <th>Database</th>
+      <th>Purpose</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>registry.db</code></td>
+      <td>Agent configurations, org structure, circuit breakers</td>
+    </tr>
+    <tr>
+      <td><code>memory.db</code></td>
+      <td>Directives, tasks, events, peer decisions</td>
+    </tr>
+    <tr>
+      <td><code>cost.db</code></td>
+      <td>Per-API-call token usage and costs</td>
+    </tr>
+    <tr>
+      <td><code>kpi.db</code></td>
+      <td>Productivity and quality metrics</td>
+    </tr>
+    <tr>
+      <td><code>ml.db</code></td>
+      <td>Task outcomes, embeddings, model artifacts</td>
+    </tr>
+    <tr>
+      <td><code>knowledge.db</code></td>
+      <td>RAG knowledge chunks (dedicated for cosine similarity)</td>
+    </tr>
+    <tr>
+      <td><code>sessions.db</code></td>
+      <td>CLI session state, thread mapping, async history</td>
+    </tr>
+  </tbody>
+</table>
 
 All databases are encrypted with **AES-256-CBC** using SQLCipher with **PBKDF2 key derivation** (256,000 iterations).
 
@@ -151,16 +299,48 @@ Full API at `localhost:4200` with endpoints for messaging, ML status, agent stat
 
 ## Tech Stack
 
-| Category | Technology |
-|----------|-----------|
-| **Orchestration** | LangGraph + Claude Agent SDK |
-| **Server** | FastAPI + Uvicorn |
-| **Persistence** | SQLite with SQLCipher encryption |
-| **Communication** | Slack Socket Mode |
-| **Models** | Claude Opus/Sonnet/Haiku, Gemini, OpenAI o3 |
-| **ML** | scikit-learn, sentence-transformers, numpy |
-| **IDE** | Neovim Lua plugin |
-| **Security** | AES-256 encryption, JWT auth, Docker sandboxing |
+<table>
+  <thead>
+    <tr>
+      <th>Category</th>
+      <th>Technology</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Orchestration</strong></td>
+      <td>LangGraph + Claude Agent SDK</td>
+    </tr>
+    <tr>
+      <td><strong>Server</strong></td>
+      <td>FastAPI + Uvicorn</td>
+    </tr>
+    <tr>
+      <td><strong>Persistence</strong></td>
+      <td>SQLite with SQLCipher encryption</td>
+    </tr>
+    <tr>
+      <td><strong>Communication</strong></td>
+      <td>Slack Socket Mode</td>
+    </tr>
+    <tr>
+      <td><strong>Models</strong></td>
+      <td>Claude Opus/Sonnet/Haiku, Gemini, OpenAI o3</td>
+    </tr>
+    <tr>
+      <td><strong>ML</strong></td>
+      <td>scikit-learn, sentence-transformers, numpy</td>
+    </tr>
+    <tr>
+      <td><strong>IDE</strong></td>
+      <td>Neovim Lua plugin</td>
+    </tr>
+    <tr>
+      <td><strong>Security</strong></td>
+      <td>AES-256 encryption, JWT auth, Docker sandboxing</td>
+    </tr>
+  </tbody>
+</table>
 
 ## Quality Standards
 

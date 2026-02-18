@@ -25,13 +25,17 @@ export default function Home() {
               A 56-agent autonomous software engineering organization. Tell it what to build. It figures out the rest.
             </p>
             <Row gap="md" justify="center">
-              <Link href="/overview" className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg font-semibold transition-colors">
+              <Link href="/install" className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg font-semibold transition-colors">
+                Install Now
+              </Link>
+              <Link href="/overview" className="border border-gray-400 hover:border-white text-gray-300 hover:text-white px-8 py-3 rounded-lg font-semibold transition-colors">
                 Get Started
               </Link>
               <Link href="/comparisons" className="border border-gray-400 hover:border-white text-gray-300 hover:text-white px-8 py-3 rounded-lg font-semibold transition-colors">
                 vs Competitors
               </Link>
             </Row>
+            <code className="text-gray-400 text-lg bg-gray-800 px-4 py-2 rounded-lg">npx buildwithnexus init</code>
           </Stack>
         </Center>
 
@@ -59,6 +63,13 @@ export default function Home() {
 
         {/* Navigation Grid */}
         <Grid cols={3} gap="md" className="max-w-6xl mx-auto" responsive minChildWidth="280px">
+          <Link href="/install" className="group bg-blue-900 hover:bg-blue-800 rounded-lg transition-colors border border-blue-700">
+            <Stack gap="sm" padding="lg">
+              <h3 className="text-lg font-semibold text-white group-hover:text-blue-400">Install</h3>
+              <p className="text-gray-300 text-sm">npm package, quick start, commands, and DLP security</p>
+            </Stack>
+          </Link>
+
           <Link href="/overview" className="group bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors">
             <Stack gap="sm" padding="lg">
               <h3 className="text-lg font-semibold text-white group-hover:text-blue-400">System Overview</h3>

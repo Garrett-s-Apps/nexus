@@ -5,6 +5,7 @@ import { Stack, Row, Spread, Box, Divider } from './layoutkit'
 
 const navItems = [
   { href: '/', label: 'Home' },
+  { href: '/install', label: 'Install' },
   { href: '/overview', label: 'Overview' },
   { href: '/comparisons', label: 'vs Competitors' },
   { href: '/plugin', label: 'Plugin' },

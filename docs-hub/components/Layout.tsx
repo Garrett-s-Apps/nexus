@@ -9,6 +9,7 @@ const navItems = [
   { href: '/comparisons', label: 'vs Competitors' },
   { href: '/plugin', label: 'Plugin' },
   { href: '/sdk', label: 'SDK' },
+  { href: '/cli', label: 'CLI' },
   { href: '/use-cases', label: 'Use Cases' },
   { href: '/security', label: 'Security' },
 ]

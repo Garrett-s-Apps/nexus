@@ -52,7 +52,7 @@ export default function Home() {
           <Stack gap="md" padding="lg" className="bg-gray-800 rounded-lg">
             <h3 className="text-xl font-bold text-white">Enterprise Security</h3>
             <p className="text-gray-300">
-              SOC 2 Type II controls, encrypted databases, Docker sandboxing, JWT authentication, and comprehensive audit trails.
+              Encrypted databases, Docker sandboxing, JWT authentication, and comprehensive audit trails.
             </p>
           </Stack>
         </Grid>
@@ -97,7 +97,7 @@ export default function Home() {
           <Link href="/security" className="group bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors">
             <Stack gap="sm" padding="lg">
               <h3 className="text-lg font-semibold text-white group-hover:text-blue-400">Security & Compliance</h3>
-              <p className="text-gray-300 text-sm">SOC 2, encryption, sandboxing, and enterprise controls</p>
+              <p className="text-gray-300 text-sm">Encryption, sandboxing, and enterprise controls</p>
             </Stack>
           </Link>
         </Grid>
@@ -127,8 +127,8 @@ export default function Home() {
               </Center>
               <Center>
                 <Stack gap="xs" align="center">
-                  <div className="text-4xl font-bold text-orange-400">SOC 2</div>
-                  <div className="text-gray-300">Type II Compliance</div>
+                  <div className="text-4xl font-bold text-orange-400">100%</div>
+                  <div className="text-gray-300">Encrypted at Rest</div>
                 </Stack>
               </Center>
             </Grid>

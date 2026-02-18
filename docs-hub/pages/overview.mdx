@@ -149,6 +149,42 @@ Full API at `localhost:4200` with endpoints for messaging, ML status, agent stat
 ### CLI
 `python nexus_cli.py status|talk|message` for terminal-based interaction.
 
+## NEXUS CLI Toolkit
+
+The [NEXUS Playground](https://github.com/Garrett-s-Apps/nexus-playground) includes a standalone code analysis CLI built in Python. It runs inside an isolated Docker container as an autonomous agent that can build, analyze, and evolve continuously.
+
+### Available Commands
+
+| Command | Description |
+|---------|-------------|
+| `./nexus analyze` | Run complexity analysis on your codebase |
+| `./nexus analyze --json` | Output analysis as JSON for piping |
+| `./nexus advise` | Generate improvement recommendations from analysis |
+| `./nexus refactor --dir src/` | Find refactoring opportunities in a directory |
+| `./nexus stats` | Repository analytics and contributor activity |
+| `./nexus track save --source analyze` | Save a metrics snapshot |
+| `./nexus track show-trend --source analyze` | Display metrics trends over time |
+
+### Claude Code Plugin Integration
+
+```bash
+# Install as Claude Code plugin
+claude plugin install nexus-playground
+
+# Plugin commands
+/nexus-playground:start    # Start the autonomous playground container
+/nexus-playground:stop     # Stop the playground
+/nexus-playground:status   # Show status and recent activity
+/nexus-playground:logs     # View live playground logs
+/nexus-playground:exec     # Execute a command inside the container
+/nexus-playground:workspace # Browse workspace files
+/nexus-playground:reset    # Reset playground (delete container and volumes)
+```
+
+### Safety
+
+The playground runs with complete host isolation — read-only filesystem, no network access to host, no GitHub pushes, and separate API keys. All effects are limited to the Docker container.
+
 ## Tech Stack
 
 | Category | Technology |
@@ -160,7 +196,7 @@ Full API at `localhost:4200` with endpoints for messaging, ML status, agent stat
 | **Models** | Claude Opus/Sonnet/Haiku, Gemini, OpenAI o3 |
 | **ML** | scikit-learn, sentence-transformers, numpy |
 | **IDE** | Neovim Lua plugin |
-| **Security** | SOC 2 Type II controls, JWT auth, Docker sandboxing |
+| **Security** | AES-256 encryption, JWT auth, Docker sandboxing |
 
 ## Quality Standards
 

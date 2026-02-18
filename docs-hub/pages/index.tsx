@@ -44,7 +44,7 @@ export default function Home() {
           <Stack gap="md" padding="lg" className="bg-gray-800 rounded-lg">
             <h3 className="text-xl font-bold text-white">Autonomous Organization</h3>
             <p className="text-gray-300">
-              CEO, VPs, managers, senior engineers, specialists — a complete org chart with 56 agents that plan, execute, and learn autonomously.
+              You are the CEO. NEXUS provides a Chief of Staff, VPs, managers, and 56 specialist agents that plan, execute, and learn autonomously on your behalf.
             </p>
           </Stack>
           <Stack gap="md" padding="lg" className="bg-gray-800 rounded-lg">

@@ -113,6 +113,29 @@ export default function Home() {
           </Link>
         </Grid>
 
+        {/* Ecosystem */}
+        <Stack gap="lg" className="mt-16 mb-16">
+          <Center>
+            <h2 className="text-3xl font-bold text-white">Ecosystem</h2>
+          </Center>
+          <Grid cols={2} gap="md" responsive minChildWidth="280px">
+            <a href="https://layoutkit.dev" target="_blank" rel="noopener noreferrer" className="group bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors border border-gray-700 hover:border-blue-500">
+              <Stack gap="sm" padding="lg">
+                <h3 className="text-lg font-semibold text-white group-hover:text-blue-400">LayoutKit</h3>
+                <p className="text-gray-300 text-sm">10 semantic React components that compile to Tailwind CSS. The layout system powering this site.</p>
+                <code className="text-xs text-gray-400 bg-gray-900 px-2 py-1 rounded w-fit">npm install layoutkit-css</code>
+              </Stack>
+            </a>
+            <a href="https://www.npmjs.com/package/buildwithnexus" target="_blank" rel="noopener noreferrer" className="group bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors border border-gray-700 hover:border-blue-500">
+              <Stack gap="sm" padding="lg">
+                <h3 className="text-lg font-semibold text-white group-hover:text-blue-400">NEXUS CLI</h3>
+                <p className="text-gray-300 text-sm">Autonomous AI runtime with triple-nested VM isolation. One command to bootstrap.</p>
+                <code className="text-xs text-gray-400 bg-gray-900 px-2 py-1 rounded w-fit">npx buildwithnexus init</code>
+              </Stack>
+            </a>
+          </Grid>
+        </Stack>
+
         {/* Stats Section */}
         <Center className="mt-16">
           <Stack gap="lg" align="center">

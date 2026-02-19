@@ -898,7 +898,7 @@ async def start_slack_listener():
                     await upload_file_to_slack(
                         web_client, channel_id, result["filepath"],
                         title=result.get("title", "Document"),
-                        comment=f"Generated {result['format'].upper()}: *{result.get('title', 'Document')}*",
+                        comment=f"Generated {result['format'].upper()}: *{result.get('title', 'Document')}*\n`{result['format'].upper()} saved to {result['filepath']}`",
                         thread_ts=thread_ts)
                     try:
                         ingest_conversation(thread_ts, text, f"Generated {result['format']}: {result.get('title', 'Document')}")

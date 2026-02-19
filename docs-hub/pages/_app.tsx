@@ -12,6 +12,9 @@ export default function App({ Component, pageProps }: AppProps) {
     <>
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <link rel="icon" href="/favicon.ico" />
+      <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+      <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+      <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
       <meta name="keywords" content="NEXUS, buildwithnexus, multi-agent orchestration, autonomous AI, interactive CLI, real-time agent streaming, Claude Code plugin, Python SDK, enterprise security, Docker isolation, npm install buildwithnexus" />
       <meta property="og:site_name" content="Build With NEXUS" />
       <meta property="og:type" content="website" />

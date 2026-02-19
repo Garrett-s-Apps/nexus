@@ -252,10 +252,13 @@ async def handle_message(req: MessageRequest, background_tasks: BackgroundTasks)
         doc_desc = tool_input.get("description", req.message)
         from src.documents.generator import generate_document
         result = await generate_document(doc_desc, {"format": doc_type, "title": doc_desc[:100]})
+        fmt_upper = result.get("format", "").upper()
+        filepath_msg = result.get("filepath", "")
         return {
             "session_id": session_id,
             "category": "DOCUMENT",
             "result": result,
+            "response": f"{fmt_upper} saved to {filepath_msg}" if filepath_msg else None,
         }
 
     if tool == "start_directive":

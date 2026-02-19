@@ -1,318 +1,242 @@
-# NEXUS CLI
+# Interactive CLI
 
-The NEXUS CLI is a fully isolated, Docker-based autonomous playground where NEXUS agents operate independently — building, testing, and committing code in complete isolation with zero host access.
+The NEXUS interactive shell is a Claude Code-like terminal experience that gives you a live REPL connected to the full 56-agent engine. Type natural language, slash commands, or questions — the shell streams agent activity back to you in real time.
 
-## What It Does
-
-The CLI spins up a hardened Docker container with a supervisor loop that lets agents work autonomously. Agents choose what to build next, execute their plans, validate the results, and loop continuously — all within a sandboxed environment that can never touch your host machine.
-
-**Key capabilities**:
-- Autonomous agent execution with continuous supervisor loop
-- Complete Docker isolation (read-only filesystem, dropped capabilities, no new privileges)
-- Self-modifying agent behavior — agents evolve their approach based on results
-- Zero host access — all work happens inside the container
-- Git integration for committing completed work
-
-## Quick Start
-
-### Prerequisites
-
-- Docker installed and running
-- NEXUS server running (`./start.sh` or `python3 -m src.main`)
-
-### Launch the Playground
+## Launching the Shell
 
 ```bash
-# Start the autonomous playground container
-/nexus-playground:start
-
-# Check status and recent activity
-/nexus-playground:status
-
-# View live logs
-/nexus-playground:logs
+buildwithnexus          # launch interactive shell (no args)
+buildwithnexus shell    # explicit shell subcommand
 ```
 
-### Interact with the Playground
+Once connected, you see:
 
-```bash
-# Execute a command inside the container
-/nexus-playground:exec "ls -la /workspace"
-
-# Browse workspace files
-/nexus-playground:workspace
-
-# Stop the playground
-/nexus-playground:stop
-
-# Reset (delete container and volumes)
-/nexus-playground:reset
 ```
+nexus ❯ _
+```
+
+Type anything in natural language and the engine routes it through the full orchestration pipeline.
+
+## The REPL Prompt
+
+The `nexus ❯` prompt accepts:
+
+- **Natural language directives** — "Build me a REST API for user auth"
+- **Questions** — "What agents are currently running?"
+- **Slash commands** — `/status`, `/cost`, `/agents`, etc.
+
+Input is streamed to the engine via SSH tunnel and responses render as agent activity arrives over SSE.
+
+## Slash Commands
+
+<table>
+  <thead>
+    <tr>
+      <th>Command</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>/brainstorm [idea]</code></td>
+      <td>Start a brainstorm session with the Chief of Staff — explores the idea, surfaces risks, and outlines an execution plan</td>
+    </tr>
+    <tr>
+      <td><code>/status</code></td>
+      <td>Show VM, Docker, server, and tunnel health at a glance</td>
+    </tr>
+    <tr>
+      <td><code>/logs</code></td>
+      <td>Stream live server logs (auto-redacted via DLP)</td>
+    </tr>
+    <tr>
+      <td><code>/agents</code></td>
+      <td>List all 56 agents with role, model, and current state</td>
+    </tr>
+    <tr>
+      <td><code>/cost</code></td>
+      <td>Show token usage and costs per agent, project, and model</td>
+    </tr>
+    <tr>
+      <td><code>/ssh</code></td>
+      <td>Drop into a direct SSH session inside the VM</td>
+    </tr>
+    <tr>
+      <td><code>/help</code></td>
+      <td>Show all available commands and usage</td>
+    </tr>
+    <tr>
+      <td><code>/exit</code></td>
+      <td>Exit the interactive shell</td>
+    </tr>
+  </tbody>
+</table>
+
+## Real-Time Agent Streaming
+
+When you send a directive, the shell doesn't wait for a final answer — it streams agent activity as it happens:
+
+```
+nexus ❯ build a user authentication service
+
+  Chief of Staff    Reviewing directive and assembling team...
+  VP Engineering    Designing authentication architecture...
+  Tech Lead         Decomposing into 4 parallel workstreams...
+  Backend Dev       Implementing JWT token service...
+  Backend Dev       Writing password hashing utilities...
+  Test Engineer     Writing auth unit tests...
+  Senior Engineer   Code review: auth service...
+  ✓ Complete        Committed to nexus/self-update in 4m 12s
+```
+
+Each line appears as the corresponding agent completes its work. You see the org chart executing in real time.
+
+## Agent Role Colors
+
+The shell uses color coding to distinguish agent layers at a glance:
+
+<table>
+  <thead>
+    <tr>
+      <th>Color</th>
+      <th>Layer</th>
+      <th>Examples</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Cyan</strong></td>
+      <td>Executive</td>
+      <td>Chief of Staff, CPO, CFO, CTO</td>
+    </tr>
+    <tr>
+      <td><strong>Blue</strong></td>
+      <td>Management</td>
+      <td>VP Engineering, Engineering Managers, Tech Leads</td>
+    </tr>
+    <tr>
+      <td><strong>Yellow</strong></td>
+      <td>Senior</td>
+      <td>Senior Engineers, Code Reviewers</td>
+    </tr>
+    <tr>
+      <td><strong>White</strong></td>
+      <td>Implementation</td>
+      <td>Frontend, Backend, Full-Stack, DevOps</td>
+    </tr>
+    <tr>
+      <td><strong>Green</strong></td>
+      <td>Quality</td>
+      <td>QA Leads, Test Engineers</td>
+    </tr>
+    <tr>
+      <td><strong>Magenta</strong></td>
+      <td>Consultant</td>
+      <td>Security Architect, UX Consultant</td>
+    </tr>
+  </tbody>
+</table>
 
 ## Architecture
 
-### Docker Container
-
-The CLI runs inside a hardened `nexus-cli-sandbox` container with strict security controls:
-
 ```
-┌─────────────────────────────────────┐
-│         nexus-cli-sandbox           │
-│                                     │
-│  ┌─────────────────────────────┐    │
-│  │     Supervisor Loop         │    │
-│  │  ┌───────┐  ┌───────────┐  │    │
-│  │  │ Agent │→│ Execution  │  │    │
-│  │  │Select │  │  Engine    │  │    │
-│  │  └───────┘  └───────────┘  │    │
-│  │       ↑          │         │    │
-│  │       └──────────┘         │    │
-│  │      (feedback loop)       │    │
-│  └─────────────────────────────┘    │
-│                                     │
-│  /workspace/  ← agent work area     │
-│  /tools/      ← available tooling   │
-└─────────────────────────────────────┘
-       │
-       ✕  No host access
+User types in shell
+        |
+        v
+  shell.ts (REPL loop)
+        |
+        v
+  POST /message  ←── SSH port-forward (localhost:4200)
+        |
+        v
+  NEXUS Engine (orchestration pipeline)
+        |
+        v
+  GET /events (SSE stream)
+        |
+        v
+  REPL renders agent lines as they arrive
 ```
 
-### Security Controls
+The SSH tunnel ensures all traffic stays local — the engine is never exposed to the network. The SSE stream uses `text/event-stream` and pushes one JSON event per agent action. The shell renders each event incrementally so you see the pipeline executing live rather than waiting for batch output.
 
-Every CLI session runs with enterprise-grade isolation:
+## CLI vs Engine vs Plugin vs SDK
+
+<table>
+  <thead>
+    <tr>
+      <th>Component</th>
+      <th>What It Is</th>
+      <th>Install</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>CLI</strong></td>
+      <td>The <code>buildwithnexus</code> npm package. Manages VM lifecycle, runs the interactive shell, handles brainstorm sessions. Connects to the engine via SSH tunnel. Zero-config security with DLP, HMAC integrity, and audit trails.</td>
+      <td><code>npm install -g buildwithnexus</code></td>
+    </tr>
+    <tr>
+      <td><strong>Engine</strong></td>
+      <td>The autonomous orchestration server running inside the VM at <code>:4200</code>. Houses all 56 agents, the ML pipeline, encrypted databases, and Docker sandboxing. Exposes a RESTful API: <code>/message</code>, <code>/events</code> (SSE), <code>/agents</code>, <code>/cost</code>, <code>/health</code>, <code>/status</code>.</td>
+      <td>Deployed automatically by <code>buildwithnexus init</code></td>
+    </tr>
+    <tr>
+      <td><strong>Plugin</strong></td>
+      <td>The <code>nexus-plugin</code> for Claude Code. Extends Claude Code with NEXUS skills and organizational agent structure. Skills: <code>/nexus</code>, <code>/brainstorm</code>, <code>/deploy</code>, and more.</td>
+      <td>Claude Code plugin registry</td>
+    </tr>
+    <tr>
+      <td><strong>SDK</strong></td>
+      <td>The <code>nexus-sdk</code> Python package. A multi-agent orchestration library with swappable AI providers. Build your own agent systems using NEXUS patterns with adapters for Anthropic, OpenAI, and Google.</td>
+      <td><code>pip install nexus-sdk</code></td>
+    </tr>
+  </tbody>
+</table>
+
+Use the **CLI** when you want a zero-config terminal experience backed by the full engine. Use the **Plugin** when you live in Claude Code. Use the **SDK** when you want to build your own agent systems with NEXUS patterns.
+
+## Security Model
+
+The interactive shell inherits all security controls from the CLI layer:
 
 <table>
   <thead>
     <tr>
       <th>Control</th>
-      <th>Setting</th>
+      <th>Detail</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <td><strong>Filesystem</strong></td>
-      <td>Read-only root (<code>--read-only</code>)</td>
-    </tr>
-    <tr>
-      <td><strong>Privileges</strong></td>
-      <td>No new privileges (<code>--security-opt=no-new-privileges</code>)</td>
-    </tr>
-    <tr>
-      <td><strong>Capabilities</strong></td>
-      <td>All dropped (<code>--cap-drop=ALL</code>)</td>
+      <td><strong>VM Isolation</strong></td>
+      <td>Triple-nested: host → QEMU → Docker → nested KVM. The engine never runs on your host.</td>
     </tr>
     <tr>
       <td><strong>Network</strong></td>
-      <td>Isolated bridge network</td>
+      <td>All traffic via SSH port-forward. The engine is never exposed to the network.</td>
     </tr>
     <tr>
-      <td><strong>Resources</strong></td>
-      <td>CPU and memory limits enforced</td>
+      <td><strong>DLP</strong></td>
+      <td>Secret detection, shell escaping, and output redaction on every data path.</td>
     </tr>
     <tr>
-      <td><strong>Workspace</strong></td>
-      <td>Ephemeral volume, destroyed on reset</td>
+      <td><strong>File Integrity</strong></td>
+      <td>HMAC-SHA256 tamper detection on key files.</td>
+    </tr>
+    <tr>
+      <td><strong>Audit Trail</strong></td>
+      <td>10 MB rotating log of every sensitive operation with timestamps.</td>
+    </tr>
+    <tr>
+      <td><strong>Databases</strong></td>
+      <td>AES-256-CBC encryption via SQLCipher with PBKDF2 key derivation.</td>
+    </tr>
+    <tr>
+      <td><strong>JWT Auth</strong></td>
+      <td>Tokens bound to client fingerprint (User-Agent + IP). No token reuse across clients.</td>
     </tr>
   </tbody>
 </table>
 
-### Supervisor Loop
-
-The autonomous supervisor operates in a continuous cycle:
-
-1. **Observe**: Agent assesses current workspace state
-2. **Plan**: Decides what to build or fix next
-3. **Execute**: Runs the plan using available tools (Python, Node.js, shell)
-4. **Validate**: Checks results, runs tests if applicable
-5. **Commit**: Saves work to Git inside the container
-6. **Loop**: Returns to step 1 with updated context
-
-The agent maintains memory across loop iterations, learning from successes and failures within the session.
-
-## Commands Reference
-
-### /nexus-playground:start
-
-Starts the autonomous playground container. Creates the Docker container if it doesn't exist, or resumes a stopped one.
-
-```bash
-/nexus-playground:start
-```
-
-**What happens**:
-- Pulls/builds the `nexus-cli-sandbox` image if needed
-- Creates container with security hardening
-- Starts the supervisor loop
-- Agent begins autonomous work
-
-### /nexus-playground:status
-
-Shows playground status including container state, resource usage, and recent agent activity.
-
-```bash
-/nexus-playground:status
-```
-
-**Output includes**:
-- Container running state and uptime
-- CPU and memory usage
-- Recent agent actions and outcomes
-- Workspace file count and size
-
-### /nexus-playground:logs
-
-Streams live logs from the playground container, showing agent decisions and execution in real time.
-
-```bash
-/nexus-playground:logs
-```
-
-### /nexus-playground:exec
-
-Execute a command inside the running playground container.
-
-```bash
-# List workspace contents
-/nexus-playground:exec "ls -la /workspace"
-
-# Run a Python script the agent created
-/nexus-playground:exec "python3 /workspace/agent_project/main.py"
-
-# Check Git history
-/nexus-playground:exec "cd /workspace && git log --oneline -10"
-```
-
-### /nexus-playground:workspace
-
-Browse files in the agent's workspace directory.
-
-```bash
-/nexus-playground:workspace
-```
-
-### /nexus-playground:stop
-
-Stops the playground container without destroying it. The container and workspace persist for later resumption.
-
-```bash
-/nexus-playground:stop
-```
-
-### /nexus-playground:reset
-
-Fully resets the playground — deletes the container and all volumes. Use this for a clean start.
-
-```bash
-/nexus-playground:reset
-```
-
-## Use Cases
-
-### Autonomous Prototyping
-
-Let the agent build a prototype while you focus on other work:
-
-```
-/nexus-playground:start
-```
-
-The agent will autonomously:
-- Scaffold a project structure
-- Implement core functionality
-- Write and run tests
-- Iterate on failures
-- Commit working code
-
-Check back later with `/nexus-playground:status` to see what it built.
-
-### Safe Experimentation
-
-Test risky operations without affecting your host environment:
-
-```bash
-# Agent can install packages, modify system configs, run arbitrary code
-# All contained within the Docker sandbox
-/nexus-playground:exec "pip install experimental-package && python -c 'import experimental_package; experimental_package.run()'"
-```
-
-### Continuous Development
-
-The supervisor loop means agents don't stop after one task. They continuously:
-- Identify improvements to their own code
-- Refactor for better patterns
-- Add test coverage
-- Optimize performance
-
-This creates a self-improving codebase inside the container.
-
-## Configuration
-
-### Docker Image
-
-The CLI sandbox image is built from `docker/cli-sandbox/`:
-
-```
-docker/
-  cli-sandbox/
-    Dockerfile       # Base image with Python, Node.js, Git
-    entrypoint.sh    # Supervisor loop entry point
-```
-
-### Resource Limits
-
-Configure container resources via environment variables:
-
-```bash
-# CPU limit (number of cores)
-export NEXUS_CLI_CPU_LIMIT=2
-
-# Memory limit
-export NEXUS_CLI_MEMORY_LIMIT=2g
-
-# Workspace size limit
-export NEXUS_CLI_WORKSPACE_SIZE=5g
-```
-
-### Agent Behavior
-
-The supervisor loop behavior can be tuned:
-
-```bash
-# Loop interval (seconds between iterations)
-export NEXUS_CLI_LOOP_INTERVAL=30
-
-# Maximum iterations before pause
-export NEXUS_CLI_MAX_ITERATIONS=100
-
-# Auto-commit threshold (commit after N successful changes)
-export NEXUS_CLI_AUTO_COMMIT_THRESHOLD=5
-```
-
-## Troubleshooting
-
-### Container won't start
-
-- Verify Docker is running: `docker info`
-- Check for port conflicts: `docker ps`
-- Ensure the image exists: `docker images | grep nexus-cli-sandbox`
-- Rebuild if needed: `docker build -t nexus-cli-sandbox docker/cli-sandbox/`
-
-### Agent stuck in loop
-
-- Check logs: `/nexus-playground:logs`
-- The agent may be retrying a failing operation
-- Reset the playground: `/nexus-playground:reset`
-
-### High resource usage
-
-- Check container stats: `docker stats nexus-cli-sandbox`
-- Adjust resource limits in configuration
-- Stop and restart with lower limits
-
-### Workspace full
-
-- Browse workspace: `/nexus-playground:workspace`
-- Reset for clean start: `/nexus-playground:reset`
-- Increase workspace size limit in configuration
-
-The NEXUS CLI provides a safe, isolated environment for autonomous agent execution. It's where agents prove they can build real software without any human intervention or host access.
+All controls are active by default. No configuration required.

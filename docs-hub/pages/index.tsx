@@ -9,6 +9,17 @@ export default function Home() {
         <title>NEXUS - Enterprise Multi-Agent Orchestration System</title>
         <meta name="description" content="Autonomous software engineering organization with 56 agents. Tell it what to build. It figures out the rest." />
         <link rel="icon" href="/favicon.ico" />
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify({
+          "@context": "https://schema.org",
+          "@type": "SoftwareApplication",
+          "name": "NEXUS",
+          "applicationCategory": "DeveloperApplication",
+          "operatingSystem": "macOS, Linux",
+          "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+          "description": "Enterprise multi-agent orchestration system with 56 autonomous agents, interactive CLI, and real-time agent streaming.",
+          "url": "https://buildwithnexus.dev",
+          "downloadUrl": "https://www.npmjs.com/package/buildwithnexus"
+        }) }} />
       </Head>
 
       <Box padding="xl" className="max-w-[1200px] mx-auto w-full">
@@ -35,7 +46,7 @@ export default function Home() {
                 vs Competitors
               </Link>
             </Row>
-            <code className="text-gray-400 text-lg bg-gray-800 px-4 py-2 rounded-lg">npx buildwithnexus init</code>
+            <code className="text-gray-400 text-lg bg-gray-800 px-4 py-2 rounded-lg">buildwithnexus&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; # launch interactive shell</code>
           </Stack>
         </Center>
 
@@ -67,6 +78,13 @@ export default function Home() {
             <Stack gap="sm" padding="lg">
               <h3 className="text-lg font-semibold text-white group-hover:text-blue-400">Install</h3>
               <p className="text-gray-300 text-sm">npm package, quick start, commands, and DLP security</p>
+            </Stack>
+          </Link>
+
+          <Link href="/cli" className="group bg-indigo-900 hover:bg-indigo-800 rounded-lg transition-colors border border-indigo-700">
+            <Stack gap="sm" padding="lg">
+              <h3 className="text-lg font-semibold text-white group-hover:text-indigo-400">Interactive CLI</h3>
+              <p className="text-gray-300 text-sm">Claude Code-like terminal with real-time agent streaming</p>
             </Stack>
           </Link>
 

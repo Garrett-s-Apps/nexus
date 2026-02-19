@@ -106,9 +106,9 @@ a {
   margin: 1.5rem 0;
   background-color: #1f2937;
   border-radius: 0.75rem;
-  overflow: hidden;
+  overflow-x: auto;
   border: 1px solid #374151;
-  display: table;
+  display: block;
 }
 
 .prose thead {
@@ -232,7 +232,6 @@ a {
   .prose th,
   .prose td {
     padding: 0.5rem 0.625rem;
-    white-space: nowrap;
   }
 
   .prose th {

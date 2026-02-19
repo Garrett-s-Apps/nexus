@@ -29,21 +29,28 @@ Input is streamed to the engine via SSH tunnel and responses render as agent act
 
 ## /99 — AI Pair Programming
 
-Inspired by ThePrimeagen's [99 Neovim agent](https://github.com/ThePrimeagen/99), adapted for NEXUS and the terminal.
-NOT a Neovim plugin — `/99` runs inside Claude Code and as a `buildwithnexus` CLI command.
+Inspired by ThePrimeagen's [99 Neovim agent](https://github.com/ThePrimeagen/99), adapted for NEXUS. Use `/99` as a slash command inside the interactive shell — it launches a pair-programming session where the full NEXUS agent org executes your instructions in real time.
+
+### Usage (inside the interactive shell)
+
+First launch the shell, then use `/99` as a slash command:
 
 ```bash
-buildwithnexus 99                              # interactive pair-programming session
-buildwithnexus 99 "refactor the auth module"   # one-shot instruction
-buildwithnexus 99 --edit src/auth/login.ts     # AI-assisted file edit
-buildwithnexus 99 --search "refresh token"     # contextual codebase search
-buildwithnexus 99 --debug                      # debug current issue
+buildwithnexus          # launch the interactive shell
+```
+
+```
+nexus ❯ /99                                      # start pair-programming session
+nexus ❯ /99 refactor the auth module              # one-shot instruction
+nexus ❯ /99 --edit src/auth/login.ts              # AI-assisted file edit
+nexus ❯ /99 --search "refresh token"              # contextual codebase search
+nexus ❯ /99 --debug                               # debug current issue
 ```
 
 When you send an instruction, the full NEXUS agent org executes it in real time:
 
 ```
-99 ❯ add refresh token rotation to the auth service
+nexus ❯ /99 add refresh token rotation to the auth service
 
   Chief of Staff    Routing to engineering team...
   Tech Lead         Analyzing auth module structure...
@@ -56,10 +63,12 @@ When you send an instruction, the full NEXUS agent org executes it in real time:
 
 ### Prefix Syntax
 
-- `@<filepath>` — attach a file as context: `@src/auth.ts refactor to use refresh tokens`
-- `#<rulefile>` — load a rules file: `#security-rules add input validation`
+Attach files and rules to any `/99` instruction:
 
-Multiple prefixes combine freely: `@src/auth.ts @src/db.ts #security-rules add rate limiting`
+- `@<filepath>` — attach a file as context: `/99 @src/auth.ts refactor to use refresh tokens`
+- `#<rulefile>` — load a rules file: `/99 #security-rules add input validation`
+
+Multiple prefixes combine freely: `/99 @src/auth.ts @src/db.ts #security-rules add rate limiting`
 
 ### Context Auto-Loading
 

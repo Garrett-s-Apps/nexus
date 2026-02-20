@@ -62,8 +62,8 @@ def sanitize_cli_message(message: str) -> str:
 
 CLAUDE_CMD = "claude"
 DOCKER_CMD = "docker"
-IDLE_TIMEOUT = 1800  # 30 minutes
-DEFAULT_TIMEOUT = 900  # 15 minutes
+IDLE_TIMEOUT = 1800  # 30 minutes — session cleanup after inactivity
+STALL_TIMEOUT = 900  # 15 minutes of silence = genuinely stuck (no wall-clock limit)
 STREAM_BUFFER_LIMIT = 10 * 1024 * 1024  # 10 MB — stream-json lines can exceed asyncio's 64KB default
 
 # Map CLI tool names to human-readable Slack status
@@ -161,7 +161,7 @@ class CLISession:
             "-v", f"{self.project_path}:/workspace:ro",
             "-v", f"{self.project_path}/output:/workspace/output:rw",
             *env_args,
-            "-e", f"NEXUS_CLI_TIMEOUT={DEFAULT_TIMEOUT}",
+            "-e", f"NEXUS_CLI_TIMEOUT={STALL_TIMEOUT}",
             "--read-only",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=100m",  # noqa: S108 - Docker tmpfs mount
             "--security-opt=no-new-privileges",
@@ -193,7 +193,7 @@ class CLISession:
     async def send(
         self,
         message: str,
-        timeout: int = DEFAULT_TIMEOUT,
+        timeout: int = STALL_TIMEOUT,
         on_progress: ProgressCallback | None = None,
     ) -> TaskResult:
         """Send a message and stream progress to Slack.
@@ -242,7 +242,7 @@ class CLISession:
                 tools_log: list[str] = []  # ordered list of tool names used
                 files_touched: list[str] = []  # file paths read/written/edited
                 raw_lines: list[str] = []
-                deadline = time.monotonic() + timeout
+                last_output_time = time.monotonic()
 
                 while True:
                     # Check cancellation
@@ -257,31 +257,34 @@ class CLISession:
                             error_type="cancelled",
                         )
 
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
+                    # No wall-clock limit — only kill if truly stalled (no output for stall_timeout)
+                    silent_secs = time.monotonic() - last_output_time
+                    if silent_secs >= timeout:
                         logger.warning(
-                            "CLI timed out after %ds for thread %s",
+                            "CLI stalled (no output for %ds) for thread %s",
                             timeout, self.thread_ts,
                         )
                         proc.kill()
                         await proc.wait()
-                        partial = result_text.strip() or "(no output before timeout)"
+                        partial = result_text.strip() or "(no output before stall)"
                         return TaskResult(
                             status="timeout",
-                            output=f"CLI timed out after {timeout // 60} minutes. "
-                            f"Last activity: {tool_count} tools used.\n\n"
+                            output=f"CLI stalled — no output for {timeout // 60} minutes "
+                            f"({tool_count} tools used). Task may have hung.\n\n"
                             f"Partial output:\n{partial[:2000]}",
                             error_type="timeout",
                         )
 
-                    # Read next line with sub-timeout for heartbeats
+                    # Read next line with 30s sub-timeout for heartbeats
                     try:
                         line = await asyncio.wait_for(
                             proc.stdout.readline(),
-                            timeout=min(remaining, 30),
+                            timeout=30,
                         )
+                        # Any output resets the stall clock
+                        last_output_time = time.monotonic()
                     except TimeoutError:
-                        # No output for 30s — send heartbeat
+                        # No output for 30s — send heartbeat (not a timeout, just silence)
                         if on_progress and (time.monotonic() - last_progress_time) > 25:
                             heartbeat_secs = int(time.monotonic() - self.last_used)
                             mins, secs = divmod(heartbeat_secs, 60)

@@ -4,6 +4,7 @@
 # Runs Claude CLI in pipe mode with stream-json output.
 # Prompt is passed via stdin (pipe mode) or as first argument.
 # API keys come from environment variables.
+# No wall-clock timeout — stall detection is handled by the Python pool.
 
 set -euo pipefail
 
@@ -15,7 +16,8 @@ fi
 
 # Model selection (default: opus)
 MODEL="${NEXUS_CLI_MODEL:-opus}"
-TIMEOUT="${NEXUS_CLI_TIMEOUT:-900}"
+
+AUTONOMOUS_PROMPT="You are a fully autonomous agent. NEVER ask the user questions or pause for confirmation. Make all decisions independently and complete the task fully without check-ins or interactive prompts. If something is unclear, make a reasonable assumption and continue. Tasks may run for hours or days — keep working until fully done."
 
 # Build CLI args
 CLI_ARGS=(
@@ -23,11 +25,13 @@ CLI_ARGS=(
     "-p"
     "--verbose"
     "--output-format" "stream-json"
+    "--dangerously-skip-permissions"
+    "--append-system-prompt" "$AUTONOMOUS_PROMPT"
 )
 
 # If arguments provided, pass as prompt; otherwise read from stdin
 if [ $# -gt 0 ]; then
-    echo "$*" | timeout "$TIMEOUT" claude "${CLI_ARGS[@]}"
+    echo "$*" | claude "${CLI_ARGS[@]}"
 else
-    timeout "$TIMEOUT" claude "${CLI_ARGS[@]}"
+    claude "${CLI_ARGS[@]}"
 fi

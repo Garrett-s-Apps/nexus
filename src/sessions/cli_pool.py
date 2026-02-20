@@ -140,6 +140,15 @@ class CLISession:
         return await asyncio.create_subprocess_exec(
             CLAUDE_CMD, "--model", "sonnet",
             "-p", "--verbose", "--output-format", "stream-json",
+            "--dangerously-skip-permissions",
+            "--append-system-prompt",
+            (
+                "You are a fully autonomous agent. NEVER ask the user questions or "
+                "pause for confirmation. Make all decisions independently and complete "
+                "the task fully without check-ins or interactive prompts. If something "
+                "is unclear, make a reasonable assumption and continue. Tasks may run "
+                "for hours or days — keep working until fully done."
+            ),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

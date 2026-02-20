@@ -106,9 +106,18 @@ a {
   margin: 1.5rem 0;
   background-color: #1f2937;
   border-radius: 0.75rem;
-  overflow-x: auto;
   border: 1px solid #374151;
+  display: table;
+  table-layout: auto;
+  word-break: break-word;
+}
+
+.prose > table,
+.prose > div > table {
   display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
 }
 
 .prose thead {
@@ -227,11 +236,14 @@ a {
 
   .prose table {
     font-size: 0.8rem;
+    min-width: 480px;
   }
 
   .prose th,
   .prose td {
     padding: 0.5rem 0.625rem;
+    white-space: normal;
+    word-break: break-word;
   }
 
   .prose th {

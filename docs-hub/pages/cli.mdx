@@ -1,6 +1,6 @@
 # Interactive CLI
 
-The NEXUS interactive shell is a Claude Code-like terminal experience that gives you a live REPL connected to the full 56-agent engine. Type natural language, slash commands, or questions — the shell streams agent activity back to you in real time.
+The NEXUS interactive shell is a Claude Code-like terminal experience that gives you a live REPL connected to the full 27-agent engine. Type natural language, slash commands, or questions — the shell streams agent activity back to you in real time.
 
 ## Launching the Shell
 
@@ -119,7 +119,7 @@ print(result.summary)  # one-sentence summary
     </tr>
     <tr>
       <td><code>/agents</code></td>
-      <td>List all 56 agents with role, model, and current state</td>
+      <td>List all 27 agents with role, model, and current state</td>
     </tr>
     <tr>
       <td><code>/cost</code></td>
@@ -246,7 +246,7 @@ The SSH tunnel ensures all traffic stays local — the engine is never exposed t
     </tr>
     <tr>
       <td><strong>Engine</strong></td>
-      <td>The autonomous orchestration server running inside the VM at <code>:4200</code>. Houses all 56 agents, the ML pipeline, encrypted databases, and Docker sandboxing. Exposes a RESTful API: <code>/message</code>, <code>/events</code> (SSE), <code>/agents</code>, <code>/cost</code>, <code>/health</code>, <code>/status</code>.</td>
+      <td>The autonomous orchestration server running inside the VM at <code>:4200</code>. Houses all 27 agents, the ML pipeline, encrypted databases, and Docker sandboxing. Exposes a RESTful API: <code>/message</code>, <code>/events</code> (SSE), <code>/agents</code>, <code>/cost</code>, <code>/health</code>, <code>/status</code>.</td>
       <td>Deployed automatically by <code>buildwithnexus init</code></td>
     </tr>
     <tr>

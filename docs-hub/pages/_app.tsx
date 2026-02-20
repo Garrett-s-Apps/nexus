@@ -20,7 +20,7 @@ export default function App({ Component, pageProps }: AppProps) {
       <meta property="og:type" content="website" />
       <meta name="twitter:card" content="summary_large_image" />
       <meta name="twitter:title" content="NEXUS - Enterprise Multi-Agent Orchestration" />
-      <meta name="twitter:description" content="56-agent autonomous engineering org. Interactive CLI with real-time streaming. npm install -g buildwithnexus." />
+      <meta name="twitter:description" content="27-agent autonomous engineering org. Interactive CLI with real-time streaming. npm install -g buildwithnexus." />
     </>
   )
 

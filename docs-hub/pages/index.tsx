@@ -7,7 +7,7 @@ export default function Home() {
     <Stack gap="none" fill className="bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900">
       <Head>
         <title>NEXUS - Enterprise Multi-Agent Orchestration System</title>
-        <meta name="description" content="Autonomous software engineering organization with 56 agents. Tell it what to build. It figures out the rest." />
+        <meta name="description" content="Autonomous software engineering organization with 27 agents. Tell it what to build. It figures out the rest." />
         <link rel="icon" href="/favicon.ico" />
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify({
           "@context": "https://schema.org",
@@ -16,7 +16,7 @@ export default function Home() {
           "applicationCategory": "DeveloperApplication",
           "operatingSystem": "macOS, Linux",
           "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-          "description": "Enterprise multi-agent orchestration system with 56 autonomous agents, interactive CLI, and real-time agent streaming.",
+          "description": "Enterprise multi-agent orchestration system with 27 autonomous agents, interactive CLI, and real-time agent streaming.",
           "url": "https://buildwithnexus.dev",
           "downloadUrl": "https://www.npmjs.com/package/buildwithnexus"
         }) }} />
@@ -33,7 +33,7 @@ export default function Home() {
             </h1>
             <p className="text-xl text-gray-300">Enterprise Multi-Agent Orchestration System</p>
             <p className="text-3xl text-white max-w-4xl">
-              A 56-agent autonomous software engineering organization. Tell it what to build. It figures out the rest.
+              A 27-agent autonomous software engineering organization. Tell it what to build. It figures out the rest.
             </p>
             <Row gap="md" justify="center">
               <Link href="/install" className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg font-semibold transition-colors">
@@ -55,7 +55,7 @@ export default function Home() {
           <Stack gap="md" padding="lg" className="bg-gray-800 rounded-lg">
             <h3 className="text-xl font-bold text-white">Autonomous Organization</h3>
             <p className="text-gray-300">
-              You are the CEO. NEXUS provides a Chief of Staff, VPs, managers, and 56 specialist agents that plan, execute, and learn autonomously on your behalf.
+              You are the CEO. NEXUS provides a Chief of Staff, VPs, managers, and 27 specialist agents that plan, execute, and learn autonomously on your behalf.
             </p>
           </Stack>
           <Stack gap="md" padding="lg" className="bg-gray-800 rounded-lg">
@@ -161,7 +161,7 @@ export default function Home() {
             <Grid cols={4} gap="lg" className="max-w-4xl" responsive minChildWidth="150px">
               <Center>
                 <Stack gap="xs" align="center">
-                  <div className="text-4xl font-bold text-blue-400">56</div>
+                  <div className="text-4xl font-bold text-blue-400">27</div>
                   <div className="text-gray-300">Active Agents</div>
                 </Stack>
               </Center>

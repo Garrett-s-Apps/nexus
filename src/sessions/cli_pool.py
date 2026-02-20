@@ -60,8 +60,8 @@ def sanitize_cli_message(message: str) -> str:
     message = ''.join(c for c in message if ord(c) >= 32 or c in '\n\r\t')
     return message
 
-CLAUDE_CMD = "claude"
-DOCKER_CMD = "docker"
+CLAUDE_CMD = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+DOCKER_CMD = shutil.which("docker") or "/opt/homebrew/bin/docker"
 IDLE_TIMEOUT = 1800  # 30 minutes — session cleanup after inactivity
 STALL_TIMEOUT = 7200  # 2 hours of silence = genuinely stuck (no wall-clock limit)
 STREAM_BUFFER_LIMIT = 10 * 1024 * 1024  # 10 MB — stream-json lines can exceed asyncio's 64KB default

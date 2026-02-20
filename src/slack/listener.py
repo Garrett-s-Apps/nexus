@@ -852,7 +852,9 @@ async def start_slack_listener():
                             "detail": error_detail[:300],
                         })
                         if error_type == "timeout":
-                            response = f":warning: *Timed out* after 15 minutes.\n{error_detail[:1000]}"
+                            from src.sessions.cli_pool import STALL_TIMEOUT
+                            stall_mins = STALL_TIMEOUT // 60
+                            response = f":warning: *Timed out* after {stall_mins} minutes of no output.\n{error_detail[:1000]}"
                         elif error_type == "cancelled":
                             response = None
                         else:

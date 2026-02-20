@@ -42,7 +42,7 @@ async def _run_impl_agent(agent_key: str, agent_config: dict, prompt: str, proje
     return await run_sdk_agent(agent_key, agent_config, prompt, project_path)
 
 
-async def safe_node(node_fn, state: NexusState, timeout: int = 300) -> dict:
+async def safe_node(node_fn, state: NexusState, timeout: int = 7200) -> dict:
     """Wrap any node function with timeout and error handling.
 
     Auto-checkpoints before executing the node.

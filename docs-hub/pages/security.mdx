@@ -1,0 +1,606 @@
+# NEXUS Security & Compliance
+
+NEXUS implements enterprise-grade security controls to protect sensitive development workflows. This section covers our comprehensive security posture, compliance features, and enterprise controls.
+
+## Security Architecture Overview
+
+### Defense in Depth Strategy
+
+NEXUS employs multiple security layers to protect against various threat vectors:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Network Security                              │
+├─────────────────────────────────────────────────────────────────┤
+│  • CORS Whitelist with Tunnel ID Validation                    │
+│  • Rate Limiting with Progressive Exponential Backoff          │
+│  • TLS 1.3 Encryption for All Communications                   │
+└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                  Authentication & Authorization                  │
+├─────────────────────────────────────────────────────────────────┤
+│  • JWT Tokens with Client Fingerprint Binding                  │
+│  • Multi-Factor Authentication Support                         │
+│  • Role-Based Access Control (RBAC)                           │
+│  • Session Management with 30-day Expiry                      │
+└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                     Application Security                         │
+├─────────────────────────────────────────────────────────────────┤
+│  • Input Validation and Sanitization                          │
+│  • SQL Injection Prevention                                   │
+│  • XSS Protection with Content Security Policy                │
+│  • CSRF Token Validation                                      │
+└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                       Data Protection                            │
+├─────────────────────────────────────────────────────────────────┤
+│  • AES-256-CBC Encryption at Rest (SQLCipher)                 │
+│  • PBKDF2 Key Derivation (256,000 iterations)                 │
+│  • Secure Key Management with Hardware HSM Support            │
+│  • Data Retention and Purge Policies                          │
+└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                    Execution Environment                         │
+├─────────────────────────────────────────────────────────────────┤
+│  • Docker Sandbox Isolation                                   │
+│  • Read-Only Filesystem (except /tmp, /workspace)            │
+│  • No Privileged Capabilities                                 │
+│  • Resource Limits (CPU, Memory, Network)                     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Enterprise Compliance Controls
+
+NEXUS is designed from the ground up to meet enterprise security requirements across five trust service criteria:
+
+### Security (SEC)
+
+**SEC-001: Access Controls**
+- Multi-factor authentication required for all admin access
+- Role-based permissions with principle of least privilege
+- Regular access reviews and deprovisioning procedures
+
+**SEC-002: System Boundaries**
+- Network segmentation between production and development
+- Firewall rules restricting unnecessary network access
+- VPN requirements for remote administrative access
+
+**SEC-003: Risk Management**
+- Quarterly security risk assessments
+- Incident response procedures with defined escalation
+- Regular vulnerability assessments and penetration testing
+
+**SEC-004: Security Monitoring**
+- Comprehensive audit logging for all system activities
+- Real-time security event monitoring and alerting
+- SIEM integration for security event correlation
+
+### Availability (A1)
+
+**A1-001: System Uptime**
+- 99.9% uptime SLA with monitoring and alerting
+- Redundant infrastructure with automatic failover
+- Regular disaster recovery testing procedures
+
+**A1-002: Backup and Recovery**
+- Automated daily encrypted backups with 90-day retention
+- Point-in-time recovery capabilities
+- Documented recovery procedures tested quarterly
+
+### Processing Integrity (PI)
+
+**PI-001: Data Validation**
+- Input validation on all data entry points
+- Checksums and integrity verification for data transfers
+- Automated data quality monitoring and alerting
+
+**PI-002: Error Handling**
+- Comprehensive error logging and monitoring
+- Graceful degradation procedures for system failures
+- Regular testing of error handling procedures
+
+### Confidentiality (C1)
+
+**C1-001: Data Encryption**
+- AES-256 encryption for all data at rest
+- TLS 1.3 for all data in transit
+- Encrypted API keys and secrets management
+
+**C1-002: Access Restrictions**
+- Need-to-know basis for confidential data access
+- Data classification and handling procedures
+- Regular access reviews for confidential systems
+
+### Privacy (P1)
+
+**P1-001: Privacy Controls**
+- Data minimization principles in collection and storage
+- User consent management for personal data processing
+- Right to erasure and data portability support
+
+**P1-002: Data Retention**
+- Defined retention periods for different data types
+- Automated data purge procedures
+- Documentation of all data processing activities
+
+## Encryption Implementation
+
+### Database Encryption at Rest (SEC-008)
+
+All NEXUS databases use SQLCipher with military-grade encryption:
+
+```python
+# Encryption Configuration
+ENCRYPTION_SCHEME = "AES-256-CBC"
+KDF_ALGORITHM = "PBKDF2"
+KDF_ITERATIONS = 256000
+KEY_DERIVATION = "Per-database salted HMAC"
+WAL_MODE = "Enabled for durability"
+```
+
+**Key Features**:
+- **AES-256-CBC**: Military-grade encryption algorithm
+- **PBKDF2**: 256,000 iterations for strong key derivation
+- **Salted Keys**: Unique salt per database prevents rainbow table attacks
+- **Hardware HSM**: Optional hardware security module support
+
+**Database Coverage**:
+```
+~/.nexus/
+├── memory.db        (Encrypted: Directives, tasks, events)
+├── cost.db          (Encrypted: Token usage, API costs)
+├── kpi.db           (Encrypted: Performance metrics)
+├── registry.db      (Encrypted: Agent configurations)
+├── ml.db            (Encrypted: Training data, model artifacts)
+├── knowledge.db     (Encrypted: RAG knowledge chunks)
+└── sessions.db      (Encrypted: CLI states, thread mapping)
+```
+
+### Key Management
+
+**Master Secret Derivation**:
+```bash
+# Generate cryptographically secure master secret
+NEXUS_MASTER_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+
+# Per-database key derivation
+db_key = PBKDF2(master_secret + db_name + salt, iterations=256000)
+```
+
+**Security Features**:
+- Master secret never stored in plaintext
+- Per-database unique encryption keys
+- Salt rotation procedures for key refresh
+- Hardware Security Module (HSM) integration available
+
+### Migration Security
+
+**Encrypted Migration Process**:
+```bash
+# Secure migration with backup preservation
+python scripts/migrate_encrypt_dbs.py
+```
+
+**Migration Features**:
+- Preserves all existing data integrity
+- Creates timestamped backups before encryption
+- Validates encryption success before cleanup
+- Zero-downtime migration capability
+
+## Docker Sandbox Security (SEC-004)
+
+CLI sessions execute in hardened Docker containers with multiple security layers:
+
+### Container Security Configuration
+
+```bash
+docker run \
+  --rm \                              # Auto-cleanup
+  --read-only \                       # Read-only filesystem
+  --security-opt=no-new-privileges \  # Prevent privilege escalation
+  --cap-drop=ALL \                    # Remove all Linux capabilities
+  --memory=2g \                       # Memory limit
+  --cpus=2 \                          # CPU limit
+  --network=none \                    # Network isolation (optional)
+  -v /path/to/project:/workspace:ro \ # Read-only project mount
+  nexus-cli-sandbox "user prompt"
+```
+
+### Security Restrictions
+
+**Filesystem Security**:
+- Root filesystem mounted read-only
+- Only `/tmp` and `/workspace` writable
+- No access to host filesystem outside project
+- Temporary files automatically cleaned up
+
+**Process Security**:
+- Runs as non-root user (`nexus:nexus`, UID 1000)
+- No sudo or administrative capabilities
+- Process isolation from host system
+- Resource limits prevent DoS attacks
+
+**Network Security**:
+- Optional network isolation (`--network=none`)
+- Outbound connections filtered when network enabled
+- No access to internal host services
+- DNS resolution restricted to public resolvers
+
+### Container Hardening
+
+**Base Image Security**:
+```dockerfile
+FROM ubuntu:22.04
+# Security updates applied
+RUN apt-get update && apt-get upgrade -y
+# Minimal package installation
+RUN apt-get install -y --no-install-recommends python3 git
+# Non-root user creation
+RUN groupadd -r nexus && useradd -r -g nexus nexus
+```
+
+## Authentication & Authorization
+
+### JWT Token Security (SEC-006)
+
+NEXUS implements enterprise-grade JWT authentication with advanced security features:
+
+**Token Structure**:
+```json
+{
+  "header": {
+    "alg": "HS256",
+    "typ": "JWT"
+  },
+  "payload": {
+    "sub": "user_id",
+    "aud": "nexus-dashboard",
+    "iss": "nexus-auth",
+    "exp": 1640995200,
+    "iat": 1638316800,
+    "fingerprint": "sha256_hash_of_user_agent_and_ip"
+  }
+}
+```
+
+**Security Features**:
+- **Audience Validation**: Tokens bound to specific services
+- **Issuer Verification**: Prevents token substitution attacks
+- **Expiry Enforcement**: 30-day maximum lifetime
+- **Fingerprint Binding**: Tokens tied to client characteristics
+
+### Client Fingerprinting
+
+**Fingerprint Generation**:
+```python
+def generate_fingerprint(request):
+    components = [
+        request.headers.get('User-Agent', ''),
+        request.remote_addr,
+        request.headers.get('Accept-Language', ''),
+        request.headers.get('Accept-Encoding', '')
+    ]
+    return hashlib.sha256('|'.join(components).encode()).hexdigest()
+```
+
+**Security Benefits**:
+- Prevents token theft and replay attacks
+- Detects session hijacking attempts
+- Invalidates stolen tokens automatically
+- Supports legitimate user agent changes
+
+### Rate Limiting with Progressive Delays (SEC-005)
+
+**Attack Prevention**:
+```python
+# Progressive lockout schedule
+LOCKOUT_SCHEDULE = {
+    (1, 3): 30,      # Attempts 1-3: 30 seconds
+    (4, 6): 120,     # Attempts 4-6: 2 minutes
+    (7, 9): 900,     # Attempts 7-9: 15 minutes
+    (10, float('inf')): 3600  # Attempts 10+: 1 hour
+}
+```
+
+**Persistent Tracking**:
+- Failed attempts stored in `~/.nexus/rate_limits.db`
+- Survives application restarts and reboots
+- IP-based tracking with subnet consideration
+- Automatic cleanup after successful authentication
+
+## Network Security
+
+### CORS Whitelist with Tunnel Validation (SEC-007)
+
+**Cloudflare Tunnel Integration**:
+```python
+# Environment configuration
+ALLOWED_TUNNEL_IDS = "abc123def456,ghi789jkl012"
+
+# Runtime validation
+def validate_origin(origin):
+    for tunnel_id in ALLOWED_TUNNEL_IDS:
+        if f"{tunnel_id}.trycloudflare.com" in origin:
+            return True
+    return False
+```
+
+**Security Benefits**:
+- Prevents unauthorized cross-origin requests
+- Validates legitimate Cloudflare tunnel origins
+- Blocks malicious domain substitution attacks
+- Supports multiple tunnel configurations
+
+### TLS Configuration
+
+**Encryption Standards**:
+- **TLS 1.3**: Latest transport layer security
+- **Perfect Forward Secrecy**: Ephemeral key exchange
+- **HSTS Enforcement**: HTTP Strict Transport Security
+- **Certificate Pinning**: Optional certificate validation
+
+## Audit & Compliance
+
+### Comprehensive Audit Logging
+
+**Event Categories**:
+```python
+AUDIT_EVENTS = {
+    'authentication': ['login', 'logout', 'failed_login', 'password_change'],
+    'authorization': ['permission_granted', 'permission_denied', 'role_change'],
+    'data_access': ['read', 'write', 'delete', 'export'],
+    'configuration': ['setting_changed', 'agent_added', 'agent_removed'],
+    'security': ['encryption_key_rotation', 'security_scan', 'vulnerability_detected']
+}
+```
+
+**Log Format**:
+```json
+{
+  "timestamp": "2024-02-17T10:30:00Z",
+  "event_type": "authentication",
+  "event_action": "login",
+  "user_id": "user123",
+  "ip_address": "192.168.1.100",
+  "user_agent": "Mozilla/5.0...",
+  "session_id": "sess_abc123",
+  "result": "success",
+  "details": {
+    "mfa_used": true,
+    "login_method": "password"
+  }
+}
+```
+
+### Compliance Reporting
+
+**Automated Report Generation**:
+- Daily security event summaries
+- Weekly access review reports
+- Monthly compliance status reports
+- Quarterly security assessment reports
+
+**Report Distribution**:
+- Secure delivery to compliance team
+- Encrypted reports with digital signatures
+- Retention according to regulatory requirements
+- Integration with GRC (Governance, Risk, Compliance) tools
+
+## Vulnerability Management
+
+### Security Scanning
+
+**Automated Scanning**:
+```python
+# Daily security scans
+SCAN_SCHEDULE = {
+    'dependency_scan': 'daily',
+    'code_analysis': 'on_commit',
+    'container_scan': 'on_build',
+    'infrastructure_scan': 'weekly'
+}
+```
+
+**Scan Types**:
+- **Dependency Scanning**: Known vulnerabilities in third-party packages
+- **Static Code Analysis**: Security anti-patterns and vulnerabilities
+- **Container Scanning**: Base image and package vulnerabilities
+- **Infrastructure Scanning**: Network and system configuration issues
+
+### Incident Response
+
+**Response Procedures**:
+1. **Detection**: Automated monitoring and alerting
+2. **Classification**: Severity assessment and categorization
+3. **Containment**: Immediate threat mitigation
+4. **Investigation**: Root cause analysis and scope determination
+5. **Recovery**: System restoration and validation
+6. **Lessons Learned**: Post-incident review and improvements
+
+**Escalation Matrix**:
+```
+Critical (P0): CISO notification within 1 hour
+High (P1):     Security team notification within 4 hours
+Medium (P2):   Standard business hours response
+Low (P3):      Included in weekly security review
+```
+
+## Privacy & Data Protection
+
+### Data Classification
+
+**Classification Levels**:
+- **Public**: Marketing materials, public documentation
+- **Internal**: Internal procedures, non-sensitive business data
+- **Confidential**: Customer data, financial information
+- **Restricted**: Authentication credentials, encryption keys
+
+**Handling Requirements**:
+```python
+DATA_HANDLING = {
+    'public': {'encryption': 'optional', 'access': 'unrestricted'},
+    'internal': {'encryption': 'recommended', 'access': 'employee_only'},
+    'confidential': {'encryption': 'required', 'access': 'need_to_know'},
+    'restricted': {'encryption': 'required', 'access': 'minimal_privilege'}
+}
+```
+
+### GDPR Compliance
+
+**Data Subject Rights**:
+- **Right to Access**: User data export capabilities
+- **Right to Rectification**: Data correction procedures
+- **Right to Erasure**: Secure data deletion ("right to be forgotten")
+- **Right to Portability**: Data export in standard formats
+
+**Privacy by Design**:
+- Data minimization in collection and storage
+- Purpose limitation for data processing
+- Storage limitation with automatic retention
+- Integrity and confidentiality protections
+
+## Security Monitoring
+
+### Real-Time Monitoring
+
+**Security Events Monitored**:
+```python
+MONITORED_EVENTS = [
+    'failed_authentication_attempts',
+    'privilege_escalation_attempts',
+    'unusual_data_access_patterns',
+    'configuration_changes',
+    'network_anomalies',
+    'resource_exhaustion_attacks'
+]
+```
+
+**Alert Thresholds**:
+- **Immediate**: Security incidents requiring immediate response
+- **Hourly**: Unusual patterns requiring investigation
+- **Daily**: Trend analysis and capacity planning
+- **Weekly**: Security posture and compliance reporting
+
+### Security Metrics
+
+**Key Performance Indicators**:
+- Mean Time to Detection (MTTD): &lt;5 minutes
+- Mean Time to Response (MTTR): &lt;30 minutes
+- False Positive Rate: &lt;2%
+- Security Training Completion: &gt;95%
+- Vulnerability Patch Time: &lt;72 hours (Critical), &lt;30 days (High)
+
+## Deployment Security
+
+### Secure CI/CD Pipeline
+
+**Pipeline Security Controls**:
+```yaml
+security_gates:
+  - dependency_scan:
+      fail_on: ['critical', 'high']
+      allow_override: false
+  - static_analysis:
+      tools: ['semgrep', 'bandit', 'eslint-security']
+      fail_on_new_issues: true
+  - container_scan:
+      base_image_scan: required
+      package_scan: required
+  - secrets_scan:
+      prevent_secrets_commit: true
+      scan_all_commits: true
+```
+
+### Production Hardening
+
+**Infrastructure Security**:
+- Web Application Firewall (WAF) protection
+- DDoS mitigation and rate limiting
+- Network segmentation and microsegmentation
+- Intrusion detection and prevention systems (IDPS)
+
+**Application Hardening**:
+- Security headers (HSTS, CSP, X-Frame-Options)
+- Input validation and output encoding
+- SQL injection prevention
+- Cross-site scripting (XSS) protection
+
+## Enterprise Integration
+
+### Single Sign-On (SSO)
+
+**Supported Protocols**:
+- SAML 2.0 integration with enterprise identity providers
+- OAuth 2.0/OpenID Connect for modern applications
+- Active Directory integration for Windows environments
+- LDAP support for legacy systems
+
+### Enterprise Security Tools
+
+**SIEM Integration**:
+```python
+# Security event forwarding
+SIEM_INTEGRATIONS = {
+    'splunk': {'endpoint': 'https://splunk.company.com/api', 'format': 'json'},
+    'qradar': {'endpoint': 'https://qradar.company.com/api', 'format': 'leef'},
+    'sentinel': {'endpoint': 'https://sentinel.azure.com/api', 'format': 'cef'}
+}
+```
+
+### Compliance Frameworks
+
+**Supported Standards**:
+- **Enterprise Controls**: Comprehensive security controls and regular audits
+- **ISO 27001**: Information Security Management System
+- **PCI DSS**: Payment Card Industry Data Security Standard
+- **HIPAA**: Healthcare data protection (when applicable)
+- **FedRAMP**: Federal Risk and Authorization Management Program
+
+## Getting Started with Security
+
+### Security Assessment
+
+Before deploying NEXUS in your environment:
+
+1. **Risk Assessment**: Evaluate NEXUS against your threat model
+2. **Compliance Review**: Ensure alignment with regulatory requirements
+3. **Integration Planning**: Plan integration with existing security tools
+4. **Security Configuration**: Configure encryption, authentication, and monitoring
+
+### Security Configuration
+
+**Minimum Security Configuration**:
+```bash
+# Generate strong master secret
+export NEXUS_MASTER_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+
+# Configure rate limiting
+export NEXUS_RATE_LIMIT_ENABLED=true
+export NEXUS_MAX_LOGIN_ATTEMPTS=5
+
+# Enable audit logging
+export NEXUS_AUDIT_LOGGING=true
+export NEXUS_AUDIT_LOG_PATH=/var/log/nexus/audit.log
+
+# Configure CORS whitelist
+export ALLOWED_TUNNEL_IDS=your-tunnel-id-here
+```
+
+### Security Maintenance
+
+**Regular Security Tasks**:
+- Weekly security scan reviews
+- Monthly access reviews and cleanup
+- Quarterly penetration testing
+- Annual security architecture review
+- Continuous security training for users
+
+### Contact Security Team
+
+For security questions or incident reporting:
+- **Security Email**: security@nexus.dev
+- **Emergency**: +1-555-NEXUS-SEC
+- **Bug Bounty**: security.nexus.dev/bounty
+
+NEXUS security is continuously evolving to meet emerging threats and regulatory requirements. Our commitment to security excellence ensures your development workflows remain protected while maintaining productivity and compliance.

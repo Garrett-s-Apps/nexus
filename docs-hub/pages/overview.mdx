@@ -1,0 +1,356 @@
+# System Overview
+
+NEXUS is an enterprise multi-agent orchestration system that operates as a complete autonomous software engineering organization. Instead of a single AI assistant, NEXUS deploys 56 specialized agents organized into a hierarchical org chart — from C-suite executives to implementation engineers.
+
+## How It Works
+
+```
+Human Input (Slack, CLI, API, Neovim)
+         |
+         v
+Authentication & Rate Limiting
+         |
+         v
+Haiku LLM Intake (natural language -> intent classification)
+         |
+         +---> Tool Execution (simple queries: status, org, cost)
+         |
+         +---> Directive Workflow (build/change requests)
+                  |
+                  v
+Strategic Planning Gate (Chief of Staff, CPO, CFO, CRO)
+                  |
+                  v
+Technical Design (VP Engineering + Tech Lead)
+                  |
+                  v
+ML Intelligence Briefing (cost prediction, risk, similar work)
+                  |
+                  v
+Task Decomposition & Parallel Assignment
+                  |
+                  v
+Parallel Execution (multiple agents, multiple workstreams)
+                  |
+                  v
+Quality Gates (zero-tolerance: warnings = errors)
+                  |
+                  v
+Code Review (senior engineers)
+                  |
+                  v
+Completion & Learning (feedback loop, ML retraining)
+```
+
+## The Organization
+
+NEXUS operates with **56 active agents** organized into 6 hierarchical layers:
+
+<table>
+  <thead>
+    <tr>
+      <th>Layer</th>
+      <th>Count</th>
+      <th>Models</th>
+      <th>Responsibility</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Executive</strong></td>
+      <td>10</td>
+      <td>Opus/Sonnet</td>
+      <td>Chief of Staff, C-suite — strategy, budget, quality bar (you set direction, NEXUS executes)</td>
+    </tr>
+    <tr>
+      <td><strong>Management</strong></td>
+      <td>10</td>
+      <td>Opus/Sonnet</td>
+      <td>Engineering managers, tech leads — architecture, coordination</td>
+    </tr>
+    <tr>
+      <td><strong>Senior</strong></td>
+      <td>12</td>
+      <td>Sonnet</td>
+      <td>Senior engineers — code review, design systems, API contracts</td>
+    </tr>
+    <tr>
+      <td><strong>Implementation</strong></td>
+      <td>15</td>
+      <td>Sonnet</td>
+      <td>Frontend, backend, full-stack, DevOps developers</td>
+    </tr>
+    <tr>
+      <td><strong>Quality</strong></td>
+      <td>6</td>
+      <td>Sonnet/Haiku</td>
+      <td>QA leads, test engineers — quality gates</td>
+    </tr>
+    <tr>
+      <td><strong>Consultant</strong></td>
+      <td>3</td>
+      <td>Opus/Gemini/o3</td>
+      <td>Security, UX, systems architecture</td>
+    </tr>
+  </tbody>
+</table>
+
+**Dynamic Org Management**: Hire, fire, promote, reassign — all through natural language.
+
+## Orchestration Engine
+
+The LangGraph orchestration engine manages a **27-node execution DAG** that handles:
+
+- **Strategic Planning**: Executive approval gates before any work begins
+- **Technical Design**: Architecture design documents and API contracts
+- **Task Decomposition**: Automatic identification of parallel workstreams
+- **ML Agent Routing**: Learned task-to-agent matching based on historical success
+- **Parallel Execution**: Independent workstreams execute simultaneously
+- **TDD Workflow**: Test-first development enforcement
+- **Quality Gates**: Zero-tolerance policy — warnings equal errors
+- **Code Review**: Senior engineer validation before completion
+
+## Machine Learning System
+
+NEXUS learns from every execution. Five ML models continuously improve:
+
+<table>
+  <thead>
+    <tr>
+      <th>Model</th>
+      <th>Algorithm</th>
+      <th>Purpose</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Agent Router</strong></td>
+      <td>TF-IDF + RandomForest</td>
+      <td>Routes tasks to the best agent based on history</td>
+    </tr>
+    <tr>
+      <td><strong>Cost Predictor</strong></td>
+      <td>TF-IDF + RandomForest Regressor</td>
+      <td>Estimates cost before execution with confidence intervals</td>
+    </tr>
+    <tr>
+      <td><strong>Quality Predictor</strong></td>
+      <td>TF-IDF + GradientBoosting</td>
+      <td>Predicts first-pass approval probability</td>
+    </tr>
+    <tr>
+      <td><strong>Escalation Predictor</strong></td>
+      <td>TF-IDF + GradientBoosting</td>
+      <td>Flags agents at risk of needing escalation</td>
+    </tr>
+    <tr>
+      <td><strong>Directive Similarity</strong></td>
+      <td>Sentence-Transformers</td>
+      <td>Finds semantically similar past work</td>
+    </tr>
+  </tbody>
+</table>
+
+### Cold-Start Design
+
+Every ML feature degrades gracefully when training data is insufficient:
+
+<table>
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>Cold Start</th>
+      <th>After Training</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Agent routing</td>
+      <td>Keyword matching</td>
+      <td>ML routing (after 20+ samples)</td>
+    </tr>
+    <tr>
+      <td>Cost prediction</td>
+      <td>No estimate</td>
+      <td>Prediction + confidence interval (after 15+ samples)</td>
+    </tr>
+    <tr>
+      <td>Directive similarity</td>
+      <td>No matches</td>
+      <td>Semantic search across all past directives</td>
+    </tr>
+  </tbody>
+</table>
+
+### Auto-Retraining
+
+After every 10 new task outcomes, all models retrain automatically (throttled to once per hour).
+
+## RAG Knowledge Base
+
+CLI subprocesses run in one-shot pipe mode with no persistent memory. The RAG system provides cross-session memory by storing knowledge from every interaction:
+
+<table>
+  <thead>
+    <tr>
+      <th>Chunk Type</th>
+      <th>Weight</th>
+      <th>Source</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>error_resolution</code></td>
+      <td>1.3x</td>
+      <td>Past debugging sessions and fixes</td>
+    </tr>
+    <tr>
+      <td><code>task_outcome</code></td>
+      <td>1.1x</td>
+      <td>Task results with agent and cost data</td>
+    </tr>
+    <tr>
+      <td><code>conversation</code></td>
+      <td>1.0x</td>
+      <td>Slack Q&A exchanges</td>
+    </tr>
+    <tr>
+      <td><code>code_change</code></td>
+      <td>0.9x</td>
+      <td>File modifications and their context</td>
+    </tr>
+    <tr>
+      <td><code>directive_summary</code></td>
+      <td>0.8x</td>
+      <td>High-level project outcomes</td>
+    </tr>
+  </tbody>
+</table>
+
+### Retrieval Pipeline
+
+1. Encode query via sentence-transformers (384-dim vectors)
+2. SQL pre-filter by chunk type, domain tag, and age
+3. Cosine similarity against filtered candidates
+4. Weight by chunk type importance
+5. Apply recency boost (up to 10% for recent chunks)
+6. Return top-8 results within character budget
+
+## Data Persistence
+
+Seven encrypted SQLite databases store all system state:
+
+<table>
+  <thead>
+    <tr>
+      <th>Database</th>
+      <th>Purpose</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>registry.db</code></td>
+      <td>Agent configurations, org structure, circuit breakers</td>
+    </tr>
+    <tr>
+      <td><code>memory.db</code></td>
+      <td>Directives, tasks, events, peer decisions</td>
+    </tr>
+    <tr>
+      <td><code>cost.db</code></td>
+      <td>Per-API-call token usage and costs</td>
+    </tr>
+    <tr>
+      <td><code>kpi.db</code></td>
+      <td>Productivity and quality metrics</td>
+    </tr>
+    <tr>
+      <td><code>ml.db</code></td>
+      <td>Task outcomes, embeddings, model artifacts</td>
+    </tr>
+    <tr>
+      <td><code>knowledge.db</code></td>
+      <td>RAG knowledge chunks (dedicated for cosine similarity)</td>
+    </tr>
+    <tr>
+      <td><code>sessions.db</code></td>
+      <td>CLI session state, thread mapping, async history</td>
+    </tr>
+  </tbody>
+</table>
+
+All databases are encrypted with **AES-256-CBC** using SQLCipher with **PBKDF2 key derivation** (256,000 iterations).
+
+## Interfaces
+
+NEXUS supports multiple input interfaces:
+
+### Slack (Primary)
+Send natural language messages in your configured channel. NEXUS handles everything from "Build me a landing page" to "What's our burn rate?"
+
+### Neovim Plugin
+`:Nexus`, `:NexusTalk`, `:NexusOrg`, `:NexusStatus`, `:NexusKpi` — direct IDE integration.
+
+### REST API
+Full API at `localhost:4200` with endpoints for messaging, ML status, agent stats, org management, and more.
+
+### CLI
+`python nexus_cli.py status|talk|message` for terminal-based interaction. See the [CLI page](/cli) for the full NEXUS CLI toolkit with code analysis, refactoring, and metrics tracking commands.
+
+## Tech Stack
+
+<table>
+  <thead>
+    <tr>
+      <th>Category</th>
+      <th>Technology</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Orchestration</strong></td>
+      <td>LangGraph + Claude Agent SDK</td>
+    </tr>
+    <tr>
+      <td><strong>Server</strong></td>
+      <td>FastAPI + Uvicorn</td>
+    </tr>
+    <tr>
+      <td><strong>Persistence</strong></td>
+      <td>SQLite with SQLCipher encryption</td>
+    </tr>
+    <tr>
+      <td><strong>Communication</strong></td>
+      <td>Slack Socket Mode</td>
+    </tr>
+    <tr>
+      <td><strong>Models</strong></td>
+      <td>Claude Opus/Sonnet/Haiku, Gemini, OpenAI o3</td>
+    </tr>
+    <tr>
+      <td><strong>ML</strong></td>
+      <td>scikit-learn, sentence-transformers, numpy</td>
+    </tr>
+    <tr>
+      <td><strong>IDE</strong></td>
+      <td>Neovim Lua plugin</td>
+    </tr>
+    <tr>
+      <td><strong>Security</strong></td>
+      <td>AES-256 encryption, JWT auth, Docker sandboxing</td>
+    </tr>
+  </tbody>
+</table>
+
+## Quality Standards
+
+NEXUS enforces a **zero-tolerance policy** for all warnings:
+
+- Linter warnings = build failure
+- Test warnings = build failure
+- Security warnings = critical blocker
+- Type violations = build failure
+
+**Zero acceptable warnings. Fix it or don't ship it.**
+
+This policy is enforced at the quality gate in the orchestration pipeline. Only when ALL checks pass can code proceed to review and deployment.

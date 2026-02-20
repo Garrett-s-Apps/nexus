@@ -121,7 +121,7 @@ async def _sonnet_fallback(task_prompt: str) -> str:
 
     try:
         response = await client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6-20250929",
             max_tokens=1500,
             system=PLANNER_SYSTEM,
             messages=[{"role": "user", "content": task_prompt}],

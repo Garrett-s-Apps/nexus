@@ -1,0 +1,644 @@
+# NEXUS Python SDK
+
+The NEXUS Agent SDK enables developers to build multi-agent orchestration systems with swappable AI model providers. Create your own agent organizations or integrate NEXUS capabilities into existing applications.
+
+## Quick Start
+
+### Installation
+
+```bash
+# Core SDK (no provider dependencies)
+pip install nexus-agent-sdk
+
+# With Claude support
+pip install nexus-agent-sdk[claude]
+
+# With all providers (Claude, OpenAI, Gemini)
+pip install nexus-agent-sdk[all]
+```
+
+### Basic Usage
+
+```python
+from nexus_sdk import AgentRegistry, get_agent_name
+from nexus_sdk.providers.claude import ClaudeProvider
+
+# Initialize provider and registry
+provider = ClaudeProvider(api_key="your-api-key")
+registry = AgentRegistry(provider=provider)
+
+# Get diverse agent name
+agent_info = get_agent_name("senior_engineer")
+
+# Register and execute
+agent = registry.register(
+    id="engineer",
+    name=agent_info["name"],
+    role="Senior Software Engineer",
+    model="sonnet",
+)
+
+result = await agent.execute("Implement user authentication")
+print(f"Status: {result.status}, Cost: ${result.cost_usd:.6f}")
+```
+
+## Core Architecture
+
+### Provider-Agnostic Design
+
+The SDK abstracts away model-specific details, allowing seamless switching between providers:
+
+```python
+# Switch from Claude to OpenAI
+from nexus_sdk.providers.openai_provider import OpenAIProvider
+provider = OpenAIProvider(api_key="sk-...")
+
+# Same interface, different backend
+agent = registry.register(id="engineer", model="gpt-5")
+result = await agent.execute("Build a REST API")
+```
+
+### Unified Result Format
+
+All providers return standardized `TaskResult` objects:
+
+```python
+@dataclass
+class TaskResult:
+    status: str          # "success" or "error"
+    output: str          # Model's response
+    tokens_in: int       # Input tokens consumed
+    tokens_out: int      # Output tokens generated
+    cost_usd: float      # Cost in USD
+    model: str           # Actual model used
+    elapsed_seconds: float  # Execution time
+```
+
+## Model Providers
+
+### Claude Provider
+
+Access to Anthropic's Claude family (Opus, Sonnet, Haiku):
+
+```python
+from nexus_sdk.providers.claude import ClaudeProvider
+
+provider = ClaudeProvider(api_key="sk-ant-...")
+
+# Model tier selection
+result = await provider.execute(prompt, model="opus")    # Most capable
+result = await provider.execute(prompt, model="sonnet")  # Balanced
+result = await provider.execute(prompt, model="haiku")   # Fastest/cheapest
+```
+
+**Claude Model Mapping**:
+- `opus` → `claude-opus-4-6` (latest Opus 4.6)
+- `sonnet` → `claude-sonnet-4-6` (latest Sonnet 4.6)
+- `haiku` → `claude-haiku-4-5-20251001` (latest Haiku 4.5)
+
+### OpenAI Provider
+
+Support for GPT-5, o3, and o4-mini series:
+
+```python
+from nexus_sdk.providers.openai_provider import OpenAIProvider
+
+provider = OpenAIProvider(api_key="sk-...")
+
+# Model selection
+result = await provider.execute(prompt, model="gpt-5")        # Most capable
+result = await provider.execute(prompt, model="o3")            # Reasoning
+result = await provider.execute(prompt, model="o4-mini")       # Fast reasoning
+result = await provider.execute(prompt, model="gpt-4.1")       # Balanced
+```
+
+### Gemini Provider
+
+Google's Gemini models via LangChain integration:
+
+```python
+from nexus_sdk.providers.gemini import GeminiProvider
+
+provider = GeminiProvider(api_key="...")
+result = await provider.execute(prompt, model="gemini-2.5-pro")
+```
+
+### Custom Providers
+
+Implement the `ModelProvider` ABC for any AI service:
+
+```python
+from nexus_sdk.providers.base import ModelProvider
+
+class CustomProvider(ModelProvider):
+    async def execute(self, prompt: str, model: str = "default", **kwargs) -> TaskResult:
+        # Your implementation here
+        response = await your_ai_service.generate(prompt)
+        return TaskResult(
+            status="success",
+            output=response.text,
+            tokens_in=response.usage.input_tokens,
+            tokens_out=response.usage.output_tokens,
+            cost_usd=self.calculate_cost(response.usage),
+            model=response.model,
+            elapsed_seconds=response.elapsed
+        )
+
+    def get_pricing(self, model: str) -> dict[str, float]:
+        return {"input_per_million": 1.0, "output_per_million": 3.0}
+
+    def list_models(self) -> list[str]:
+        return ["custom-model-1", "custom-model-2"]
+```
+
+## Agent Management
+
+### Agent Registry
+
+The `AgentRegistry` manages your agent workforce:
+
+```python
+registry = AgentRegistry(provider=provider, cost_tracking=True)
+
+# Register agents with different specializations
+engineer = registry.register(
+    id="backend_engineer",
+    name="Alex Kim",
+    role="Senior Backend Engineer",
+    model="sonnet",
+    system_prompt="You are a backend engineering expert...",
+    tools=["Read", "Write", "Bash"]
+)
+
+qa_lead = registry.register(
+    id="qa_lead",
+    name="Maya Thompson",
+    role="QA Lead",
+    model="haiku",
+    system_prompt="You specialize in testing and quality assurance..."
+)
+```
+
+### Agent Specialization
+
+Create specialized agents for different domains:
+
+```python
+# Security-focused agent
+security_engineer = registry.register(
+    id="security",
+    name="Marcus Johnson",
+    role="Security Engineer",
+    model="opus",
+    system_prompt="""You are a security engineering expert specializing in:
+    - OWASP Top 10 vulnerabilities
+    - Secure authentication and authorization
+    - Cryptography and key management
+    - Security code review and threat modeling"""
+)
+
+# Performance-focused agent
+perf_engineer = registry.register(
+    id="performance",
+    name="Priya Gupta",
+    role="Performance Engineer",
+    model="sonnet",
+    system_prompt="""You specialize in performance optimization:
+    - Algorithmic complexity analysis
+    - Memory usage optimization
+    - Database query optimization
+    - Caching strategies and CDN implementation"""
+)
+```
+
+### Multi-Agent Orchestration
+
+Coordinate multiple agents for complex tasks:
+
+```python
+async def build_auth_system():
+    # Security engineer designs the auth flow
+    auth_design = await registry.execute(
+        "security",
+        "Design a secure JWT-based authentication system with refresh tokens"
+    )
+
+    # Backend engineer implements the API
+    api_implementation = await registry.execute(
+        "backend_engineer",
+        f"Implement this auth design: {auth_design.output}"
+    )
+
+    # QA lead creates test strategy
+    test_plan = await registry.execute(
+        "qa_lead",
+        f"Create comprehensive tests for: {api_implementation.output}"
+    )
+
+    return {
+        "design": auth_design,
+        "implementation": api_implementation,
+        "tests": test_plan,
+        "total_cost": auth_design.cost_usd + api_implementation.cost_usd + test_plan.cost_usd
+    }
+
+result = await build_auth_system()
+print(f"Auth system built for ${result['total_cost']:.2f}")
+```
+
+## Cost Management
+
+### Built-in Cost Tracking
+
+The SDK includes comprehensive cost tracking and budget enforcement:
+
+```python
+from nexus_sdk.cost import CostTracker, SQLiteStorage
+
+# Persistent cost tracking
+storage = SQLiteStorage("~/.nexus/cost.db")
+tracker = CostTracker(storage=storage)
+
+# Set budget constraints
+tracker.set_budget(
+    hourly_target=1.00,      # Soft limit per hour
+    hourly_hard_cap=2.50,    # Hard stop at this amount
+    monthly_target=160.00    # Monthly budget target
+)
+
+# Integrate with registry
+registry = AgentRegistry(provider=provider, cost_tracker=tracker)
+```
+
+### Cost-Aware Agent Selection
+
+Automatically downgrade to cheaper models when approaching budget limits:
+
+```python
+# Cost-aware execution
+if tracker.should_downgrade():
+    # Use cheaper model when approaching limits
+    agent = registry.register(id="budget_agent", model="haiku")
+else:
+    # Use premium model when budget allows
+    agent = registry.register(id="premium_agent", model="opus")
+
+result = await agent.execute("Analyze this complex codebase")
+```
+
+### Budget Monitoring
+
+```python
+# Check current spending
+status = tracker.get_status()
+print(f"Hourly spend: ${status.hourly_spend:.2f} / ${status.hourly_limit:.2f}")
+print(f"Monthly spend: ${status.monthly_spend:.2f} / ${status.monthly_target:.2f}")
+
+# Get spend breakdown by agent
+breakdown = tracker.get_breakdown()
+for agent_id, cost in breakdown.items():
+    print(f"{agent_id}: ${cost:.2f}")
+```
+
+## Diverse Agent Names
+
+The SDK includes a curated database of culturally diverse agent names with balanced gender representation:
+
+### Single Agent Names
+
+```python
+from nexus_sdk import get_agent_name
+
+# Get random diverse name
+agent = get_agent_name("senior_engineer")
+# {'name': 'Maya Thompson', 'pronouns': 'she/her'}
+
+# Reproducible with seed
+agent = get_agent_name("security_engineer", seed=42)
+# {'name': 'Alex Kim', 'pronouns': 'they/them'}
+```
+
+### Team Names
+
+```python
+from nexus_sdk import get_team_names
+
+team = get_team_names([
+    "vp_engineering",
+    "senior_engineer",
+    "qa_lead",
+    "security_engineer"
+])
+
+# {
+#     "vp_engineering": {"name": "Marcus Johnson", "pronouns": "he/him"},
+#     "senior_engineer": {"name": "Priya Gupta", "pronouns": "she/her"},
+#     "qa_lead": {"name": "Alex Kim", "pronouns": "they/them"},
+#     "security_engineer": {"name": "Lisa Zhang", "pronouns": "she/her"}
+# }
+```
+
+### Diversity Statistics
+
+**Gender Distribution**:
+- 41.7% she/her
+- 33.3% he/him
+- 25.0% they/them
+
+**Cultural Diversity**: Names represent diverse backgrounds including Asian, Hispanic, African, European, and Middle Eastern cultures.
+
+**Available Roles**:
+```python
+roles = [
+    "vp_engineering", "senior_engineer", "frontend_engineer",
+    "backend_engineer", "qa_lead", "security_engineer",
+    "architect", "product_manager", "designer"
+]
+```
+
+## Advanced Features
+
+### Local-First Knowledge Store
+
+The SDK includes a local-first knowledge management system:
+
+```python
+from nexus_sdk.knowledge import LocalKnowledgeStore
+
+# Per-user knowledge store (no cloud egress)
+knowledge = LocalKnowledgeStore(user_id="developer123")
+
+# Store knowledge chunks
+await knowledge.store_chunk(
+    content="Rate limiting implementation with Redis backend",
+    chunk_type="code_solution",
+    domain="backend",
+    metadata={"language": "python", "framework": "flask"}
+)
+
+# Semantic search
+results = await knowledge.search(
+    query="rate limiting API",
+    domain="backend",
+    limit=5
+)
+```
+
+### NEXUS Server Integration
+
+When used with the NEXUS server, the SDK provides enhanced capabilities:
+
+```python
+from nexus_sdk import NexusClient
+
+# Connect to NEXUS server
+client = NexusClient(
+    server_url="http://localhost:4200",
+    api_key="your-nexus-api-key"
+)
+
+# Access server-side ML capabilities
+similar_directives = await client.find_similar_work(
+    "implement user authentication",
+    limit=3
+)
+
+cost_prediction = await client.predict_cost(
+    "build a REST API with auth and user management"
+)
+
+print(f"Predicted cost: ${cost_prediction.estimate} ± ${cost_prediction.confidence}")
+```
+
+## Examples
+
+### Complete Multi-Agent Application
+
+```python
+import asyncio
+from nexus_sdk import AgentRegistry, get_team_names
+from nexus_sdk.providers.claude import ClaudeProvider
+from nexus_sdk.cost import CostTracker
+
+async def build_ecommerce_platform():
+    # Initialize
+    provider = ClaudeProvider(api_key="your-key")
+    tracker = CostTracker()
+    registry = AgentRegistry(provider=provider, cost_tracker=tracker)
+
+    # Build diverse team
+    team_names = get_team_names([
+        "vp_engineering", "backend_engineer",
+        "frontend_engineer", "security_engineer", "qa_lead"
+    ])
+
+    agents = {}
+    for role, info in team_names.items():
+        agents[role] = registry.register(
+            id=role,
+            name=info["name"],
+            role=role.replace("_", " ").title(),
+            model="sonnet" if role != "vp_engineering" else "opus"
+        )
+
+    # Parallel execution
+    tasks = await asyncio.gather(
+        agents["backend_engineer"].execute("Build REST API for ecommerce"),
+        agents["frontend_engineer"].execute("Build React storefront"),
+        agents["security_engineer"].execute("Implement secure payment processing"),
+        agents["qa_lead"].execute("Create comprehensive test suite")
+    )
+
+    # VP Engineering coordinates integration
+    integration_plan = await agents["vp_engineering"].execute(
+        f"Integrate these components: {[task.output[:100] for task in tasks]}"
+    )
+
+    total_cost = sum(task.cost_usd for task in tasks) + integration_plan.cost_usd
+
+    return {
+        "components": tasks,
+        "integration": integration_plan,
+        "total_cost": total_cost,
+        "team": team_names
+    }
+
+# Run the build
+result = await build_ecommerce_platform()
+print(f"Ecommerce platform built by {len(result['team'])} agents for ${result['total_cost']:.2f}")
+```
+
+### Provider Comparison
+
+```python
+from nexus_sdk.providers.claude import ClaudeProvider
+from nexus_sdk.providers.openai_provider import OpenAIProvider
+
+async def compare_providers():
+    task = "Implement a binary search algorithm in Python"
+
+    # Claude implementation
+    claude_provider = ClaudeProvider(api_key="claude-key")
+    claude_result = await claude_provider.execute(task, model="sonnet")
+
+    # OpenAI implementation
+    openai_provider = OpenAIProvider(api_key="openai-key")
+    openai_result = await openai_provider.execute(task, model="gpt-5")
+
+    print(f"Claude: ${claude_result.cost_usd:.4f}, {claude_result.elapsed_seconds:.1f}s")
+    print(f"OpenAI: ${openai_result.cost_usd:.4f}, {openai_result.elapsed_seconds:.1f}s")
+
+    return {
+        "claude": claude_result,
+        "openai": openai_result
+    }
+```
+
+### Budget-Aware Development
+
+```python
+from nexus_sdk.cost import CostTracker
+
+async def budget_aware_development():
+    tracker = CostTracker()
+    tracker.set_budget(hourly_hard_cap=2.00)
+
+    registry = AgentRegistry(provider=provider, cost_tracker=tracker)
+
+    # Dynamic model selection based on budget
+    while not tracker.is_over_budget():
+        if tracker.should_downgrade():
+            model = "haiku"  # Cheaper model
+        else:
+            model = "sonnet"  # Standard model
+
+        agent = registry.register(
+            id=f"agent_{len(registry.agents)}",
+            model=model
+        )
+
+        result = await agent.execute("Implement next feature")
+
+        if tracker.is_over_budget():
+            print("Budget exceeded, stopping development")
+            break
+
+        print(f"Feature completed with {model}, cost: ${result.cost_usd:.4f}")
+```
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# Provider API Keys
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
+export GOOGLE_API_KEY=...
+
+# NEXUS Server (if using)
+export NEXUS_SERVER_URL=http://localhost:4200
+export NEXUS_API_KEY=your-nexus-key
+
+# Model Defaults
+export NEXUS_DEFAULT_MODEL=sonnet
+export NEXUS_PLANNING_MODEL=opus
+export NEXUS_QA_MODEL=haiku
+
+# Cost Controls
+export NEXUS_MAX_HOURLY_COST=2.00
+export NEXUS_ENABLE_COST_ALERTS=true
+```
+
+### Programmatic Configuration
+
+```python
+from nexus_sdk.config import SDKConfig
+
+config = SDKConfig(
+    default_model="sonnet",
+    max_cost_per_hour=2.00,
+    enable_cost_tracking=True,
+    knowledge_store_path="~/.nexus/knowledge.db",
+    retry_attempts=3,
+    timeout_seconds=120
+)
+
+registry = AgentRegistry(provider=provider, config=config)
+```
+
+## Testing
+
+### Test Your Agents
+
+```python
+import pytest
+from nexus_sdk.testing import MockProvider, AgentTestCase
+
+class TestMyAgents(AgentTestCase):
+    def setUp(self):
+        self.provider = MockProvider()
+        self.registry = AgentRegistry(provider=self.provider)
+
+    async def test_backend_engineer(self):
+        agent = self.registry.register(id="be", role="Backend Engineer")
+        result = await agent.execute("Create a REST API")
+
+        self.assertEqual(result.status, "success")
+        self.assertIn("API", result.output)
+        self.assertLess(result.cost_usd, 1.00)
+
+# Run tests
+pytest test_agents.py
+```
+
+### Mocking Providers
+
+```python
+from nexus_sdk.testing import MockProvider
+
+# Create predictable responses for testing
+mock_provider = MockProvider()
+mock_provider.set_response(
+    "Create a login function",
+    TaskResult(
+        status="success",
+        output="def login(username, password): ...",
+        cost_usd=0.01,
+        tokens_in=50,
+        tokens_out=100
+    )
+)
+```
+
+## Best Practices
+
+### Agent Design
+
+1. **Specialized Roles**: Create agents with clear, focused responsibilities
+2. **Appropriate Models**: Use Opus for planning, Sonnet for implementation, Haiku for simple tasks
+3. **Clear System Prompts**: Define agent expertise and behavior explicitly
+4. **Diverse Teams**: Use the name generator for realistic, diverse agent teams
+
+### Cost Optimization
+
+1. **Set Budgets**: Always configure cost tracking and limits
+2. **Model Selection**: Choose the cheapest model that meets quality requirements
+3. **Batch Tasks**: Group related work to minimize context switching
+4. **Monitor Spending**: Regular cost analysis and optimization
+
+### Error Handling
+
+1. **Retry Logic**: Implement retry with exponential backoff
+2. **Graceful Degradation**: Fall back to cheaper models on errors
+3. **Validation**: Validate outputs before using them
+4. **Logging**: Comprehensive logging for debugging
+
+### Security
+
+1. **API Key Management**: Use environment variables, never hardcode keys
+2. **Input Validation**: Sanitize all inputs to agents
+3. **Output Filtering**: Review generated code for security issues
+4. **Access Controls**: Limit agent capabilities to necessary tools only
+
+The NEXUS SDK provides the foundation for building sophisticated multi-agent systems with enterprise-grade cost control, security, and reliability. Start with simple single-agent tasks and scale to complex organizational workflows.

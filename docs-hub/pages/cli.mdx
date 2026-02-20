@@ -1,0 +1,318 @@
+# NEXUS CLI
+
+The NEXUS CLI is a fully isolated, Docker-based autonomous playground where NEXUS agents operate independently — building, testing, and committing code in complete isolation with zero host access.
+
+## What It Does
+
+The CLI spins up a hardened Docker container with a supervisor loop that lets agents work autonomously. Agents choose what to build next, execute their plans, validate the results, and loop continuously — all within a sandboxed environment that can never touch your host machine.
+
+**Key capabilities**:
+- Autonomous agent execution with continuous supervisor loop
+- Complete Docker isolation (read-only filesystem, dropped capabilities, no new privileges)
+- Self-modifying agent behavior — agents evolve their approach based on results
+- Zero host access — all work happens inside the container
+- Git integration for committing completed work
+
+## Quick Start
+
+### Prerequisites
+
+- Docker installed and running
+- NEXUS server running (`./start.sh` or `python3 -m src.main`)
+
+### Launch the Playground
+
+```bash
+# Start the autonomous playground container
+/nexus-playground:start
+
+# Check status and recent activity
+/nexus-playground:status
+
+# View live logs
+/nexus-playground:logs
+```
+
+### Interact with the Playground
+
+```bash
+# Execute a command inside the container
+/nexus-playground:exec "ls -la /workspace"
+
+# Browse workspace files
+/nexus-playground:workspace
+
+# Stop the playground
+/nexus-playground:stop
+
+# Reset (delete container and volumes)
+/nexus-playground:reset
+```
+
+## Architecture
+
+### Docker Container
+
+The CLI runs inside a hardened `nexus-cli-sandbox` container with strict security controls:
+
+```
+┌─────────────────────────────────────┐
+│         nexus-cli-sandbox           │
+│                                     │
+│  ┌─────────────────────────────┐    │
+│  │     Supervisor Loop         │    │
+│  │  ┌───────┐  ┌───────────┐  │    │
+│  │  │ Agent │→│ Execution  │  │    │
+│  │  │Select │  │  Engine    │  │    │
+│  │  └───────┘  └───────────┘  │    │
+│  │       ↑          │         │    │
+│  │       └──────────┘         │    │
+│  │      (feedback loop)       │    │
+│  └─────────────────────────────┘    │
+│                                     │
+│  /workspace/  ← agent work area     │
+│  /tools/      ← available tooling   │
+└─────────────────────────────────────┘
+       │
+       ✕  No host access
+```
+
+### Security Controls
+
+Every CLI session runs with enterprise-grade isolation:
+
+<table>
+  <thead>
+    <tr>
+      <th>Control</th>
+      <th>Setting</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Filesystem</strong></td>
+      <td>Read-only root (<code>--read-only</code>)</td>
+    </tr>
+    <tr>
+      <td><strong>Privileges</strong></td>
+      <td>No new privileges (<code>--security-opt=no-new-privileges</code>)</td>
+    </tr>
+    <tr>
+      <td><strong>Capabilities</strong></td>
+      <td>All dropped (<code>--cap-drop=ALL</code>)</td>
+    </tr>
+    <tr>
+      <td><strong>Network</strong></td>
+      <td>Isolated bridge network</td>
+    </tr>
+    <tr>
+      <td><strong>Resources</strong></td>
+      <td>CPU and memory limits enforced</td>
+    </tr>
+    <tr>
+      <td><strong>Workspace</strong></td>
+      <td>Ephemeral volume, destroyed on reset</td>
+    </tr>
+  </tbody>
+</table>
+
+### Supervisor Loop
+
+The autonomous supervisor operates in a continuous cycle:
+
+1. **Observe**: Agent assesses current workspace state
+2. **Plan**: Decides what to build or fix next
+3. **Execute**: Runs the plan using available tools (Python, Node.js, shell)
+4. **Validate**: Checks results, runs tests if applicable
+5. **Commit**: Saves work to Git inside the container
+6. **Loop**: Returns to step 1 with updated context
+
+The agent maintains memory across loop iterations, learning from successes and failures within the session.
+
+## Commands Reference
+
+### /nexus-playground:start
+
+Starts the autonomous playground container. Creates the Docker container if it doesn't exist, or resumes a stopped one.
+
+```bash
+/nexus-playground:start
+```
+
+**What happens**:
+- Pulls/builds the `nexus-cli-sandbox` image if needed
+- Creates container with security hardening
+- Starts the supervisor loop
+- Agent begins autonomous work
+
+### /nexus-playground:status
+
+Shows playground status including container state, resource usage, and recent agent activity.
+
+```bash
+/nexus-playground:status
+```
+
+**Output includes**:
+- Container running state and uptime
+- CPU and memory usage
+- Recent agent actions and outcomes
+- Workspace file count and size
+
+### /nexus-playground:logs
+
+Streams live logs from the playground container, showing agent decisions and execution in real time.
+
+```bash
+/nexus-playground:logs
+```
+
+### /nexus-playground:exec
+
+Execute a command inside the running playground container.
+
+```bash
+# List workspace contents
+/nexus-playground:exec "ls -la /workspace"
+
+# Run a Python script the agent created
+/nexus-playground:exec "python3 /workspace/agent_project/main.py"
+
+# Check Git history
+/nexus-playground:exec "cd /workspace && git log --oneline -10"
+```
+
+### /nexus-playground:workspace
+
+Browse files in the agent's workspace directory.
+
+```bash
+/nexus-playground:workspace
+```
+
+### /nexus-playground:stop
+
+Stops the playground container without destroying it. The container and workspace persist for later resumption.
+
+```bash
+/nexus-playground:stop
+```
+
+### /nexus-playground:reset
+
+Fully resets the playground — deletes the container and all volumes. Use this for a clean start.
+
+```bash
+/nexus-playground:reset
+```
+
+## Use Cases
+
+### Autonomous Prototyping
+
+Let the agent build a prototype while you focus on other work:
+
+```
+/nexus-playground:start
+```
+
+The agent will autonomously:
+- Scaffold a project structure
+- Implement core functionality
+- Write and run tests
+- Iterate on failures
+- Commit working code
+
+Check back later with `/nexus-playground:status` to see what it built.
+
+### Safe Experimentation
+
+Test risky operations without affecting your host environment:
+
+```bash
+# Agent can install packages, modify system configs, run arbitrary code
+# All contained within the Docker sandbox
+/nexus-playground:exec "pip install experimental-package && python -c 'import experimental_package; experimental_package.run()'"
+```
+
+### Continuous Development
+
+The supervisor loop means agents don't stop after one task. They continuously:
+- Identify improvements to their own code
+- Refactor for better patterns
+- Add test coverage
+- Optimize performance
+
+This creates a self-improving codebase inside the container.
+
+## Configuration
+
+### Docker Image
+
+The CLI sandbox image is built from `docker/cli-sandbox/`:
+
+```
+docker/
+  cli-sandbox/
+    Dockerfile       # Base image with Python, Node.js, Git
+    entrypoint.sh    # Supervisor loop entry point
+```
+
+### Resource Limits
+
+Configure container resources via environment variables:
+
+```bash
+# CPU limit (number of cores)
+export NEXUS_CLI_CPU_LIMIT=2
+
+# Memory limit
+export NEXUS_CLI_MEMORY_LIMIT=2g
+
+# Workspace size limit
+export NEXUS_CLI_WORKSPACE_SIZE=5g
+```
+
+### Agent Behavior
+
+The supervisor loop behavior can be tuned:
+
+```bash
+# Loop interval (seconds between iterations)
+export NEXUS_CLI_LOOP_INTERVAL=30
+
+# Maximum iterations before pause
+export NEXUS_CLI_MAX_ITERATIONS=100
+
+# Auto-commit threshold (commit after N successful changes)
+export NEXUS_CLI_AUTO_COMMIT_THRESHOLD=5
+```
+
+## Troubleshooting
+
+### Container won't start
+
+- Verify Docker is running: `docker info`
+- Check for port conflicts: `docker ps`
+- Ensure the image exists: `docker images | grep nexus-cli-sandbox`
+- Rebuild if needed: `docker build -t nexus-cli-sandbox docker/cli-sandbox/`
+
+### Agent stuck in loop
+
+- Check logs: `/nexus-playground:logs`
+- The agent may be retrying a failing operation
+- Reset the playground: `/nexus-playground:reset`
+
+### High resource usage
+
+- Check container stats: `docker stats nexus-cli-sandbox`
+- Adjust resource limits in configuration
+- Stop and restart with lower limits
+
+### Workspace full
+
+- Browse workspace: `/nexus-playground:workspace`
+- Reset for clean start: `/nexus-playground:reset`
+- Increase workspace size limit in configuration
+
+The NEXUS CLI provides a safe, isolated environment for autonomous agent execution. It's where agents prove they can build real software without any human intervention or host access.

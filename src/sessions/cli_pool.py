@@ -39,7 +39,6 @@ DANGEROUS_PATTERNS = [
     r'subprocess\s*\.\s*call',
     r'subprocess\s*\.\s*Popen',
     r'os\s*\.\s*system',
-    r'\b\w+\s*\(\w+\)',  # Generic function call with arguments (catches code execution patterns)
 ]
 
 def sanitize_cli_message(message: str) -> str:

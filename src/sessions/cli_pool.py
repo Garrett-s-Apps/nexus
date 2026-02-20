@@ -63,7 +63,7 @@ def sanitize_cli_message(message: str) -> str:
 CLAUDE_CMD = "claude"
 DOCKER_CMD = "docker"
 IDLE_TIMEOUT = 1800  # 30 minutes — session cleanup after inactivity
-STALL_TIMEOUT = 900  # 15 minutes of silence = genuinely stuck (no wall-clock limit)
+STALL_TIMEOUT = 7200  # 2 hours of silence = genuinely stuck (no wall-clock limit)
 STREAM_BUFFER_LIMIT = 10 * 1024 * 1024  # 10 MB — stream-json lines can exceed asyncio's 64KB default
 
 # Map CLI tool names to human-readable Slack status
@@ -170,9 +170,10 @@ class CLISession:
             "-v", f"{self.project_path}:/workspace:ro",
             "-v", f"{self.project_path}/output:/workspace/output:rw",
             *env_args,
-            "-e", f"NEXUS_CLI_TIMEOUT={STALL_TIMEOUT}",
+            "-e", "NEXUS_CLI_MODEL=sonnet",
             "--read-only",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=100m",  # noqa: S108 - Docker tmpfs mount
+            "--tmpfs", "/home/nexus/.claude:rw,size=50m",  # Claude CLI needs writable state dir
             "--security-opt=no-new-privileges",
             "--cap-drop=ALL",
             "--memory=2g",
